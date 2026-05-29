@@ -1,0 +1,55 @@
+scenarios:
+
+  - id: node_pressure_memory
+    failure: Pods evicted por memory pressure en nodo
+    events:
+      - reason: Evicted
+        message: "The node was low on resource: memory. Threshold quantity: {threshold}Mi"
+        count: [3, 15]
+      - reason: NodeHasSufficientMemory
+        message: "Node {node} status is now: NodeHasSufficientMemory"
+        count: [1, 3]
+      - reason: OOMKilling
+        message: "Memory cgroup out of memory: Kill process in {pod}"
+        count: [2, 8]
+    root_cause: "Memory pressure en el nodo {node}. K8s está eviccionando pods para liberar memoria. Los pods sin PriorityClass son los primeros en ser eliminados."
+    kubectl: "kubectl describe node {node} | grep -A5 'Allocated resources'"
+
+  - id: node_disk_pressure
+    failure: DiskPressure en nodo
+    events:
+      - reason: Evicted
+        message: "The node was low on resource: ephemeral-storage"
+        count: [2, 10]
+      - reason: NodeHasNoDiskPressure
+        message: "Node {node} status is now: NodeHasNoDiskPressure"
+        count: [1, 2]
+      - reason: FreeDiskSpaceFailed
+        message: "Failed to garbage collect required amount of images"
+        count: [1, 5]
+    root_cause: "DiskPressure en nodo {node} por falta de espacio en disco efímero. Probablemente logs o imágenes antiguas ocupando espacio. K8s eviccionará pods hasta recuperar espacio."
+    kubectl: "kubectl debug node/{node} -it --image=ubuntu -- df -h"
+
+  - id: pending_insufficient_cpu
+    failure: Pod en Pending por CPU insuficiente
+    events:
+      - reason: FailedScheduling
+        message: "0/3 nodes are available: 3 Insufficient cpu. preemption: 0/3 nodes"
+        count: [5, 20]
+      - reason: NotTriggerScaleUp
+        message: "pod didn't trigger scale-up: 1 max node group size reached"
+        count: [1, 4]
+    root_cause: "Pod en estado Pending porque ningún nodo tiene CPU suficiente para el request configurado. El deployment solicita más CPU de la disponible en el cluster."
+    kubectl: "kubectl describe pod {pod} -n {namespace} | grep -A10 Events"
+
+  - id: pvc_pending
+    failure: Pod en Pending por PVC sin Bound
+    events:
+      - reason: FailedScheduling
+        message: "0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims"
+        count: [4, 15]
+      - reason: ProvisioningFailed
+        message: "Failed to provision volume with StorageClass \"{sc}\": rpc error"
+        count: [2, 8]
+    root_cause: "Pod bloqueado en Pending porque el PVC '{pvc}' no pudo ser provisionado por la StorageClass '{sc}'. El provisioner puede estar caído o sin capacidad."
+    kubectl: "kubectl describe pvc {pvc} -n {namespace}"

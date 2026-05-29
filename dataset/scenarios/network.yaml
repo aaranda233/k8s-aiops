@@ -1,0 +1,37 @@
+scenarios:
+
+  - id: readiness_failing
+    failure: Pod no recibe tráfico por readiness probe fallando
+    events:
+      - reason: Unhealthy
+        message: "Readiness probe failed: HTTP probe failed with statuscode: {code} for pod {pod}"
+        count: [8, 30]
+      - reason: ProbeWarning
+        message: "Readiness probe warning: {pod} is not ready"
+        count: [3, 10]
+    root_cause: "El pod {pod} no está recibiendo tráfico porque la readiness probe falla con HTTP {code}. El endpoint de health no responde correctamente — posible error de aplicación o arranque lento."
+    kubectl: "kubectl logs {pod} -n {namespace} --tail=50"
+
+  - id: service_no_endpoints
+    failure: Service sin endpoints — ningún pod ready
+    events:
+      - reason: Unhealthy
+        message: "Readiness probe failed: connection refused for pod {pod}"
+        count: [6, 25]
+      - reason: FailedScheduling
+        message: "no endpoints available for service \"{svc}\""
+        count: [2, 8]
+    root_cause: "El Service '{svc}' no tiene endpoints activos porque ningún pod pasa la readiness probe. El tráfico está siendo descartado. Revisar si el selector del Service coincide con los labels del Deployment."
+    kubectl: "kubectl get endpoints {svc} -n {namespace}"
+
+  - id: network_policy_block
+    failure: Tráfico bloqueado por NetworkPolicy
+    events:
+      - reason: Unhealthy
+        message: "Readiness probe failed: dial tcp {ip}:{port}: i/o timeout for pod {pod}"
+        count: [5, 20]
+      - reason: FailedMount
+        message: "Unable to attach or mount volumes: timeout"
+        count: [1, 4]
+    root_cause: "Timeout de red entre servicios. Probablemente una NetworkPolicy está bloqueando el tráfico entre {namespace} y el namespace destino. La probe no puede alcanzar el puerto {port}."
+    kubectl: "kubectl get networkpolicy -n {namespace}"

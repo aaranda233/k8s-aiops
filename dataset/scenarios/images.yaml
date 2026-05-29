@@ -1,0 +1,40 @@
+scenarios:
+
+  - id: image_not_found
+    failure: ImagePullBackOff — imagen no existe
+    events:
+      - reason: Failed
+        message: "Failed to pull image \"{image}\": rpc error: code = NotFound"
+        count: [3, 12]
+      - reason: BackOff
+        message: "Back-off pulling image \"{image}\""
+        count: [5, 20]
+      - reason: ErrImagePull
+        message: "Error response from daemon: manifest for {image} not found"
+        count: [2, 8]
+    root_cause: "ImagePullBackOff porque la imagen '{image}' no existe en el registry. El tag puede ser incorrecto o la imagen no fue publicada."
+    kubectl: "kubectl set image deployment/{deployment} {container}={image_fix} -n {namespace}"
+
+  - id: image_auth
+    failure: ImagePullBackOff — error de autenticación en registry privado
+    events:
+      - reason: Failed
+        message: "Failed to pull image \"{image}\": rpc error: unauthorized: authentication required"
+        count: [3, 10]
+      - reason: BackOff
+        message: "Back-off pulling image \"{image}\""
+        count: [4, 15]
+    root_cause: "ImagePullBackOff por fallo de autenticación en registry privado. El Secret 'imagePullSecret' no existe, está expirado o no tiene permisos sobre '{image}'."
+    kubectl: "kubectl create secret docker-registry ghcr-creds --docker-server=ghcr.io --docker-username={user} --docker-password={token} -n {namespace}"
+
+  - id: image_registry_down
+    failure: ImagePullBackOff — registry inaccesible
+    events:
+      - reason: Failed
+        message: "Failed to pull image \"{image}\": dial tcp: lookup ghcr.io: no such host"
+        count: [3, 10]
+      - reason: BackOff
+        message: "Back-off pulling image \"{image}\""
+        count: [4, 18]
+    root_cause: "ImagePullBackOff por registry inaccesible. Problema de red o DNS desde los nodos del cluster hacia el registry externo."
+    kubectl: "kubectl run dns-test --image=busybox --rm -it --restart=Never -- nslookup ghcr.io"

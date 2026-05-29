@@ -1,0 +1,62 @@
+# CrashLoopBackOff — varias causas raíz distintas
+scenarios:
+
+  - id: crash_oom
+    failure: CrashLoopBackOff por OOMKilled
+    events:
+      - reason: OOMKilling
+        message: "Memory cgroup out of memory: Kill process in {pod} due to memory limit {mem}Mi"
+        count: [3, 8]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [10, 40]
+      - reason: Killing
+        message: "Stopping container {container}"
+        count: [3, 8]
+    root_cause: "CrashLoopBackOff causado por OOMKilled. El contenedor {container} supera el límite de memoria configurado ({mem}Mi). K8s lo mata y reinicia en bucle."
+    kubectl: "kubectl set resources deployment/{deployment} --limits=memory={mem_fix}Mi -n {namespace}"
+
+  - id: crash_config
+    failure: CrashLoopBackOff por error de configuración
+    events:
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [8, 35]
+      - reason: Failed
+        message: "Error: failed to create containerd task: failed to start shim: exit status 1"
+        count: [2, 6]
+      - reason: Killing
+        message: "Stopping container {container}"
+        count: [3, 8]
+    root_cause: "CrashLoopBackOff por error de arranque del contenedor. Probablemente variable de entorno o ConfigMap mal configurado. El proceso sale con código 1 inmediatamente."
+    kubectl: "kubectl logs {pod} --previous -n {namespace}"
+
+  - id: crash_probe
+    failure: CrashLoopBackOff por liveness probe
+    events:
+      - reason: Unhealthy
+        message: "Liveness probe failed: HTTP probe failed with statuscode: {code} for pod {pod}"
+        count: [5, 20]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [8, 30]
+      - reason: Killing
+        message: "Container {container} failed liveness probe, will be restarted"
+        count: [4, 12]
+    root_cause: "CrashLoopBackOff provocado por fallo repetido de liveness probe (HTTP {code}). K8s mata el contenedor al no responder en el endpoint configurado."
+    kubectl: "kubectl describe pod {pod} -n {namespace}"
+
+  - id: crash_secret
+    failure: CrashLoopBackOff por Secret o ConfigMap faltante
+    events:
+      - reason: Failed
+        message: "Error: secret \"{secret}\" not found"
+        count: [3, 10]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [6, 25]
+      - reason: FailedMount
+        message: "MountVolume.SetUp failed for volume \"{secret}\" : secret \"{secret}\" not found"
+        count: [2, 8]
+    root_cause: "El pod no arranca porque el Secret '{secret}' referenciado en el Deployment no existe en el namespace. El contenedor falla en el montaje y K8s entra en CrashLoopBackOff."
+    kubectl: "kubectl create secret generic {secret} --from-literal=key=value -n {namespace}"
