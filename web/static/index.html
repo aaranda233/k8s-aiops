@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>k8s-aiops — AIOps Visual Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+:root {
+  --bg:#0d1117; --bg2:#161b22; --bg3:#21262d;
+  --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+  --green:#3fb950; --red:#f85149; --yellow:#e3b341;
+  --blue:#58a6ff; --purple:#bc8cff; --cyan:#79c0ff;
+  --orange:#f0883e;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Courier New',monospace;font-size:13px;overflow:hidden;}
+
+/* ── HEADER ── */
+header{
+  height:56px;background:var(--bg2);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 20px;gap:0;flex-shrink:0;
+}
+.logo{font-size:15px;font-weight:bold;color:var(--blue);margin-right:28px;letter-spacing:.5px;}
+
+/* Pipeline flow en el header */
+.pipe-flow{display:flex;align-items:center;gap:0;flex:1;}
+.pipe-box{
+  background:var(--bg3);border:1px solid var(--border);border-radius:6px;
+  padding:6px 14px;text-align:center;min-width:120px;position:relative;
+}
+.pipe-box .pb-name{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;}
+.pipe-box .pb-val{font-size:18px;font-weight:bold;margin-top:2px;}
+.pipe-box.layer1 .pb-val{color:var(--purple);}
+.pipe-box.layer2 .pb-val{color:var(--blue);}
+.pipe-box.layer3 .pb-val{color:var(--red);}
+.pipe-arrow{
+  width:40px;height:2px;background:var(--border);position:relative;flex-shrink:0;
+}
+.pipe-arrow::after{
+  content:'';position:absolute;right:-1px;top:-4px;
+  border:5px solid transparent;border-left-color:var(--border);
+}
+.pipe-arrow .flow-dot{
+  position:absolute;top:-4px;left:0;width:8px;height:8px;
+  border-radius:50%;background:var(--blue);
+  animation:flowdot 1.8s linear infinite;opacity:0;
+}
+@keyframes flowdot{0%{left:0;opacity:1}100%{left:calc(100% - 8px);opacity:0}}
+
+.stats-right{display:flex;gap:12px;margin-left:auto;}
+.stat{text-align:center;}
+.stat .sv{font-size:15px;font-weight:bold;color:var(--cyan);}
+.stat .sl{font-size:10px;color:var(--dim);}
+.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:6px;}
+.conn-dot.live{background:var(--green);animation:pulse 1.5s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ── MAIN GRID ── */
+.main{display:grid;grid-template-columns:300px 1fr 300px;height:calc(100vh - 56px);gap:1px;background:var(--border);}
+.panel{background:var(--bg);display:flex;flex-direction:column;overflow:hidden;}
+
+/* ── PANEL HEADERS ── */
+.ph{
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:8px 14px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
+}
+.ph-title{font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:.8px;}
+.ph-sub{font-size:10px;color:var(--dim);}
+.layer-badge{
+  font-size:9px;padding:2px 7px;border-radius:10px;font-weight:bold;text-transform:uppercase;
+}
+.l1{background:rgba(188,140,255,.15);color:var(--purple);border:1px solid rgba(188,140,255,.3);}
+.l2{background:rgba(88,166,255,.15);color:var(--blue);border:1px solid rgba(88,166,255,.3);}
+.l3{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3);}
+
+/* ── PANEL 1: DRAIN3 ── */
+.log-feed{flex:1;overflow-y:auto;padding:4px;}
+.log-feed::-webkit-scrollbar{width:3px;}
+.log-feed::-webkit-scrollbar-thumb{background:var(--border);}
+.log-entry{padding:6px 6px 6px 8px;border-left:2px solid var(--border);margin-bottom:4px;border-radius:0 4px 4px 0;}
+.log-entry.new-template{border-left-color:var(--purple);}
+.le-meta{display:flex;gap:6px;margin-bottom:3px;align-items:center;}
+.le-ns{font-size:10px;background:rgba(188,140,255,.1);color:var(--purple);padding:1px 5px;border-radius:3px;}
+.le-reason{font-size:11px;color:var(--yellow);font-weight:bold;}
+.le-raw{font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.le-arrow{font-size:10px;color:var(--dim);margin:2px 0;}
+.le-template{font-size:10px;color:var(--cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* tokens enmascarados */
+.tok{background:rgba(121,192,255,.15);color:var(--cyan);border-radius:2px;padding:0 3px;font-weight:bold;}
+
+.templates-section{flex-shrink:0;border-top:1px solid var(--border);max-height:140px;overflow-y:auto;}
+.tpl-header{padding:6px 10px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.7px;background:var(--bg2);}
+.tpl-list{padding:4px 8px;}
+.tpl-item{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--bg3);}
+.tpl-id{color:var(--dim);font-size:10px;width:24px;flex-shrink:0;}
+.tpl-text{flex:1;font-size:10px;color:var(--cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tpl-count{font-size:10px;color:var(--green);}
+
+/* ── PANEL 2: FEATURE SPACE ── */
+.center-panel{display:flex;flex-direction:column;}
+.scatter-wrap{flex:1;position:relative;overflow:hidden;}
+#scatter-svg{width:100%;height:100%;}
+
+/* Leyenda scatter */
+.scatter-legend{
+  position:absolute;top:12px;left:12px;
+  background:rgba(13,17,23,.85);border:1px solid var(--border);
+  border-radius:6px;padding:8px 12px;font-size:11px;line-height:2;
+  backdrop-filter:blur(4px);
+}
+.leg-item{display:flex;align-items:center;gap:8px;}
+.leg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+
+/* Explicacion del IF */
+.if-explain{
+  flex-shrink:0;border-top:1px solid var(--border);padding:10px 16px;
+  background:var(--bg2);display:flex;gap:20px;
+}
+.if-block{flex:1;text-align:center;}
+.if-block .ib-val{font-size:22px;font-weight:bold;}
+.if-block .ib-label{font-size:10px;color:var(--dim);margin-top:2px;}
+.if-block.normal .ib-val{color:var(--green);}
+.if-block.anomaly .ib-val{color:var(--red);}
+.if-block.model .ib-val{color:var(--blue);}
+.if-block.drift .ib-val{color:var(--yellow);}
+
+/* Barra de bootstrap */
+.bootstrap-strip{
+  flex-shrink:0;background:var(--bg2);border-top:1px solid var(--border);
+  padding:8px 14px;display:none;
+}
+.bs-label{font-size:11px;color:var(--yellow);margin-bottom:5px;}
+.bs-track{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;}
+.bs-fill{height:100%;background:var(--yellow);border-radius:3px;transition:width .4s;}
+
+/* ── PANEL 3: SCORE + DRIFT ── */
+.score-chart-wrap{height:200px;padding:8px;flex-shrink:0;}
+.drift-section{flex:1;overflow-y:auto;padding:8px;}
+
+/* Timeline de ventanas */
+.window-timeline{display:flex;flex-wrap:wrap;gap:3px;padding:4px 0 8px;}
+.wt-chip{
+  width:28px;height:28px;border-radius:4px;display:flex;align-items:center;
+  justify-content:center;font-size:8px;font-weight:bold;cursor:default;
+  transition:transform .2s;
+  border:1px solid transparent;
+}
+.wt-chip:hover{transform:scale(1.2);}
+.wt-chip.normal{background:var(--bg3);color:var(--dim);}
+.wt-chip.anomaly{background:rgba(248,81,73,.2);color:var(--red);border-color:rgba(248,81,73,.4);}
+.wt-chip.training{outline:2px solid var(--blue);outline-offset:1px;}
+
+/* Retrain events */
+.retrain-log{font-size:11px;}
+.retrain-item{
+  padding:6px 8px;margin-bottom:4px;border-radius:4px;
+  background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);
+}
+.ri-header{display:flex;justify-content:space-between;margin-bottom:3px;}
+.ri-v{color:var(--blue);font-weight:bold;}
+.ri-size{color:var(--dim);font-size:10px;}
+.ri-bar{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-top:4px;}
+.ri-fill{height:100%;background:var(--blue);border-radius:2px;}
+
+/* Alertas */
+.alert-card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  padding:10px;margin-bottom:6px;
+}
+.alert-card.critical{border-color:rgba(248,81,73,.4);background:rgba(248,81,73,.04);}
+.ac-score{color:var(--red);font-size:18px;font-weight:bold;}
+.ac-ns{color:var(--purple);font-size:10px;margin:3px 0;}
+.ac-cause{font-size:11px;line-height:1.5;margin:6px 0;}
+.ac-kubectl{background:var(--bg3);border-radius:4px;padding:6px 8px;font-size:10px;color:var(--cyan);word-break:break-all;}
+.ac-kubectl::before{content:'$ ';color:var(--green);}
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ══ -->
+<header>
+  <div class="logo">⬡ k8s-aiops</div>
+
+  <div class="pipe-flow">
+    <div class="pipe-box layer1">
+      <div class="pb-name">Capa 1 · Drain3</div>
+      <div class="pb-val" id="h-templates">0</div>
+      <div class="pb-name">templates</div>
+    </div>
+    <div class="pipe-arrow"><div class="flow-dot"></div></div>
+
+    <div class="pipe-box layer2">
+      <div class="pb-name">Capa 2 · IF</div>
+      <div class="pb-val" id="h-windows">0</div>
+      <div class="pb-name">ventanas</div>
+    </div>
+    <div class="pipe-arrow"><div class="flow-dot" style="animation-delay:.6s"></div></div>
+
+    <div class="pipe-box layer3">
+      <div class="pb-name">Capa 3 · RCA</div>
+      <div class="pb-val" id="h-anomalies">0</div>
+      <div class="pb-name">alertas</div>
+    </div>
+  </div>
+
+  <div class="stats-right">
+    <div class="stat"><div class="sv" id="h-model-v">0</div><div class="sl">IF versión</div></div>
+    <div class="stat"><div class="sv" id="h-threshold">0.80</div><div class="sl">umbral</div></div>
+    <div style="display:flex;align-items:center;margin-left:8px;font-size:11px;">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span id="conn-label" style="color:var(--dim)">conectando...</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══ MAIN ══ -->
+<div class="main">
+
+  <!-- ── PANEL 1: DRAIN3 ── -->
+  <div class="panel">
+    <div class="ph">
+      <div>
+        <span class="ph-title">Drain3</span>
+        <span class="ph-sub"> · online log parsing</span>
+      </div>
+      <span class="layer-badge l1">Capa 1</span>
+    </div>
+    <div class="log-feed" id="log-feed"></div>
+    <div class="templates-section">
+      <div class="tpl-header">Templates descubiertos</div>
+      <div class="tpl-list" id="tpl-list"></div>
+    </div>
+  </div>
+
+  <!-- ── PANEL 2: FEATURE SPACE ── -->
+  <div class="panel center-panel">
+    <div class="ph">
+      <div>
+        <span class="ph-title">Isolation Forest</span>
+        <span class="ph-sub"> · espacio de features (PCA 2D)</span>
+      </div>
+      <span class="layer-badge l2">Capa 2</span>
+    </div>
+
+    <div class="bootstrap-strip" id="bootstrap-strip">
+      <div class="bs-label" id="bs-label">Bootstrap: acumulando ventanas normales...</div>
+      <div class="bs-track"><div class="bs-fill" id="bs-fill" style="width:0%"></div></div>
+    </div>
+
+    <div class="scatter-wrap">
+      <svg id="scatter-svg"></svg>
+      <div class="scatter-legend">
+        <div class="leg-item"><div class="leg-dot" style="background:#3fb950"></div> Normal (training)</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#58a6ff;opacity:.6"></div> Normal (nuevo)</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#f85149"></div> Anomalía</div>
+        <div class="leg-item" style="margin-top:4px;font-size:10px;color:var(--dim)">
+          Tamaño = nº eventos<br>Proximidad = similitud
+        </div>
+      </div>
+    </div>
+
+    <div class="if-explain">
+      <div class="if-block normal">
+        <div class="ib-val" id="ie-normal">0</div>
+        <div class="ib-label">Ventanas normales</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">agrupadas → difícil aislar</div>
+      </div>
+      <div class="if-block anomaly">
+        <div class="ib-val" id="ie-anomaly">0</div>
+        <div class="ib-label">Anomalías</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">aisladas → pocos cortes</div>
+      </div>
+      <div class="if-block model">
+        <div class="ib-val" id="ie-model">v0</div>
+        <div class="ib-label">Modelo IF</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">ventana deslizante</div>
+      </div>
+      <div class="if-block drift">
+        <div class="ib-val" id="ie-retrains">0</div>
+        <div class="ib-label">Retrainings</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">adaptación al drift</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PANEL 3: SCORE + DRIFT ── -->
+  <div class="panel">
+    <div class="ph">
+      <div>
+        <span class="ph-title">Score & Drift</span>
+        <span class="ph-sub"> · evolución temporal</span>
+      </div>
+      <span class="layer-badge l3">Capa 3</span>
+    </div>
+
+    <div class="score-chart-wrap">
+      <canvas id="score-chart"></canvas>
+    </div>
+
+    <div class="drift-section">
+      <!-- chips de ventanas coloreados por score -->
+      <div style="font-size:10px;color:var(--dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:.7px;">
+        Mapa de ventanas <span style="color:var(--blue);font-size:9px">(azul = training actual)</span>
+      </div>
+      <div class="window-timeline" id="window-timeline"></div>
+
+      <!-- log de retrainings -->
+      <div style="font-size:10px;color:var(--dim);margin:8px 0 5px;text-transform:uppercase;letter-spacing:.7px;">
+        Retraining log
+      </div>
+      <div class="retrain-log" id="retrain-log">
+        <div style="color:var(--dim);font-size:11px;padding:8px 0">Sin retrainings aún.</div>
+      </div>
+
+      <!-- alertas RCA -->
+      <div style="font-size:10px;color:var(--dim);margin:8px 0 5px;text-transform:uppercase;letter-spacing:.7px;">
+        Alertas RCA
+      </div>
+      <div id="alerts-panel">
+        <div style="color:var(--dim);font-size:11px;padding:8px 0">Sin anomalías detectadas.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Estado ──────────────────────────────────────────────────────────────────
+const S = {
+  templates: {},          // cluster_id → {template, count}
+  windows: [],            // todos los ScoredWindow
+  trainingIndices: new Set(), // índices de ventanas en training actual
+  normalCount: 0,
+  anomalyCount: 0,
+  retrainCount: 0,
+  modelVersion: 0,
+  threshold: 0.80,
+  bootstrapTotal: 5,
+};
+
+// ── Chart.js ─────────────────────────────────────────────────────────────────
+const scoreChart = new Chart(document.getElementById('score-chart').getContext('2d'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Score',
+        data: [],
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.06)',
+        borderWidth: 2,
+        pointRadius: 5,
+        pointBackgroundColor: [],
+        pointBorderColor: [],
+        tension: 0.35,
+        fill: true,
+      },
+      {
+        label: 'Umbral',
+        data: [],
+        borderColor: 'rgba(248,81,73,0.6)',
+        borderWidth: 1,
+        borderDash: [5,3],
+        pointRadius: 0,
+        fill: false,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 400 },
+    scales: {
+      y: { min:0, max:1, grid:{color:'#21262d'}, ticks:{color:'#8b949e',stepSize:.2} },
+      x: { grid:{color:'#21262d'}, ticks:{color:'#8b949e',maxTicksLimit:6,font:{size:10}} }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => `Score: ${ctx.parsed.y.toFixed(3)}`
+        }
+      }
+    }
+  }
+});
+
+// ── D3 Scatter ───────────────────────────────────────────────────────────────
+const svg = d3.select('#scatter-svg');
+let scatterPoints = [];     // {x, y, score, is_anomaly, log_count, index, type}
+let trainingPoints = [];    // {x, y, log_count, index}
+
+const colorScale = d3.scaleSequential()
+  .domain([0, 1])
+  .interpolator(d3.interpolateRgb('#3fb950', '#f85149'));
+
+function redrawScatter() {
+  const el = document.getElementById('scatter-svg');
+  const W = el.clientWidth, H = el.clientHeight;
+  if (W < 10 || H < 10) return;
+
+  const allX = [...trainingPoints.map(p=>p.x), ...scatterPoints.map(p=>p.x)];
+  const allY = [...trainingPoints.map(p=>p.y), ...scatterPoints.map(p=>p.y)];
+  if (allX.length === 0) return;
+
+  const pad = 40;
+  const xExt = d3.extent(allX); const yExt = d3.extent(allY);
+  const xRange = (xExt[1]-xExt[0]) || 1; const yRange = (yExt[1]-yExt[0]) || 1;
+
+  const xScale = d3.scaleLinear().domain([xExt[0]-xRange*.15, xExt[1]+xRange*.15]).range([pad,W-pad]);
+  const yScale = d3.scaleLinear().domain([yExt[0]-yRange*.15, yExt[1]+yRange*.15]).range([H-pad,pad]);
+  const sizeScale = d3.scaleSqrt().domain([0, d3.max([...trainingPoints,...scatterPoints], d=>d.log_count||1)]).range([4,18]);
+
+  svg.selectAll('*').remove();
+
+  // Grid lines suaves
+  const gGrid = svg.append('g').attr('opacity',.15);
+  xScale.ticks(5).forEach(v => gGrid.append('line')
+    .attr('x1',xScale(v)).attr('x2',xScale(v)).attr('y1',pad).attr('y2',H-pad)
+    .attr('stroke','#58a6ff').attr('stroke-width',.5));
+  yScale.ticks(5).forEach(v => gGrid.append('line')
+    .attr('x1',pad).attr('x2',W-pad).attr('y1',yScale(v)).attr('y2',yScale(v))
+    .attr('stroke','#58a6ff').attr('stroke-width',.5));
+
+  // Puntos de training (fondo, verde claro)
+  svg.selectAll('.tp')
+    .data(trainingPoints).enter().append('circle')
+    .attr('class','tp')
+    .attr('cx', d=>xScale(d.x)).attr('cy', d=>yScale(d.y))
+    .attr('r', d=>sizeScale(d.log_count||1))
+    .attr('fill','rgba(63,185,80,0.25)')
+    .attr('stroke','rgba(63,185,80,0.7)').attr('stroke-width',1.5);
+
+  // Puntos detectados (encima)
+  const gPoints = svg.selectAll('.sp')
+    .data(scatterPoints).enter().append('g').attr('class','sp');
+
+  gPoints.append('circle')
+    .attr('cx', d=>xScale(d.x)).attr('cy', d=>yScale(d.y))
+    .attr('r', d=>sizeScale(d.log_count||1))
+    .attr('fill', d => d.is_anomaly ? 'rgba(248,81,73,0.7)' : 'rgba(88,166,255,0.5)')
+    .attr('stroke', d => d.is_anomaly ? '#f85149' : '#58a6ff')
+    .attr('stroke-width', d => d.is_anomaly ? 2 : 1)
+    .on('mouseover', function(event,d){
+      d3.select(this).attr('r', sizeScale(d.log_count||1)*1.4);
+      showTooltip(event, d);
+    })
+    .on('mouseout', function(event,d){
+      d3.select(this).attr('r', sizeScale(d.log_count||1));
+      hideTooltip();
+    });
+
+  // Pulso en anomalías
+  scatterPoints.filter(d=>d.is_anomaly).forEach(d => {
+    svg.append('circle')
+      .attr('cx',xScale(d.x)).attr('cy',yScale(d.y))
+      .attr('r',sizeScale(d.log_count||1))
+      .attr('fill','none').attr('stroke','#f85149').attr('stroke-width',2)
+      .attr('opacity',1)
+      .transition().duration(1200).ease(d3.easeLinear)
+      .attr('r',sizeScale(d.log_count||1)+16).attr('opacity',0)
+      .remove();
+  });
+
+  // Etiqueta de índice en anomalías
+  scatterPoints.filter(d=>d.is_anomaly).forEach(d => {
+    svg.append('text')
+      .attr('x',xScale(d.x)+sizeScale(d.log_count||1)+4)
+      .attr('y',yScale(d.y)+4)
+      .text(`W${d.index}`)
+      .attr('fill','#f85149').attr('font-size',10);
+  });
+}
+
+// Tooltip simple
+let tooltipEl = null;
+function showTooltip(event, d) {
+  if (!tooltipEl) {
+    tooltipEl = document.createElement('div');
+    tooltipEl.style.cssText = 'position:fixed;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:8px 10px;font-size:11px;pointer-events:none;z-index:100;color:#e6edf3;';
+    document.body.appendChild(tooltipEl);
+  }
+  tooltipEl.innerHTML = `<b>W${d.index}</b>${d.is_anomaly?' 🔴 ANOMALÍA':''}<br>Score: <b>${(d.score||0).toFixed(3)}</b><br>Eventos: ${d.log_count}`;
+  tooltipEl.style.left = (event.clientX+12)+'px';
+  tooltipEl.style.top = (event.clientY-10)+'px';
+  tooltipEl.style.display='block';
+}
+function hideTooltip() { if(tooltipEl) tooltipEl.style.display='none'; }
+
+window.addEventListener('resize', redrawScatter);
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('conn-dot').classList.add('live');
+    document.getElementById('conn-label').textContent = 'conectado';
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').classList.remove('live');
+    document.getElementById('conn-label').textContent = 'reconectando...';
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    (handlers[msg.type] || (()=>{}))(msg.data);
+  };
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+const handlers = {
+
+  status(d) {
+    if (d.threshold) {
+      S.threshold = d.threshold;
+      document.getElementById('h-threshold').textContent = d.threshold.toFixed(2);
+    }
+    if (d.bootstrap) S.bootstrapTotal = d.bootstrap;
+  },
+
+  log_parsed(d) {
+    S.templates[d.cluster_id] = S.templates[d.cluster_id] || {template: d.template, count: 0};
+    S.templates[d.cluster_id].count++;
+    const isNew = S.templates[d.cluster_id].count === 1;
+
+    document.getElementById('h-templates').textContent = d.template_count;
+
+    // Feed entry
+    const feed = document.getElementById('log-feed');
+    const el = document.createElement('div');
+    el.className = 'log-entry' + (isNew ? ' new-template' : '');
+
+    // Highlight tokens enmascarados en el template
+    const tplHtml = esc(d.template).replace(/&lt;\w+&gt;/g, m =>
+      `<span class="tok">${m}</span>`
+    );
+
+    el.innerHTML = `
+      <div class="le-meta">
+        <span class="le-ns">${esc(d.namespace)}</span>
+        <span class="le-reason">${esc(d.reason)}</span>
+        ${isNew ? '<span style="font-size:9px;color:var(--purple);background:rgba(188,140,255,.15);padding:1px 5px;border-radius:3px;">nuevo template</span>' : ''}
+      </div>
+      <div class="le-raw">${esc(d.raw)}</div>
+      ${d.raw !== d.template ? `<div class="le-arrow">↓ abstracción</div><div class="le-template">${tplHtml}</div>` : ''}
+    `;
+    feed.prepend(el);
+    while (feed.children.length > 60) feed.removeChild(feed.lastChild);
+
+    // Actualizar lista de templates
+    renderTemplates();
+  },
+
+  bootstrap(d) {
+    const strip = document.getElementById('bootstrap-strip');
+    strip.style.display = 'block';
+    const pct = (d.progress / S.bootstrapTotal * 100).toFixed(0);
+    document.getElementById('bs-label').textContent =
+      `Bootstrap: ${d.progress}/${S.bootstrapTotal} ventanas normales acumuladas...`;
+    document.getElementById('bs-fill').style.width = pct + '%';
+  },
+
+  window_scored(d) {
+    S.modelVersion = d.model_version;
+    document.getElementById('ie-model').textContent = `v${d.model_version}`;
+    document.getElementById('h-model-v').textContent = d.model_version;
+
+    document.getElementById('bootstrap-strip').style.display = 'none';
+
+    if (d.is_anomaly) {
+      S.anomalyCount++;
+      document.getElementById('h-anomalies').textContent = S.anomalyCount;
+      document.getElementById('ie-anomaly').textContent = S.anomalyCount;
+    } else {
+      S.normalCount++;
+      document.getElementById('ie-normal').textContent = S.normalCount;
+    }
+    document.getElementById('h-windows').textContent = S.normalCount + S.anomalyCount;
+
+    // Scatter: añadir punto nuevo
+    scatterPoints.push({
+      x: d.pca_x, y: d.pca_y,
+      score: d.score, is_anomaly: d.is_anomaly,
+      log_count: d.log_count, index: d.index,
+    });
+    if (scatterPoints.length > 200) scatterPoints.shift();
+    redrawScatter();
+
+    // Score chart
+    const ds = scoreChart.data.datasets[0];
+    const labels = scoreChart.data.labels;
+    labels.push(`W${d.index}`);
+    ds.data.push(d.score);
+    ds.pointBackgroundColor.push(d.is_anomaly ? '#f85149' : '#3fb950');
+    ds.pointBorderColor.push(d.is_anomaly ? '#f85149' : '#3fb950');
+    scoreChart.data.datasets[1].data.push(S.threshold);
+    if (labels.length > 40) {
+      labels.shift(); ds.data.shift();
+      ds.pointBackgroundColor.shift(); ds.pointBorderColor.shift();
+      scoreChart.data.datasets[1].data.shift();
+    }
+    scoreChart.update('none');
+
+    // Chip en timeline
+    addWindowChip(d);
+  },
+
+  retrain(d) {
+    S.retrainCount++;
+    document.getElementById('ie-retrains').textContent = S.retrainCount;
+    document.getElementById('ie-model').textContent = `v${d.model_version}`;
+
+    // Actualizar puntos de training en scatter
+    trainingPoints = (d.training_points || []).map(p => ({
+      x: p.x, y: p.y, log_count: p.log_count, index: p.index
+    }));
+    S.trainingIndices = new Set((d.training_points||[]).map(p=>p.index));
+    redrawScatter();
+    refreshTrainingChips();
+
+    // Log de retrain
+    const log = document.getElementById('retrain-log');
+    log.querySelector('[style]')?.remove(); // quitar el "Sin retrainings" inicial
+    const item = document.createElement('div');
+    item.className = 'retrain-item';
+    const pct = Math.min(100, (d.training_size / 50) * 100);
+    item.innerHTML = `
+      <div class="ri-header">
+        <span class="ri-v">IF v${d.model_version}</span>
+        <span class="ri-size">${d.training_size} ventanas en training</span>
+      </div>
+      <div style="font-size:10px;color:var(--dim)">Ventana deslizante actualizada — drift corregido</div>
+      <div class="ri-bar"><div class="ri-fill" style="width:${pct}%"></div></div>
+    `;
+    log.prepend(item);
+    while (log.children.length > 5) log.removeChild(log.lastChild);
+  },
+
+  anomaly(d) {
+    const panel = document.getElementById('alerts-panel');
+    panel.querySelector('[style]')?.remove();
+    const card = document.createElement('div');
+    card.className = 'alert-card critical';
+    card.dataset.wi = d.window_index;
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="ac-score">⚠ ${d.score.toFixed(3)}</span>
+        <span style="font-size:10px;color:var(--dim)">W${d.window_index}</span>
+      </div>
+      <div class="ac-ns">${(d.namespaces||[]).join(' · ')}</div>
+      <div class="ac-cause" style="color:var(--dim);font-size:10px">
+        ${d.log_count} eventos · analizando causa raíz...
+      </div>
+    `;
+    panel.prepend(card);
+  },
+
+  rca(d) {
+    if (d.error) return;
+    const panel = document.getElementById('alerts-panel');
+    const card = panel.querySelector(`[data-wi="${d.window_index}"]`);
+    if (card) {
+      card.querySelector('.ac-cause').textContent = d.root_cause;
+      const kc = document.createElement('div');
+      kc.className = 'ac-kubectl';
+      kc.textContent = d.kubectl;
+      card.appendChild(kc);
+    }
+  },
+
+  heartbeat() {},
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderTemplates() {
+  const list = document.getElementById('tpl-list');
+  const entries = Object.entries(S.templates)
+    .sort((a,b) => b[1].count - a[1].count)
+    .slice(0, 20);
+  list.innerHTML = entries.map(([id,{template,count}]) => `
+    <div class="tpl-item">
+      <span class="tpl-id">#${id}</span>
+      <span class="tpl-text">${esc(template)}</span>
+      <span class="tpl-count">${count}</span>
+    </div>
+  `).join('');
+}
+
+function addWindowChip(d) {
+  const tl = document.getElementById('window-timeline');
+  const chip = document.createElement('div');
+  chip.className = `wt-chip ${d.is_anomaly ? 'anomaly' : 'normal'}`;
+  chip.id = `chip-${d.index}`;
+  chip.title = `W${d.index} · score ${d.score.toFixed(3)}`;
+  chip.textContent = d.index;
+  // Color de fondo según score
+  if (!d.is_anomaly) {
+    const g = Math.round(63 + (185-63)*(1-d.score));
+    chip.style.background = `rgba(${Math.round(88*(d.score))},${g},${Math.round(255*(1-d.score*0.5))},0.4)`;
+  }
+  if (S.trainingIndices.has(d.index)) chip.classList.add('training');
+  tl.prepend(chip);
+  while (tl.children.length > 80) tl.removeChild(tl.lastChild);
+}
+
+function refreshTrainingChips() {
+  document.querySelectorAll('.wt-chip').forEach(chip => {
+    const idx = parseInt(chip.id.replace('chip-',''));
+    if (S.trainingIndices.has(idx)) chip.classList.add('training');
+    else chip.classList.remove('training');
+  });
+}
+
+connect();
+</script>
+</body>
+</html>
