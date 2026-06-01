@@ -7,3 +7,5 @@ __pycache__/
 dist/
 build/
 .DS_Store
+dataset/output/
+finetune/output/

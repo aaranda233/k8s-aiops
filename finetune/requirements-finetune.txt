@@ -1,0 +1,21 @@
+# Fine-tuning dependencies — instalar en la A30 con Python 3.11+
+# pip install -r requirements-finetune.txt
+
+# Core
+torch>=2.3.0
+transformers>=4.44.0
+datasets>=2.20.0
+accelerate>=0.33.0
+peft>=0.12.0
+trl>=0.9.0
+bitsandbytes>=0.43.0
+
+# Unsloth — ver README para el comando exacto segun CUDA version
+# CUDA 12.1:  pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
+# CUDA 12.4:  pip install "unsloth[cu124-torch230] @ git+https://github.com/unslothai/unsloth.git"
+
+# Utils
+scipy>=1.13.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+huggingface-hub>=0.24.0
