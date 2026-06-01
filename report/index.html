@@ -382,6 +382,114 @@
   .stack { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; }
   .pill { background: #f4f3f0; border: 1px solid var(--border); color: #57534e; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
 
+  /* LIVE DEMO */
+  .demo-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 24px 0;
+  }
+  .demo-bar {
+    background: #f9f8f6;
+    border-bottom: 1px solid var(--border);
+    padding: 12px 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .demo-dots { display: flex; gap: 6px; }
+  .demo-dots span {
+    width: 11px; height: 11px; border-radius: 50%;
+  }
+  .demo-dots .r { background: #fc625d; }
+  .demo-dots .y { background: #fdbc40; }
+  .demo-dots .g { background: #35cd4b; }
+  .demo-url {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, monospace;
+  }
+  .demo-live {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #15803d;
+  }
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #22c55e;
+    animation: livepulse 1.5s infinite;
+  }
+  @keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .demo-frame {
+    position: relative;
+    width: 100%;
+    height: 580px;
+    background: #0d1117;
+  }
+  .demo-frame iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+  }
+  .demo-offline {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: #0d1117;
+    color: #8b949e;
+    font-size: 14px;
+    text-align: center;
+    padding: 24px;
+  }
+  .demo-offline .icon { font-size: 36px; margin-bottom: 4px; }
+  .demo-offline strong { color: #e6edf3; font-size: 16px; display: block; margin-bottom: 4px; }
+  .demo-offline code {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #79c0ff;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-top: 4px;
+    display: inline-block;
+  }
+  @media (max-width: 600px) { .demo-frame { height: 420px; } }
+
+  /* MOBILE */
+  @media (max-width: 640px) {
+    .container { padding: 0 16px; }
+    header { padding: 36px 0 32px; }
+    .header-inner { padding: 0 16px; }
+    h2 { font-size: 22px; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .arch-label { width: 72px; font-size: 10px; padding: 10px 8px; }
+    .arch-blocks { padding: 10px 10px; gap: 6px; }
+    .block { font-size: 11px; padding: 4px 8px; }
+    .arch-arrow { padding-left: 88px; font-size: 11px; }
+    .params { grid-template-columns: 1fr 1fr; }
+    .artifact-grid { grid-template-columns: 1fr; }
+    nav a { padding: 10px 10px; font-size: 12px; }
+    pre { font-size: 12px; padding: 14px 14px; }
+    .chart-box { padding: 16px; }
+    .demo-url { display: none; }
+  }
+
   /* FOOTER */
   footer {
     padding: 36px 0;
@@ -421,6 +529,7 @@
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
     <a href="#artifacts">Artefactos</a>
+    <a href="#demo">Demo en vivo</a>
   </div>
 </nav>
 
@@ -876,6 +985,45 @@ ollama create k8s-rca-slm -f finetune/Modelfile</pre>
   </div>
 </section>
 
+<!-- DEMO EN VIVO -->
+<section id="demo">
+  <div class="container">
+    <h2>Dashboard en Tiempo Real</h2>
+    <p class="section-lead">Interfaz web del pipeline — ventanas puntuadas, scatter PCA, anomalías y diagnósticos en vivo</p>
+
+    <p>El pipeline expone un dashboard web conectado por WebSocket que muestra el estado del sistema en tiempo real: cada ventana procesada, su score de anomalía, la proyección PCA del Isolation Forest, y los diagnósticos RCA generados por el modelo.</p>
+
+    <div class="demo-wrap">
+      <div class="demo-bar">
+        <div class="demo-dots">
+          <span class="r"></span><span class="y"></span><span class="g"></span>
+        </div>
+        <div class="demo-url">http://localhost:8765/</div>
+        <div class="demo-live" id="liveStatus">
+          <span class="live-dot"></span> Conectando...
+        </div>
+      </div>
+      <div class="demo-frame">
+        <iframe
+          id="demoFrame"
+          src="http://localhost:8765/"
+          title="K8s-AIOps Dashboard"
+          sandbox="allow-scripts allow-same-origin allow-forms"
+          loading="lazy"
+        ></iframe>
+        <div class="demo-offline" id="demoOffline" style="display:none;">
+          <div class="icon">📡</div>
+          <strong>Dashboard no disponible en este momento</strong>
+          El pipeline debe estar ejecutándose localmente para ver el dashboard en vivo.
+          <code>python main.py --live</code>
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size:14px; color: var(--muted);">El dashboard utiliza WebSockets para actualización en tiempo real sin recargar la página. Cada evento del cluster Kubernetes aparece procesado en menos de un segundo desde que ocurre.</p>
+  </div>
+</section>
+
 <footer>
   <div class="container">
     <p>K8s-AIOps · Junio 2026 · Trabajo de investigación en curso</p>
@@ -888,6 +1036,41 @@ ollama create k8s-rca-slm -f finetune/Modelfile</pre>
 </footer>
 
 <script>
+// Demo iframe detection
+(function() {
+  const frame  = document.getElementById('demoFrame');
+  const offline = document.getElementById('demoOffline');
+  const status  = document.getElementById('liveStatus');
+  if (!frame) return;
+
+  const timeout = setTimeout(() => {
+    offline.style.display = 'flex';
+    frame.style.display   = 'none';
+    status.innerHTML = '<span style="color:#78716c">⚪ No disponible</span>';
+  }, 4000);
+
+  frame.addEventListener('load', () => {
+    try {
+      // Si el contenido cargó (misma origin), limpiamos el timeout
+      clearTimeout(timeout);
+      offline.style.display = 'none';
+      frame.style.display   = 'block';
+      status.innerHTML = '<span class="live-dot"></span> En vivo';
+    } catch(e) {
+      // cross-origin pero cargó — asumimos ok
+      clearTimeout(timeout);
+      status.innerHTML = '<span class="live-dot"></span> En vivo';
+    }
+  });
+
+  frame.addEventListener('error', () => {
+    clearTimeout(timeout);
+    offline.style.display = 'flex';
+    frame.style.display   = 'none';
+    status.innerHTML = '<span style="color:#78716c">⚪ No disponible</span>';
+  });
+})();
+
 const steps = [10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180];
 const loss  = [0.7994,0.3536,0.1749,0.1294,0.1114,0.0979,0.0971,0.1016,0.0864,0.0910,0.0862,0.0881,0.0929,0.0844,0.0894,0.0820,0.0866,0.0898];
 const lr    = [0.00018,0.000199,0.000194,0.000187,0.000177,0.000164,0.000149,0.000133,0.000116,0.0000982,0.0000805,0.0000634,0.0000474,0.0000332,0.0000210,0.0000114,0.00000457,0.000000780];
