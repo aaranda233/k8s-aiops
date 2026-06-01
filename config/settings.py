@@ -38,9 +38,17 @@ class DiagnosticsConfig:
 
 
 @dataclass
+class MLflowConfig:
+    enabled: bool = field(default_factory=lambda: os.getenv("MLFLOW_ENABLED", "true").lower() != "false")
+    tracking_uri: str = field(default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "http://192.168.2.204:30803"))
+    experiment: str = field(default_factory=lambda: os.getenv("MLFLOW_EXPERIMENT", "k8s-aiops"))
+
+
+@dataclass
 class PipelineConfig:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
     # Modo replay: procesar eventos historicos en vez de stream en vivo
     replay_mode: bool = False

@@ -17,6 +17,7 @@ from src.detector.isolation_forest import AnomalyDetector, ScoredWindow
 from src.detector.window import WindowBuilder
 from src.diagnostics.ollama_rca import DiagnosisResult, OllamaRCA
 from src.parser.log_parser import LogParser
+from src.tracking.mlflow_tracker import MLflowTracker, RetrainEvent
 
 console = Console()
 
@@ -48,6 +49,13 @@ class AIOPsPipeline:
         self._scored_windows: list[ScoredWindow] = []
         self._diagnoses: list[DiagnosisResult] = []
 
+        self._tracker = MLflowTracker(
+            uri=cfg.mlflow.tracking_uri,
+            experiment=cfg.mlflow.experiment,
+        )
+        if not cfg.mlflow.enabled:
+            self._tracker._enabled = False
+
     # ------------------------------------------------------------------
     # Modos de ejecucion
     # ------------------------------------------------------------------
@@ -65,14 +73,20 @@ class AIOPsPipeline:
 
         self._emit("status", {"mode": "replay", "total_events": len(entries)})
 
-        for entry in entries:
-            self._ingest(entry)
+        with self._tracker.start_run(self.cfg):
+            for entry in entries:
+                self._ingest(entry)
 
-        last = self.window_builder.flush()
-        if last and last.log_count > 0:
-            self._evaluate_window(last)
+            last = self.window_builder.flush()
+            if last and last.log_count > 0:
+                self._evaluate_window(last)
 
-        self._print_summary()
+            self._print_summary()
+            self._tracker.log_summary(
+                total_windows=len(self._scored_windows),
+                total_anomalies=sum(1 for s in self._scored_windows if s.is_anomaly),
+                total_rca=len(self._diagnoses),
+            )
 
     def run_live(self) -> None:
         console.print("\n[bold green]Modo LIVE — Watch API[/]")
@@ -83,24 +97,30 @@ class AIOPsPipeline:
             "window_size": self.cfg.collector.window_size_seconds,
         })
 
-        # 1. Pre-cargar snapshot historico para el bootstrap
-        console.print("[dim]Cargando snapshot historico para bootstrap...[/]")
-        entries = self.collector.fetch_events_snapshot()
-        console.print(f"[dim]{len(entries)} eventos historicos cargados[/]")
-        for entry in entries:
-            self._ingest(entry)
-
-        # 2. Timer de cierre de ventanas: cierra la ventana abierta cada window_size segundos
-        #    aunque no lleguen eventos nuevos
-        self._start_window_flush_timer()
-
-        # 3. Watch API para eventos nuevos
-        try:
-            for entry in self.collector.stream_events():
+        with self._tracker.start_run(self.cfg):
+            # 1. Pre-cargar snapshot historico para el bootstrap
+            console.print("[dim]Cargando snapshot historico para bootstrap...[/]")
+            entries = self.collector.fetch_events_snapshot()
+            console.print(f"[dim]{len(entries)} eventos historicos cargados[/]")
+            for entry in entries:
                 self._ingest(entry)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Detenido.[/]")
-            self._print_summary()
+
+            # 2. Timer de cierre de ventanas: cierra la ventana abierta cada window_size segundos
+            #    aunque no lleguen eventos nuevos
+            self._start_window_flush_timer()
+
+            # 3. Watch API para eventos nuevos
+            try:
+                for entry in self.collector.stream_events():
+                    self._ingest(entry)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Detenido.[/]")
+                self._print_summary()
+                self._tracker.log_summary(
+                    total_windows=len(self._scored_windows),
+                    total_anomalies=sum(1 for s in self._scored_windows if s.is_anomaly),
+                    total_rca=len(self._diagnoses),
+                )
 
     def _start_window_flush_timer(self) -> None:
         """Cierra la ventana actual periodicamente aunque no lleguen eventos."""
@@ -166,6 +186,7 @@ class AIOPsPipeline:
 
         self._scored_windows.append(scored)
         self._print_window_line(scored)
+        self._tracker.log_window(scored)
 
         self._emit("window_scored", {
             "index": window.index,
@@ -198,6 +219,12 @@ class AIOPsPipeline:
                     for c, w in zip(training_coords, training_windows)
                 ],
             })
+            self._tracker.log_retrain(RetrainEvent(
+                model_version=scored.model_version,
+                training_size=len(training_windows),
+                n_features=len(self.detector._trained_cluster_ids),
+                window_index=window.index,
+            ))
 
         if scored.is_anomaly:
             self._trigger_rca(scored)
@@ -221,10 +248,13 @@ class AIOPsPipeline:
             return
 
         try:
+            t0 = time.time()
             result = self.rca.diagnose(scored)
+            latency = time.time() - t0
             self._diagnoses.append(result)
             console.print(f"  [bold]Causa:[/] {result.root_cause}")
             console.print(f"  [bold]kubectl:[/] [cyan]{result.kubectl_command}[/]\n")
+            self._tracker.log_rca(result, latency_s=latency)
             self._emit("rca", {
                 "window_index": result.window_index,
                 "score": round(result.anomaly_score, 4),
