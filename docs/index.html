@@ -120,7 +120,8 @@ async function verify() {
 }
 
 function load() {
-  const html = atob(CONTENT);
+  const bytes = Uint8Array.from(atob(CONTENT), c => c.charCodeAt(0));
+  const html = new TextDecoder('utf-8').decode(bytes);
   document.open(); document.write(html); document.close();
 }
 
