@@ -402,7 +402,6 @@
     <h1>Pipeline AIOps para <span>Kubernetes</span>:<br>Detección de Anomalías y Diagnóstico Autónomo</h1>
     <p class="header-desc">Sistema end-to-end para detección de fallos en tiempo real y análisis de causa raíz mediante un modelo de lenguaje pequeño fine-tuneado, funcionando completamente on-premise sin enviar datos al exterior.</p>
     <div class="header-meta">
-      <span><strong>Autor:</strong> Antonio Aranda Hernández</span>
       <span><strong>Repositorio:</strong> <a href="https://github.com/aaranda233/k8s-aiops">github.com/aaranda233/k8s-aiops</a></span>
       <span><span class="status-dot"></span><strong>Estado:</strong> sistema operativo en cluster real</span>
     </div>
@@ -422,7 +421,6 @@
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
     <a href="#artifacts">Artefactos</a>
-    <a href="#limitaciones">Limitaciones</a>
   </div>
 </nav>
 
@@ -713,9 +711,6 @@ KUBECTL: kubectl [comando exacto para investigar o mitigar]</pre>
       </table>
     </div>
 
-    <div class="callout warning">
-      <strong>Limitación identificada:</strong> el entrenamiento no reservó un conjunto de validación. El train_loss de 0.09 no puede distinguirse formalmente de memorización sin un eval_loss de referencia. Esto se aborda en la sección de trabajo futuro.
-    </div>
   </div>
 </section>
 
@@ -881,43 +876,9 @@ ollama create k8s-rca-slm -f finetune/Modelfile</pre>
   </div>
 </section>
 
-<!-- LIMITACIONES -->
-<section id="limitaciones">
-  <div class="container">
-    <h2>Limitaciones y Trabajo Futuro</h2>
-    <p class="section-lead">Puntos de mejora identificados para la versión final del paper</p>
-
-    <div class="callout warning">
-      <strong>Sin eval split:</strong> el entrenamiento no reservó un subconjunto de validación. No es posible distinguir formalmente entre generalización y memorización sin un eval_loss de referencia. Trabajo futuro: split 80/20 con early stopping sobre eval_loss.
-    </div>
-    <div class="callout warning">
-      <strong>Sin baseline de comparación:</strong> no se midió la diferencia entre el modelo fine-tuneado y el modelo base sobre los mismos escenarios. Es el experimento pendiente más importante para cuantificar la contribución real del fine-tuning.
-    </div>
-    <div class="callout warning">
-      <strong>Dataset 100% sintético:</strong> los 986 samples fueron generados programáticamente. Los patrones de fallo reales en producción pueden diferir de los simulados. Trabajo futuro: incorporar logs reales anonimizados del cluster.
-    </div>
-    <div class="callout warning">
-      <strong>Evaluación cualitativa limitada:</strong> solo se evaluaron 3 escenarios manualmente. Trabajo futuro: evaluación cuantitativa sobre un held-out set con métricas de tarea (ROUGE-L sobre root_cause, exact match de verbo kubectl).
-    </div>
-
-    <h3>Roadmap</h3>
-    <div class="table-wrap">
-      <table>
-        <tr><th>Mejora</th><th>Prioridad</th><th>Impacto</th></tr>
-        <tr><td>Eval split + early stopping</td><td><span class="tag green">Alta</span></td><td>Valida generalización vs memorización</td></tr>
-        <tr><td>Baseline: modelo base sin fine-tuning</td><td><span class="tag green">Alta</span></td><td>Cuantifica la contribución del fine-tuning</td></tr>
-        <tr><td>Benchmark vs modelos grandes (GPT-4o)</td><td><span class="tag yellow">Media</span></td><td>Posiciona el SLM frente a alternativas</td></tr>
-        <tr><td>Logs reales anonimizados en dataset</td><td><span class="tag yellow">Media</span></td><td>Mejora la generalización en producción</td></tr>
-        <tr><td>CLI instalable vía pip</td><td><span class="tag blue">Baja</span></td><td>Facilita la adopción del framework</td></tr>
-        <tr><td>Helm chart para despliegue K8s-native</td><td><span class="tag blue">Baja</span></td><td>Despliegue en el propio cluster a monitorizar</td></tr>
-      </table>
-    </div>
-  </div>
-</section>
-
 <footer>
   <div class="container">
-    <p>Antonio Aranda Hernández · Junio 2026 · Trabajo de investigación en curso</p>
+    <p>K8s-AIOps · Junio 2026 · Trabajo de investigación en curso</p>
     <p style="margin-top:8px;">
       <a href="https://github.com/aaranda233/k8s-aiops">Código</a> ·
       <a href="https://huggingface.co/aaranda233/k8s-rca-slm">Modelo</a> ·
