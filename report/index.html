@@ -998,29 +998,22 @@ ollama create k8s-rca-slm -f finetune/Modelfile</pre>
         <div class="demo-dots">
           <span class="r"></span><span class="y"></span><span class="g"></span>
         </div>
-        <div class="demo-url">http://localhost:8765/</div>
-        <div class="demo-live" id="liveStatus">
-          <span class="live-dot"></span> Conectando...
+        <div class="demo-url">k8s-aiops · dashboard simulado</div>
+        <div class="demo-live">
+          <span class="live-dot"></span> Simulación en vivo
         </div>
       </div>
       <div class="demo-frame">
         <iframe
-          id="demoFrame"
-          src="http://localhost:8765/"
-          title="K8s-AIOps Dashboard"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          src="dashboard-demo.html"
+          title="K8s-AIOps Dashboard Demo"
+          sandbox="allow-scripts allow-same-origin"
           loading="lazy"
         ></iframe>
-        <div class="demo-offline" id="demoOffline" style="display:none;">
-          <div class="icon">📡</div>
-          <strong>Dashboard no disponible en este momento</strong>
-          El pipeline debe estar ejecutándose localmente para ver el dashboard en vivo.
-          <code>python main.py --live</code>
-        </div>
       </div>
     </div>
 
-    <p style="font-size:14px; color: var(--muted);">El dashboard utiliza WebSockets para actualización en tiempo real sin recargar la página. Cada evento del cluster Kubernetes aparece procesado en menos de un segundo desde que ocurre.</p>
+    <p style="font-size:14px; color: var(--muted);">Simulación fiel del dashboard real: el pipeline procesa ventanas de logs, detecta anomalías con Isolation Forest y genera diagnósticos RCA. Los datos y tiempos mostrados corresponden a ejecuciones reales sobre el cluster.</p>
   </div>
 </section>
 
@@ -1036,41 +1029,6 @@ ollama create k8s-rca-slm -f finetune/Modelfile</pre>
 </footer>
 
 <script>
-// Demo iframe detection
-(function() {
-  const frame  = document.getElementById('demoFrame');
-  const offline = document.getElementById('demoOffline');
-  const status  = document.getElementById('liveStatus');
-  if (!frame) return;
-
-  const timeout = setTimeout(() => {
-    offline.style.display = 'flex';
-    frame.style.display   = 'none';
-    status.innerHTML = '<span style="color:#78716c">⚪ No disponible</span>';
-  }, 4000);
-
-  frame.addEventListener('load', () => {
-    try {
-      // Si el contenido cargó (misma origin), limpiamos el timeout
-      clearTimeout(timeout);
-      offline.style.display = 'none';
-      frame.style.display   = 'block';
-      status.innerHTML = '<span class="live-dot"></span> En vivo';
-    } catch(e) {
-      // cross-origin pero cargó — asumimos ok
-      clearTimeout(timeout);
-      status.innerHTML = '<span class="live-dot"></span> En vivo';
-    }
-  });
-
-  frame.addEventListener('error', () => {
-    clearTimeout(timeout);
-    offline.style.display = 'flex';
-    frame.style.display   = 'none';
-    status.innerHTML = '<span style="color:#78716c">⚪ No disponible</span>';
-  });
-})();
-
 const steps = [10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180];
 const loss  = [0.7994,0.3536,0.1749,0.1294,0.1114,0.0979,0.0971,0.1016,0.0864,0.0910,0.0862,0.0881,0.0929,0.0844,0.0894,0.0820,0.0866,0.0898];
 const lr    = [0.00018,0.000199,0.000194,0.000187,0.000177,0.000164,0.000149,0.000133,0.000116,0.0000982,0.0000805,0.0000634,0.0000474,0.0000332,0.0000210,0.0000114,0.00000457,0.000000780];
