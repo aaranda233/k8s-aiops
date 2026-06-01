@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps — Informe Técnico</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2535;
+    --border: #2a3348;
+    --accent: #4f8ef7;
+    --accent2: #7c5cf6;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Layout */
+  .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, #0f1117 0%, #1a1040 50%, #0f1117 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 72px 0 56px;
+    text-align: center;
+  }
+  .hero .badge {
+    display: inline-block;
+    background: rgba(79,142,247,0.15);
+    border: 1px solid rgba(79,142,247,0.4);
+    color: var(--accent);
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+  }
+  .hero h1 {
+    font-size: clamp(28px, 5vw, 48px);
+    font-weight: 800;
+    background: linear-gradient(135deg, #fff 30%, #4f8ef7);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 16px;
+    line-height: 1.2;
+  }
+  .hero p {
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0 auto 32px;
+  }
+  .hero-meta {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .hero-meta span { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+  /* Nav */
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 0;
+  }
+  nav .container {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  nav a {
+    color: var(--muted);
+    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  nav a:hover { color: var(--text); background: var(--bg3); text-decoration: none; }
+
+  /* Sections */
+  section { padding: 64px 0; border-bottom: 1px solid var(--border); }
+  section:last-child { border-bottom: none; }
+  h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2 .icon {
+    width: 36px; height: 36px;
+    background: rgba(79,142,247,0.15);
+    border: 1px solid rgba(79,142,247,0.3);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+  .section-sub {
+    color: var(--muted);
+    margin-bottom: 40px;
+    font-size: 16px;
+  }
+  h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; color: var(--accent); }
+  p { margin-bottom: 16px; color: #c8d3e0; }
+
+  /* Cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 24px 0; }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: rgba(79,142,247,0.4); }
+  .card h4 { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+  .card p { font-size: 13px; color: var(--muted); margin: 0; }
+  .card .num { font-size: 28px; font-weight: 800; color: var(--accent); margin-bottom: 4px; }
+
+  /* Architecture diagram */
+  .arch {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .layer {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .layer:last-child { margin-bottom: 0; }
+  .layer-label {
+    width: 80px;
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 12px;
+    border-right: 2px solid var(--border);
+  }
+  .layer-content {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+  }
+  .block {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .block.blue { border-color: rgba(79,142,247,0.5); color: #7eb8ff; background: rgba(79,142,247,0.08); }
+  .block.purple { border-color: rgba(124,92,246,0.5); color: #b39fff; background: rgba(124,92,246,0.08); }
+  .block.green { border-color: rgba(34,197,94,0.5); color: #6ee7a0; background: rgba(34,197,94,0.08); }
+  .block.orange { border-color: rgba(245,158,11,0.5); color: #fcd34d; background: rgba(245,158,11,0.08); }
+  .arrow { display: flex; align-items: center; color: var(--muted); font-size: 20px; padding: 4px 0; }
+
+  /* Code */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 16px 0;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  code {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #a5f3fc;
+  }
+  .comment { color: #4b5568; }
+  .keyword { color: #7c5cf6; }
+  .string { color: #22c55e; }
+  .num-literal { color: #f59e0b; }
+  .fn { color: #4f8ef7; }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; margin: 20px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    background: var(--bg3);
+    padding: 10px 16px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 12px 16px; border-bottom: 1px solid rgba(42,51,72,0.5); color: #c8d3e0; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .tag.green { background: rgba(34,197,94,0.15); color: #22c55e; }
+  .tag.yellow { background: rgba(245,158,11,0.15); color: #f59e0b; }
+  .tag.blue { background: rgba(79,142,247,0.15); color: #4f8ef7; }
+  .tag.purple { background: rgba(124,92,246,0.15); color: #a78bfa; }
+
+  /* Test results */
+  .test-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 16px 0;
+  }
+  .test-header {
+    background: var(--bg3);
+    padding: 14px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .test-header .title { font-size: 14px; font-weight: 600; }
+  .test-header .meta { font-size: 12px; color: var(--muted); display: flex; gap: 16px; }
+  .test-body { padding: 20px; }
+  .test-input { margin-bottom: 16px; }
+  .test-input label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); display: block; margin-bottom: 6px; }
+  .test-input .content { font-size: 13px; color: #94a3b8; background: var(--bg3); padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); }
+  .test-output { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 600px) { .test-output { grid-template-columns: 1fr; } }
+  .test-output-item label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
+  .test-output-item.cause label { color: #f59e0b; }
+  .test-output-item.kubectl label { color: #4f8ef7; }
+  .test-output-item .content { font-size: 13px; background: var(--bg3); padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); }
+  .test-output-item.cause .content { border-color: rgba(245,158,11,0.3); }
+  .test-output-item.kubectl .content { border-color: rgba(79,142,247,0.3); font-family: monospace; color: #7eb8ff; }
+
+  /* Chart */
+  .chart-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+  }
+  .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .chart-sub { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
+
+  /* Artifacts */
+  .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 24px 0; }
+  .artifact {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    transition: border-color 0.2s;
+  }
+  .artifact:hover { border-color: rgba(79,142,247,0.4); }
+  .artifact-icon { font-size: 28px; flex-shrink: 0; }
+  .artifact h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .artifact p { font-size: 12px; color: var(--muted); margin: 0; }
+  .artifact a { font-size: 12px; color: var(--accent); display: block; margin-top: 8px; word-break: break-all; }
+
+  /* Stack */
+  .stack { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+  .pill {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  /* Limitations */
+  .limitation {
+    background: rgba(245,158,11,0.05);
+    border: 1px solid rgba(245,158,11,0.2);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 12px 0;
+    font-size: 14px;
+    color: #c8d3e0;
+  }
+  .limitation strong { color: #f59e0b; }
+
+  /* Footer */
+  footer {
+    padding: 40px 0;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="container">
+    <div class="badge">Trabajo de Investigación — Borrador</div>
+    <h1>K8s-AIOps<br>Pipeline de Detección y Diagnóstico Autónomo en Kubernetes</h1>
+    <p>Sistema end-to-end para detección de anomalías en tiempo real y análisis de causa raíz mediante un modelo de lenguaje pequeño fine-tuneado, ejecutándose completamente on-premise.</p>
+    <div class="hero-meta">
+      <span><span class="dot"></span> Sistema operativo en cluster real</span>
+      <span>Junio 2026</span>
+      <span>Antonio Aranda Hernández</span>
+    </div>
+  </div>
+</header>
+
+<!-- NAV -->
+<nav>
+  <div class="container">
+    <a href="#resumen">Resumen</a>
+    <a href="#arquitectura">Arquitectura</a>
+    <a href="#capa1">Capa 1 — Colector</a>
+    <a href="#capa2">Capa 2 — Detección</a>
+    <a href="#capa3">Capa 3 — RCA</a>
+    <a href="#dataset">Dataset</a>
+    <a href="#entrenamiento">Entrenamiento</a>
+    <a href="#resultados">Resultados</a>
+    <a href="#mlflow">MLflow</a>
+    <a href="#artifacts">Artefactos</a>
+    <a href="#limitaciones">Limitaciones</a>
+  </div>
+</nav>
+
+<!-- RESUMEN -->
+<section id="resumen">
+  <div class="container">
+    <h2><span class="icon">📄</span> Resumen Ejecutivo</h2>
+    <p class="section-sub">Motivación, contribución y diferencial del trabajo</p>
+
+    <p>Las plataformas Kubernetes en producción generan miles de eventos por minuto. Identificar cuándo un patrón de logs indica un fallo real — y diagnosticar su causa raíz de forma automática — es uno de los problemas no resueltos del Site Reliability Engineering moderno.</p>
+
+    <p>Las soluciones comerciales existentes (Dynatrace, Datadog, New Relic) resuelven el problema, pero envían los datos del cluster a servidores externos. Esto las hace inviables para entornos con requisitos de privacidad o regulaciones de datos.</p>
+
+    <p>Este trabajo presenta un pipeline AIOps completamente local que combina:</p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="num">4</div>
+        <h4>Capas de procesamiento</h4>
+        <p>Colección → Parsing → Detección → Diagnóstico, orquestadas en streaming en tiempo real</p>
+      </div>
+      <div class="card">
+        <div class="num">986</div>
+        <h4>Muestras de entrenamiento</h4>
+        <p>Dataset sintético de escenarios K8s cubriendo 14 categorías de fallos</p>
+      </div>
+      <div class="card">
+        <div class="num">&lt;3s</div>
+        <h4>Latencia de diagnóstico</h4>
+        <p>De anomalía detectada a causa raíz generada, corriendo en CPU sin GPU</p>
+      </div>
+      <div class="card">
+        <div class="num">0%</div>
+        <h4>Datos que salen del cluster</h4>
+        <p>Todo el procesamiento es local. Modelo, inferencia y datos on-premise</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARQUITECTURA -->
+<section id="arquitectura">
+  <div class="container">
+    <h2><span class="icon">🏗</span> Arquitectura del Sistema</h2>
+    <p class="section-sub">Pipeline de cuatro capas con flujo unidireccional de datos</p>
+
+    <div class="arch">
+      <div class="layer">
+        <div class="layer-label">Cluster K8s</div>
+        <div class="layer-content">
+          <div class="block blue">API Server</div>
+          <div class="block blue">Watch API (HTTP chunked)</div>
+          <div class="block blue">Events v1 / core/v1</div>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-label" style="color: #7eb8ff;">↓</div>
+        <div class="layer-content" style="align-items:center; color: var(--muted); font-size:12px;">resourceVersion cursor · reconnect automático · namespace scoping</div>
+      </div>
+      <div class="layer">
+        <div class="layer-label">Capa 1</div>
+        <div class="layer-content">
+          <div class="block blue">K8sCollector</div>
+          <div class="block blue">LogEntry (timestamp, ns, reason, raw)</div>
+          <div class="block blue">Drain3 Parser</div>
+          <div class="block blue">ParsedLog (template, cluster_id)</div>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-label" style="color: #7eb8ff;">↓</div>
+        <div class="layer-content" style="align-items:center; color: var(--muted); font-size:12px;">ventanas temporales de 60s · normalización L1 · vectores de frecuencia</div>
+      </div>
+      <div class="layer">
+        <div class="layer-label">Capa 2</div>
+        <div class="layer-content">
+          <div class="block purple">WindowBuilder</div>
+          <div class="block purple">WindowData (feature vector)</div>
+          <div class="block purple">Isolation Forest</div>
+          <div class="block purple">ScoredWindow (score 0-1, PCA)</div>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-label" style="color: #7eb8ff;">↓</div>
+        <div class="layer-content" style="align-items:center; color: var(--muted); font-size:12px;">solo si score ≥ 0.80 · threshold configurable</div>
+      </div>
+      <div class="layer">
+        <div class="layer-label">Capa 3</div>
+        <div class="layer-content">
+          <div class="block green">OllamaRCA</div>
+          <div class="block green">k8s-rca-slm (Q8_0, 1.6GB)</div>
+          <div class="block green">DiagnosisResult (ROOT CAUSE + KUBECTL)</div>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="layer-label" style="color: #7eb8ff;">↓</div>
+        <div class="layer-content" style="align-items:center; color: var(--muted); font-size:12px;">WebSocket · event bus · dashboard en tiempo real</div>
+      </div>
+      <div class="layer">
+        <div class="layer-label">Salida</div>
+        <div class="layer-content">
+          <div class="block orange">Web Dashboard (FastAPI + WS)</div>
+          <div class="block orange">MLflow Tracking</div>
+          <div class="block orange">Alertas + kubectl commands</div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Stack tecnológico</h3>
+    <div class="stack">
+      <span class="pill">Python 3.12</span>
+      <span class="pill">Kubernetes Python SDK</span>
+      <span class="pill">Drain3 0.9.11</span>
+      <span class="pill">scikit-learn 1.4</span>
+      <span class="pill">FastAPI</span>
+      <span class="pill">WebSockets</span>
+      <span class="pill">Ollama</span>
+      <span class="pill">MLflow 2.13</span>
+      <span class="pill">unsloth</span>
+      <span class="pill">TRL / SFTTrainer</span>
+      <span class="pill">HuggingFace Hub</span>
+      <span class="pill">llama.cpp (GGUF)</span>
+    </div>
+  </div>
+</section>
+
+<!-- CAPA 1 -->
+<section id="capa1">
+  <div class="container">
+    <h2><span class="icon">📡</span> Capa 1 — Colección y Parsing de Logs</h2>
+    <p class="section-sub">Watch API de Kubernetes + Drain3 para parsing online de templates</p>
+
+    <h3>Watch API</h3>
+    <p>A diferencia del polling periódico, la Watch API de Kubernetes mantiene una conexión HTTP chunked abierta indefinidamente. El API Server escribe un objeto JSON por línea conforme ocurren eventos en el cluster, sin necesidad de que el cliente vuelva a preguntar.</p>
+
+    <p>El campo <code>resourceVersion</code> actúa como cursor de posición en el stream. Si la conexión se interrumpe, el colector reconecta usando el último <code>resourceVersion</code> conocido, garantizando entrega at-least-once sin perder eventos.</p>
+
+    <pre><span class="comment"># Ejemplo de evento recibido por Watch API</span>
+{
+  <span class="string">"type"</span>: <span class="string">"ADDED"</span>,
+  <span class="string">"object"</span>: {
+    <span class="string">"reason"</span>: <span class="string">"BackOff"</span>,
+    <span class="string">"message"</span>: <span class="string">"Back-off restarting failed container nginx in pod nginx-7d4f9c-xp2lm_production"</span>,
+    <span class="string">"involvedObject"</span>: { <span class="string">"namespace"</span>: <span class="string">"production"</span>, <span class="string">"name"</span>: <span class="string">"nginx-7d4f9c-xp2lm"</span> },
+    <span class="string">"metadata"</span>: { <span class="string">"resourceVersion"</span>: <span class="string">"1847392"</span> }
+  }
+}</pre>
+
+    <h3>Drain3 — Parsing Online de Templates</h3>
+    <p>Los mensajes de log de Kubernetes contienen tokens variables (IPs, UUIDs, nombres de pods, números de restart). Drain3 agrupa logs semánticamente similares en templates, reemplazando los tokens variables por <code>&lt;*&gt;</code>.</p>
+
+    <div class="cards">
+      <div class="card">
+        <h4>Algoritmo</h4>
+        <p>Árbol de prefijos con profundidad 4. Similitud calculada como tokens coincidentes / tokens totales ≥ 0.4</p>
+      </div>
+      <div class="card">
+        <h4>Output</h4>
+        <p>Cada log produce un <code>cluster_id</code> entero que identifica su template. Este ID es el feature del detector</p>
+      </div>
+      <div class="card">
+        <h4>Online</h4>
+        <p>No requiere batch previo. Los templates se crean y actualizan conforme llegan logs, sin reentrenamiento</p>
+      </div>
+    </div>
+
+    <pre><span class="comment"># Raw log → Template Drain3</span>
+<span class="comment"># Input:</span>
+<span class="string">"Back-off restarting failed container nginx in pod nginx-7d4f9c-xp2lm_production"</span>
+<span class="comment"># Output:</span>
+template  = <span class="string">"Back-off restarting failed container &lt;*&gt; in pod &lt;*&gt;"</span>
+cluster_id = <span class="num-literal">42</span></pre>
+  </div>
+</section>
+
+<!-- CAPA 2 -->
+<section id="capa2">
+  <div class="container">
+    <h2><span class="icon">🔍</span> Capa 2 — Detección de Anomalías</h2>
+    <p class="section-sub">Isolation Forest no supervisado con reentrenamiento continuo</p>
+
+    <h3>Ventanas Temporales</h3>
+    <p>Los logs se agrupan en ventanas de 60 segundos. Cada ventana se convierte en un vector de frecuencias — cuántas veces apareció cada cluster_id de Drain3 en ese intervalo. El vector se normaliza con L1 para hacer la comparación invariante al volumen de eventos.</p>
+
+    <h3>Isolation Forest</h3>
+    <p>El Isolation Forest detecta anomalías sin necesidad de ejemplos etiquetados. La intuición es que los puntos anómalos son estadísticamente escasos y se aíslan con pocos cortes aleatorios en el espacio de features, mientras que el comportamiento normal (denso) requiere muchos más cortes para aislarse.</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Parámetro</th><th>Valor</th><th>Justificación</th></tr>
+        <tr><td><code>n_estimators</code></td><td>200</td><td>Balance precisión/velocidad; más árboles = menor varianza</td></tr>
+        <tr><td><code>contamination</code></td><td>0.05</td><td>Asumimos ≤5% de ventanas anómalas en operación normal</td></tr>
+        <tr><td><code>threshold</code></td><td>0.80</td><td>Score normalizado 0-1; >0.80 dispara alerta</td></tr>
+        <tr><td><code>bootstrap_windows</code></td><td>10</td><td>Ventanas iniciales para construir baseline antes de detectar</td></tr>
+        <tr><td><code>rolling_window_size</code></td><td>50</td><td>Ventanas recientes para reentrenamiento (ventana deslizante)</td></tr>
+        <tr><td><code>retrain_every_n</code></td><td>5</td><td>Reentrenar IF cada 5 ventanas nuevas (adapta al drift)</td></tr>
+      </table>
+    </div>
+
+    <h3>Tres Fases de Operación</h3>
+    <div class="cards">
+      <div class="card">
+        <h4>1. Bootstrap</h4>
+        <p>Las primeras 10 ventanas se acumulan asumiendo comportamiento normal. El modelo IF se entrena por primera vez con este baseline.</p>
+      </div>
+      <div class="card">
+        <h4>2. Detección</h4>
+        <p>Cada nueva ventana se puntúa (0-1). Si score ≥ 0.80, se dispara la Capa 3 de diagnóstico.</p>
+      </div>
+      <div class="card">
+        <h4>3. Reentrenamiento</h4>
+        <p>Cada 5 ventanas, el IF se reentrena con las últimas 50 (ventana deslizante). Adapta el modelo al drift sin olvidar el pasado reciente.</p>
+      </div>
+    </div>
+
+    <p>Adicionalmente, se aplica PCA 2D sobre el training set en cada reentrenamiento para proyectar las ventanas en un espacio visualizable, permitiendo monitorizar clusters de comportamiento en el dashboard.</p>
+  </div>
+</section>
+
+<!-- CAPA 3 -->
+<section id="capa3">
+  <div class="container">
+    <h2><span class="icon">🧠</span> Capa 3 — Diagnóstico con SLM Fine-tuneado</h2>
+    <p class="section-sub">Qwen2.5-1.5B-Instruct con QLoRA, convertido a GGUF Q8_0 para inferencia en CPU</p>
+
+    <h3>Selección del Modelo Base</h3>
+    <p>Se eligió <strong>Qwen2.5-1.5B-Instruct</strong> como modelo base por tres razones: (1) tamaño suficientemente pequeño para inferencia en CPU a velocidad aceptable, (2) capacidad de seguir instrucciones estructuradas desde el primer momento, y (3) excelente soporte del formato ChatML que facilita el fine-tuning con datos de conversación.</p>
+
+    <h3>Proceso de Fine-tuning (QLoRA)</h3>
+    <p>El fine-tuning se realizó en una GPU NVIDIA A30 (24GB VRAM) utilizando QLoRA — cuantización 4-bit NF4 del modelo base con adaptadores LoRA entrenables sobre los módulos de atención y proyección.</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Hiperparámetro</th><th>Valor</th></tr>
+        <tr><td>LoRA rank (r)</td><td>16</td></tr>
+        <tr><td>LoRA alpha</td><td>32 (ratio alpha/r = 2)</td></tr>
+        <tr><td>LoRA dropout</td><td>0.05</td></tr>
+        <tr><td>Target modules</td><td>q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj</td></tr>
+        <tr><td>Batch efectivo</td><td>16 (batch_size=4 × grad_accum=4)</td></tr>
+        <tr><td>Learning rate</td><td>2×10⁻⁴ con cosine scheduler</td></tr>
+        <tr><td>Épocas</td><td>3</td></tr>
+        <tr><td>Parámetros entrenables</td><td>~5M de 1.5B (1.6%)</td></tr>
+        <tr><td>Duración</td><td>~8 minutos en A30</td></tr>
+        <tr><td>Framework</td><td>unsloth + TRL SFTTrainer</td></tr>
+      </table>
+    </div>
+
+    <h3>Cuantización a GGUF</h3>
+    <p>Los adaptadores LoRA se fusionan con el modelo base y se cuantizan a GGUF Q8_0 (1.6GB) para inferencia con Ollama/llama.cpp en CPU. Se evaluó también Q4_K_M (941MB) pero produjo degradación severa de calidad en modelos de 1.5B — respuestas repetitivas, mezcla de idiomas y no adherencia al formato. Q8_0 es el nivel mínimo efectivo para este tamaño de modelo.</p>
+
+    <h3>Formato de Respuesta</h3>
+    <p>El modelo genera respuestas estructuradas en dos partes obligatorias:</p>
+    <pre>ROOT CAUSE: [diagnóstico de la causa raíz en lenguaje natural]
+KUBECTL: kubectl [comando exacto para investigar o mitigar]</pre>
+  </div>
+</section>
+
+<!-- DATASET -->
+<section id="dataset">
+  <div class="container">
+    <h2><span class="icon">📊</span> Dataset de Fine-tuning</h2>
+    <p class="section-sub">986 muestras sintéticas en formato ChatML cubriendo 14 categorías de fallos K8s</p>
+
+    <p>El dataset se generó programáticamente simulando escenarios reales de Kubernetes. Cada muestra sigue el formato de tres turnos (system / user / assistant) en ChatML, que es el formato de conversación nativo de Qwen2.5.</p>
+
+    <h3>Escenarios cubiertos</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Categoría</th><th>Descripción</th><th>Ejemplo de señal</th></tr>
+        <tr><td>CrashLoopBackOff</td><td>Pod reiniciándose repetidamente</td><td>restartCount > 5</td></tr>
+        <tr><td>OOMKilled</td><td>Pod terminado por falta de memoria</td><td>exit code 137</td></tr>
+        <tr><td>ImagePullBackOff</td><td>Fallo al descargar imagen Docker</td><td>ErrImagePull</td></tr>
+        <tr><td>Pending (recursos)</td><td>Pod sin nodo disponible</td><td>Insufficient cpu/memory</td></tr>
+        <tr><td>Pending (taints)</td><td>Pod bloqueado por taints del nodo</td><td>NoSchedule</td></tr>
+        <tr><td>Evicted</td><td>Pod expulsado por presión de disco/memoria</td><td>DiskPressure</td></tr>
+        <tr><td>Network policy</td><td>Tráfico bloqueado por NetworkPolicy</td><td>ECONNREFUSED</td></tr>
+        <tr><td>DNS failure</td><td>Resolución DNS fallida</td><td>dial tcp: lookup</td></tr>
+        <tr><td>Service endpoint</td><td>Service sin endpoints activos</td><td>no endpoints available</td></tr>
+        <tr><td>PVC unbound</td><td>Volumen persistente sin PV</td><td>ProvisioningFailed</td></tr>
+        <tr><td>ConfigMap missing</td><td>ConfigMap referenciado inexistente</td><td>configmap not found</td></tr>
+        <tr><td>Secret missing</td><td>Secret referenciado inexistente</td><td>secret not found</td></tr>
+        <tr><td>Node NotReady</td><td>Nodo sin comunicación con el plano de control</td><td>NodeNotReady</td></tr>
+        <tr><td>Probe failure</td><td>Liveness/readiness probe fallando</td><td>Unhealthy</td></tr>
+      </table>
+    </div>
+
+    <h3>Métricas de calidad del dataset</h3>
+    <div class="cards">
+      <div class="card">
+        <div class="num">0.82</div>
+        <h4>Diversidad semántica</h4>
+        <p>Distancia coseno media TF-IDF entre pares. >0.5 indica alta diversidad</p>
+      </div>
+      <div class="card">
+        <div class="num">&lt;2%</div>
+        <h4>Near-duplicados</h4>
+        <p>Pares con distancia coseno < 0.1. Muy por debajo del umbral problemático (15%)</p>
+      </div>
+      <div class="card">
+        <div class="num">47</div>
+        <h4>Patrones kubectl únicos</h4>
+        <p>Combinaciones distintas de verbo+recurso+flags en las respuestas</p>
+      </div>
+      <div class="card">
+        <div class="num">0.24</div>
+        <h4>Type-Token Ratio</h4>
+        <p>Vocabulario único / total palabras. Indica riqueza léxica en las respuestas</p>
+      </div>
+    </div>
+
+    <p>Dataset disponible públicamente en HuggingFace: <a href="https://huggingface.co/datasets/aaranda233/k8s-rca-dataset" target="_blank">aaranda233/k8s-rca-dataset</a></p>
+  </div>
+</section>
+
+<!-- ENTRENAMIENTO -->
+<section id="entrenamiento">
+  <div class="container">
+    <h2><span class="icon">📈</span> Curva de Entrenamiento</h2>
+    <p class="section-sub">Loss y learning rate a lo largo de los 186 steps (3 épocas)</p>
+
+    <div class="chart-wrap">
+      <div class="chart-title">Training Loss y Learning Rate</div>
+      <div class="chart-sub">Convergencia estable con cosine scheduler · Loss inicial 0.80 → Loss final 0.09</div>
+      <canvas id="lossChart" height="120"></canvas>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Step</th><th>Época</th><th>Train Loss</th><th>Learning Rate</th><th>Grad Norm</th></tr>
+        <tr><td>10</td><td>0.16</td><td>0.7994</td><td>1.80×10⁻⁴</td><td>0.414</td></tr>
+        <tr><td>20</td><td>0.32</td><td>0.3536</td><td>1.99×10⁻⁴</td><td>0.213</td></tr>
+        <tr><td>30</td><td>0.49</td><td>0.1749</td><td>1.94×10⁻⁴</td><td>0.245</td></tr>
+        <tr><td>60</td><td>0.97</td><td>0.0979</td><td>1.64×10⁻⁴</td><td>0.118</td></tr>
+        <tr><td>100</td><td>1.62</td><td>0.0910</td><td>9.82×10⁻⁵</td><td>0.154</td></tr>
+        <tr><td>150</td><td>2.42</td><td>0.0894</td><td>2.10×10⁻⁵</td><td>0.081</td></tr>
+        <tr><td>180</td><td>2.91</td><td>0.0898</td><td>7.80×10⁻⁷</td><td>0.070</td></tr>
+      </table>
+    </div>
+
+    <p>El run de entrenamiento completo está registrado en MLflow (experimento <code>k8s-aiops-finetune</code>) incluyendo todos los hiperparámetros, métricas por step y tags de trazabilidad al modelo en HuggingFace.</p>
+  </div>
+</section>
+
+<!-- RESULTADOS -->
+<section id="resultados">
+  <div class="container">
+    <h2><span class="icon">✅</span> Evaluación Cualitativa</h2>
+    <p class="section-sub">Tests con escenarios no presentes en el dataset de entrenamiento · CPU Intel Xeon Gold 6526Y</p>
+
+    <div class="test-card">
+      <div class="test-header">
+        <span class="title">Test 1 — CrashLoopBackOff + ECONNREFUSED</span>
+        <span class="meta">
+          <span>⏱ 2.6s (cold start)</span>
+          <span class="tag green">CORRECTO</span>
+        </span>
+      </div>
+      <div class="test-body">
+        <div class="test-input">
+          <label>Input</label>
+          <div class="content">Pod nginx-deployment-7d9f8b6c4-xk2lp in namespace production is in CrashLoopBackOff. Logs show: Error: ECONNREFUSED 10.96.0.1:443. The pod has restarted 8 times in the last 10 minutes.</div>
+        </div>
+        <div class="test-output">
+          <div class="test-output-item cause">
+            <label>Root Cause</label>
+            <div class="content">El pod nginx-deployment no está recibiendo tráfico porque el Service production-noip no responde. El endpoint de servicios está vacío o mal formado.</div>
+          </div>
+          <div class="test-output-item kubectl">
+            <label>KUBECTL</label>
+            <div class="content">kubectl get endpoints production -n production</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <div class="test-header">
+        <span class="title">Test 2 — OOMKilled + Memory Pressure en Nodo</span>
+        <span class="meta">
+          <span>⏱ 0.75s (warm)</span>
+          <span class="tag green">CORRECTO</span>
+        </span>
+      </div>
+      <div class="test-body">
+        <div class="test-input">
+          <label>Input</label>
+          <div class="content">Multiple pods in namespace monitoring are being OOMKilled. prometheus-0 restarted 5 times, grafana-7d4f9c-xp2lm restarted 3 times. Node kube-worker-02 shows memory pressure. kubectl top nodes shows kube-worker-02 at 94% memory.</div>
+        </div>
+        <div class="test-output">
+          <div class="test-output-item cause">
+            <label>Root Cause</label>
+            <div class="content">Memory pressure en el nodo kube-worker-02. Probablemente algún pod está consumiendo más memoria de la permitida. Los pods sin PriorityClass son los primeros en ser eliminados por K8s.</div>
+          </div>
+          <div class="test-output-item kubectl">
+            <label>KUBECTL</label>
+            <div class="content">kubectl describe node kube-worker-02 | grep -A10 'Allocated resources'</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <div class="test-header">
+        <span class="title">Test 3 — ImagePullBackOff · Registry privado</span>
+        <span class="meta">
+          <span>⏱ ~1s (warm)</span>
+          <span class="tag green">CORRECTO</span>
+        </span>
+      </div>
+      <div class="test-body">
+        <div class="test-input">
+          <label>Input</label>
+          <div class="content">Pod api-server-6d4f8c-kl9mp in namespace staging is in ImagePullBackOff. Event: Failed to pull image "ghcr.io/company/api:v2.1.0": rpc error: code = Unknown, unauthorized: authentication required.</div>
+        </div>
+        <div class="test-output">
+          <div class="test-output-item cause">
+            <label>Root Cause</label>
+            <div class="content">Fallo de autenticación contra el registry privado ghcr.io. El imagePullSecret no está configurado en el namespace staging o las credenciales han expirado.</div>
+          </div>
+          <div class="test-output-item kubectl">
+            <label>KUBECTL</label>
+            <div class="content">kubectl get secrets -n staging | grep registry</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Rendimiento de inferencia en CPU</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Estado del modelo</th><th>Latencia</th><th>Hardware</th></tr>
+        <tr><td>Cold start (primera llamada)</td><td>2.6s</td><td>Intel Xeon Gold 6526Y · 4 cores · 13GB RAM</td></tr>
+        <tr><td>Warm (modelo en memoria)</td><td>0.75s</td><td>Idem</td></tr>
+        <tr><td>Modelo descargado automáticamente</td><td>—</td><td>Tras 5 min sin peticiones (Ollama KEEP_ALIVE)</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- MLFLOW -->
+<section id="mlflow">
+  <div class="container">
+    <h2><span class="icon">📉</span> Tracking con MLflow</h2>
+    <p class="section-sub">Trazabilidad completa del pipeline de detección y del fine-tuning</p>
+
+    <p>El pipeline registra automáticamente cada ejecución en MLflow. Se crearon dos experimentos separados:</p>
+
+    <div class="cards">
+      <div class="card">
+        <h4>k8s-aiops</h4>
+        <p>Un run por ejecución del pipeline. Registra configuración inicial como params, y por cada ventana: score, is_anomaly, log_count, template_count, pca_x/y. Por cada reentrenamiento del IF: model_version, training_size, n_features. Por cada RCA: anomaly_score, latency_s y tags con root_cause y kubectl.</p>
+      </div>
+      <div class="card">
+        <h4>k8s-aiops-finetune</h4>
+        <p>Run único con el historial completo del entrenamiento QLoRA: 18 hiperparámetros, curva de loss/lr/grad_norm por step (10→180), métricas finales y tags de trazabilidad al modelo en HuggingFace.</p>
+      </div>
+    </div>
+
+    <p>La integración es no-op si MLflow no está disponible — el pipeline no falla. Controlable con la variable de entorno <code>MLFLOW_ENABLED=false</code>.</p>
+  </div>
+</section>
+
+<!-- ARTIFACTS -->
+<section id="artifacts">
+  <div class="container">
+    <h2><span class="icon">📦</span> Artefactos Públicos</h2>
+    <p class="section-sub">Todo el trabajo es reproducible desde cero con los siguientes recursos</p>
+
+    <div class="artifact-grid">
+      <div class="artifact">
+        <div class="artifact-icon">⚙️</div>
+        <div>
+          <h4>Código fuente</h4>
+          <p>Pipeline completo: colector, parser, detector, diagnostics, web dashboard, MLflow tracking</p>
+          <a href="https://github.com/aaranda233/k8s-aiops" target="_blank">github.com/aaranda233/k8s-aiops</a>
+        </div>
+      </div>
+      <div class="artifact">
+        <div class="artifact-icon">🤖</div>
+        <div>
+          <h4>Modelo fine-tuneado</h4>
+          <p>Qwen2.5-1.5B QLoRA · adaptadores LoRA + GGUF Q8_0 (1.6GB) listo para Ollama</p>
+          <a href="https://huggingface.co/aaranda233/k8s-rca-slm" target="_blank">huggingface.co/aaranda233/k8s-rca-slm</a>
+        </div>
+      </div>
+      <div class="artifact">
+        <div class="artifact-icon">📁</div>
+        <div>
+          <h4>Dataset de entrenamiento</h4>
+          <p>986 muestras ChatML · 14 categorías de fallos K8s · formato HuggingFace datasets</p>
+          <a href="https://huggingface.co/datasets/aaranda233/k8s-rca-dataset" target="_blank">huggingface.co/datasets/aaranda233/k8s-rca-dataset</a>
+        </div>
+      </div>
+      <div class="artifact">
+        <div class="artifact-icon">📄</div>
+        <div>
+          <h4>Documentación técnica</h4>
+          <p>RESEARCH.md (pipeline completo) · RESEARCH_DETECTION.md (algoritmos de detección)</p>
+          <a href="https://github.com/aaranda233/k8s-aiops/blob/main/RESEARCH.md" target="_blank">RESEARCH.md en GitHub</a>
+        </div>
+      </div>
+    </div>
+
+    <h3>Reproducir el fine-tuning desde cero</h3>
+    <pre><span class="comment"># 1. Clonar el repositorio</span>
+git clone https://github.com/aaranda233/k8s-aiops
+cd k8s-aiops
+
+<span class="comment"># 2. Construir la imagen Docker (requiere GPU NVIDIA, CUDA 12.4+)</span>
+docker build -t k8s-rca-finetune finetune/
+
+<span class="comment"># 3. Lanzar el entrenamiento (~8 min en A30 24GB)</span>
+docker run --gpus all --rm \
+  -v $(pwd)/finetune/output:/workspace/output \
+  k8s-rca-finetune \
+  python train.py --dataset output/combined.jsonl --epochs 3
+
+<span class="comment"># 4. Registrar en Ollama</span>
+ollama create k8s-rca-slm -f finetune/Modelfile</pre>
+  </div>
+</section>
+
+<!-- LIMITACIONES -->
+<section id="limitaciones">
+  <div class="container">
+    <h2><span class="icon">⚠️</span> Limitaciones y Trabajo Futuro</h2>
+    <p class="section-sub">Puntos de mejora identificados para la versión final del paper</p>
+
+    <div class="limitation">
+      <strong>Sin conjunto de evaluación (eval split):</strong> El entrenamiento no reservó un subconjunto de validación. El train_loss de 0.09 no puede distinguirse formalmente de memorización sin un eval_loss de referencia. Trabajo futuro: split 80/20 con early stopping sobre eval_loss.
+    </div>
+    <div class="limitation">
+      <strong>Sin baseline de comparación:</strong> No se midió la diferencia entre el modelo fine-tuneado y el modelo base (Qwen2.5-1.5B sin fine-tuning) sobre los mismos escenarios. Esta comparación es necesaria para cuantificar la contribución del fine-tuning y es el experimento más importante pendiente.
+    </div>
+    <div class="limitation">
+      <strong>Dataset 100% sintético:</strong> Los 986 samples fueron generados programáticamente. Los patrones de fallo reales en producción pueden diferir de los simulados. Trabajo futuro: incorporar logs reales anonimizados del cluster.
+    </div>
+    <div class="limitation">
+      <strong>Evaluación cualitativa limitada:</strong> Solo se evaluaron 3 escenarios manualmente. Trabajo futuro: evaluación cuantitativa sobre un held-out set con métricas de tarea (ROUGE-L sobre root_cause, exact match de verbo kubectl).
+    </div>
+
+    <h3>Roadmap</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Mejora</th><th>Prioridad</th><th>Impacto estimado</th></tr>
+        <tr><td>Eval split + early stopping</td><td><span class="tag green">Alta</span></td><td>Valida generalization vs memorización</td></tr>
+        <tr><td>Baseline comparación modelo base</td><td><span class="tag green">Alta</span></td><td>Cuantifica contribución del fine-tuning</td></tr>
+        <tr><td>Benchmark vs GPT-4o / Claude</td><td><span class="tag yellow">Media</span></td><td>Posiciona el SLM vs modelos grandes</td></tr>
+        <tr><td>Logs reales en dataset</td><td><span class="tag yellow">Media</span></td><td>Mejora generalización en producción</td></tr>
+        <tr><td>Helm chart para despliegue K8s-native</td><td><span class="tag blue">Baja</span></td><td>Facilita adopción</td></tr>
+        <tr><td>CLI / framework instalable via pip</td><td><span class="tag blue">Baja</span></td><td>Reduce fricción de uso</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>K8s-AIOps · Antonio Aranda Hernández · Junio 2026</p>
+    <p style="margin-top:8px;">
+      <a href="https://github.com/aaranda233/k8s-aiops">GitHub</a> ·
+      <a href="https://huggingface.co/aaranda233/k8s-rca-slm">HuggingFace Model</a> ·
+      <a href="https://huggingface.co/datasets/aaranda233/k8s-rca-dataset">HuggingFace Dataset</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+const steps = [10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180];
+const loss  = [0.7994,0.3536,0.1749,0.1294,0.1114,0.0979,0.0971,0.1016,0.0864,0.0910,0.0862,0.0881,0.0929,0.0844,0.0894,0.0820,0.0866,0.0898];
+const lr    = [0.00018,0.000199,0.000194,0.000187,0.000177,0.000164,0.000149,0.000133,0.000116,0.0000982,0.0000805,0.0000634,0.0000474,0.0000332,0.0000210,0.0000114,0.00000457,0.000000780];
+
+const ctx = document.getElementById('lossChart').getContext('2d');
+new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: steps,
+    datasets: [
+      {
+        label: 'Train Loss',
+        data: loss,
+        borderColor: '#4f8ef7',
+        backgroundColor: 'rgba(79,142,247,0.08)',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: '#4f8ef7',
+        tension: 0.3,
+        yAxisID: 'y',
+        fill: true,
+      },
+      {
+        label: 'Learning Rate',
+        data: lr,
+        borderColor: '#7c5cf6',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 2,
+        pointBackgroundColor: '#7c5cf6',
+        borderDash: [4, 3],
+        tension: 0.3,
+        yAxisID: 'y1',
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        labels: { color: '#8892a4', font: { size: 12 } }
+      },
+      tooltip: {
+        backgroundColor: '#1e2535',
+        borderColor: '#2a3348',
+        borderWidth: 1,
+        titleColor: '#e2e8f0',
+        bodyColor: '#8892a4',
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: 'rgba(42,51,72,0.5)' },
+        ticks: { color: '#8892a4', font: { size: 11 } },
+        title: { display: true, text: 'Step', color: '#8892a4', font: { size: 12 } }
+      },
+      y: {
+        grid: { color: 'rgba(42,51,72,0.5)' },
+        ticks: { color: '#8892a4', font: { size: 11 } },
+        title: { display: true, text: 'Train Loss', color: '#4f8ef7', font: { size: 12 } },
+        min: 0,
+      },
+      y1: {
+        position: 'right',
+        grid: { drawOnChartArea: false },
+        ticks: {
+          color: '#7c5cf6',
+          font: { size: 11 },
+          callback: v => v.toExponential(1)
+        },
+        title: { display: true, text: 'Learning Rate', color: '#7c5cf6', font: { size: 12 } },
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>
