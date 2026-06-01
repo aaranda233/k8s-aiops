@@ -112,11 +112,21 @@ def train(args: argparse.Namespace) -> None:
     print("[3/4] Preparando dataset...")
     dataset = load_dataset_from_jsonl(args.dataset)
 
-    # SFTTrainer con chat_template aplica el template del tokenizer automáticamente
-    # cuando el campo es 'messages'. Qwen2.5 y Phi-3 tienen templates compatibles.
-
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Formatear cada sample al formato chat del tokenizer (Qwen2.5 usa chatml).
+    # Unsloth testea con un ejemplo único (dict) y luego llama con batches (dict de listas).
+    def formatting_func(examples):
+        messages = examples["messages"]
+        # Single example: messages = [{role, content}, ...] (lista de dicts)
+        # Batch:          messages = [[{...}, ...], [{...}, ...]] (lista de listas)
+        if isinstance(messages[0], dict):
+            return [tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)]
+        return [
+            tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
+            for msgs in messages
+        ]
 
     sft_config = SFTConfig(
         output_dir              = str(output_dir),
@@ -125,7 +135,7 @@ def train(args: argparse.Namespace) -> None:
         gradient_accumulation_steps = args.grad_accum,
         learning_rate           = args.lr,
         lr_scheduler_type       = "cosine",
-        warmup_ratio            = 0.05,
+        warmup_steps            = 10,
         fp16                    = False,
         bf16                    = True,         # A30 soporta bfloat16
         optim                   = "adamw_8bit", # bitsandbytes 8-bit — menos VRAM
@@ -137,15 +147,15 @@ def train(args: argparse.Namespace) -> None:
         load_best_model_at_end  = False,
         report_to               = "none",       # sin wandb
         seed                    = 42,
-        # Formato chat — SFTTrainer formatea 'messages' con el chat_template
-        dataset_text_field      = None,
+        dataset_text_field      = "",           # usamos formatting_func
     )
 
     trainer = SFTTrainer(
-        model         = model,
-        tokenizer     = tokenizer,
-        train_dataset = dataset,
-        args          = sft_config,
+        model             = model,
+        tokenizer         = tokenizer,
+        train_dataset     = dataset,
+        formatting_func   = formatting_func,
+        args              = sft_config,
     )
 
     # ── 4. Entrenar ───────────────────────────────────────────────────────────
