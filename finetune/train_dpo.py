@@ -100,11 +100,16 @@ def train(args: argparse.Namespace) -> None:
     print(f"  Output     : {args.output}")
     print("═" * 60 + "\n")
 
-    from unsloth import FastLanguageModel, PatchDPOTrainer
     from trl import DPOTrainer, DPOConfig
 
-    # Parche de unsloth para DPOTrainer (necesario para el acelerado 2x)
-    PatchDPOTrainer()
+    # Intentar parche de unsloth (acelera 2x) — ignorar si hay incompatibilidad de versiones
+    try:
+        from unsloth import FastLanguageModel, PatchDPOTrainer
+        PatchDPOTrainer()
+        print("  [unsloth] PatchDPOTrainer activado.")
+    except Exception as e:
+        print(f"  [unsloth] PatchDPOTrainer no disponible ({e}) — usando TRL estándar.")
+        from unsloth import FastLanguageModel
 
     # ── 1. Cargar modelo SFT (punto de partida del DPO) ──────────────────────
     print("[1/4] Cargando modelo SFT con QLoRA 4-bit...")
