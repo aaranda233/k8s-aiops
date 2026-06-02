@@ -243,6 +243,9 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     )
     merged = PeftModel.from_pretrained(base, lora_path)
     merged = merged.merge_and_unload()
+    # Limpiar flag PEFT para que save_pretrained no intente guardar como adapter
+    if hasattr(merged, "_hf_peft_config_loaded"):
+        merged._hf_peft_config_loaded = False
     merged.save_pretrained(str(tmp_dir))
     tokenizer.save_pretrained(str(tmp_dir))
     del merged, base
