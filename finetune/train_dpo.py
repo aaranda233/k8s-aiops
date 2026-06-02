@@ -43,12 +43,22 @@ def parse_args() -> argparse.Namespace:
 
 # ── Carga y formateo del dataset DPO ─────────────────────────────────────────
 
+def _apply_chatml(messages: list[dict], add_generation_prompt: bool = False) -> str:
+    """Aplica el formato ChatML de Qwen2.5 manualmente (sin depender de tokenizer.chat_template)."""
+    result = ""
+    for msg in messages:
+        result += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+    if add_generation_prompt:
+        result += "<|im_start|>assistant\n"
+    return result
+
+
 def load_dpo_dataset(path: str, tokenizer):
     """
     Carga el JSONL de pares DPO y los formatea para TRL DPOTrainer.
 
     TRL espera tres campos string:
-      prompt   = system + user formateados con chat template (add_generation_prompt=True)
+      prompt   = system + user en ChatML (con marcador de assistant al final)
       chosen   = solo el contenido del assistant correcto
       rejected = solo el contenido del assistant incorrecto
     """
@@ -62,16 +72,19 @@ def load_dpo_dataset(path: str, tokenizer):
                 continue
             sample = json.loads(line)
 
-            prompt_msgs  = sample["prompt"]   # [system, user]
-            chosen_msgs  = sample["chosen"]   # [assistant_correct]
-            rejected_msgs = sample["rejected"] # [assistant_wrong]
+            prompt_msgs   = sample["prompt"]    # [system, user]
+            chosen_msgs   = sample["chosen"]    # [assistant_correct]
+            rejected_msgs = sample["rejected"]  # [assistant_wrong]
 
-            # Formatear prompt hasta el turno del assistant (inclusive el marcador)
-            prompt_str = tokenizer.apply_chat_template(
-                prompt_msgs,
-                tokenize=False,
-                add_generation_prompt=True,  # añade <|im_start|>assistant\n
-            )
+            # Intentar apply_chat_template; fallback a ChatML manual
+            try:
+                prompt_str = tokenizer.apply_chat_template(
+                    prompt_msgs,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except (ValueError, AttributeError):
+                prompt_str = _apply_chatml(prompt_msgs, add_generation_prompt=True)
 
             chosen_str   = chosen_msgs[0]["content"]
             rejected_str = rejected_msgs[0]["content"]
