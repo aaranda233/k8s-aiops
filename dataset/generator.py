@@ -190,10 +190,42 @@ def generate(
 
 
 if __name__ == "__main__":
-    base = Path(__file__).parent
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--samples",    type=int,   default=70,
+                   help="Muestras por escenario (default: 70)")
+    p.add_argument("--seed",       type=int,   default=42)
+    p.add_argument("--output",     default="dataset/output/train.jsonl")
+    p.add_argument("--val-split",  type=float, default=0.15,
+                   help="Fraccion de muestras para validacion (default: 0.15)")
+    p.add_argument("--scenarios",  default="dataset/scenarios")
+    args = p.parse_args()
+
+    out_path = Path(args.output)
     n = generate(
-        scenarios_dir=base / "scenarios",
-        output_path=base / "output" / "synthetic.jsonl",
-        samples_per_scenario=30,
+        scenarios_dir=Path(args.scenarios),
+        output_path=out_path,
+        samples_per_scenario=args.samples,
+        seed=args.seed,
     )
-    print(f"Generados {n} samples → dataset/output/synthetic.jsonl")
+
+    # Split train/val desde el JSONL generado
+    if args.val_split > 0:
+        random.seed(args.seed + 1)
+        all_lines = out_path.read_text().splitlines()
+        random.shuffle(all_lines)
+        n_val   = max(1, int(len(all_lines) * args.val_split))
+        n_train = len(all_lines) - n_val
+
+        val_path   = out_path.parent / (out_path.stem + "_val.jsonl")
+        train_path = out_path.parent / (out_path.stem + "_train.jsonl")
+
+        val_path.write_text("\n".join(all_lines[:n_val]) + "\n")
+        train_path.write_text("\n".join(all_lines[n_val:]) + "\n")
+
+        print(f"Generados {n} samples → train: {n_train}  val: {n_val}")
+        print(f"  Train : {train_path}")
+        print(f"  Val   : {val_path}")
+    else:
+        print(f"Generados {n} samples → {out_path}")
