@@ -38,8 +38,8 @@ OUTPUT_PATH = PROJECT_ROOT / "dataset" / "output" / "dpo_dataset.jsonl"
 STATS_PATH  = PROJECT_ROOT / "dataset" / "output" / "dpo_stats.json"
 
 DRAFT_MODEL   = "qwen2.5:1.5b"
-ROUGE_FILTER  = 0.8    # descartar si chosen ≈ rejected
-KEYWORD_ALL   = 2      # descartar si rejected tiene ≥ N keywords del escenario
+ROUGE_FILTER    = 0.8   # descartar si chosen ≈ rejected (texto casi idéntico)
+KEYWORD_RATIO   = 0.75  # descartar si rejected acierta > 75% de las keywords del escenario
 
 
 # ── Inferencia ────────────────────────────────────────────────────────────────
@@ -65,10 +65,13 @@ def _extract_root_cause(text: str) -> str:
     return text[:200]  # fallback: primeros 200 chars si no parsea
 
 
-def _keyword_hits(text: str, scenario_id: str) -> int:
+def _keyword_ratio(text: str, scenario_id: str) -> float:
     keywords = SCENARIO_KEYWORDS.get(scenario_id, [])
+    if not keywords:
+        return 0.0
     low = text.lower()
-    return sum(1 for kw in keywords if kw in low)
+    hits = sum(1 for kw in keywords if kw in low)
+    return hits / len(keywords)
 
 
 # ── Procesamiento de una muestra ──────────────────────────────────────────────
@@ -109,10 +112,10 @@ def process_sample(
     if rl > ROUGE_FILTER:
         return None, f"rouge_too_high ({rl:.2f})"
 
-    # 2. Rejected tiene demasiadas keywords correctas (también es buena respuesta)
-    kw_hits = _keyword_hits(rejected_text, scenario_id)
-    if kw_hits >= KEYWORD_ALL:
-        return None, f"rejected_too_good (kw_hits={kw_hits})"
+    # 2. Rejected acierta demasiadas keywords (>75% del escenario → también es buena respuesta)
+    kw_ratio = _keyword_ratio(rejected_text, scenario_id)
+    if kw_ratio > KEYWORD_RATIO:
+        return None, f"rejected_too_good (kw_ratio={kw_ratio:.2f})"
 
     # ── Construir par DPO ─────────────────────────────────────────────────────
     pair = {
@@ -125,7 +128,7 @@ def process_sample(
         "metadata": {
             "scenario_id":  scenario_id,
             "rouge_l":      round(rl, 3),
-            "kw_hits_rej":  kw_hits,
+            "kw_ratio_rej": round(kw_ratio, 2),
         },
     }
     return pair, "ok"
