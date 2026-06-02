@@ -1,26 +1,28 @@
 # Evaluación del SLM K8s-RCA — Resultados
 
-**Fecha:** 2026-06-02
+**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — resultado negativo)
 **Test set:** 210 muestras ciegas (seed=99 ≠ seed entrenamiento=42)
 **Escenarios:** 14 × 15 muestras/escenario
-**Modelos:** `k8s-rca-slm` (SFT QLoRA) vs `qwen2.5:1.5b` (baseline vanilla)
-**Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q4_K_M
+**Modelos:** `k8s-rca-slm` (SFT QLoRA) · `k8s-rca-dpo` (DPO sobre SFT) · `qwen2.5:1.5b` (baseline vanilla)
+**Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q4_K_M/Q8_0
 
 ---
 
-## Tabla comparativa
+## Tabla comparativa (3 modelos)
 
-| Métrica | SFT (nuestro) | Baseline (vanilla) | Delta |
+| Métrica | SFT (nuestro) | DPO (sobre SFT) | Baseline (vanilla) |
 |---------|:---:|:---:|:---:|
-| **Parse%** — sigue formato ROOT CAUSE/KUBECTL | 56.2% | 38.6% | +17.6 pp |
-| **Keyword%** — menciona las palabras clave del fallo | 60.0% | **92.4%** | −32.4 pp |
-| **ROUGE-L** — similitud con respuesta de referencia | **56.7%** | 2.5% | +54.2 pp |
-| **NS-ok%** — kubectl incluye el namespace correcto | 33.0% | 1.4% | +31.6 pp |
-| **Verb-ok%** — kubectl usa el verbo correcto (logs/describe/get) | 41.0% | 1.9% | +39.1 pp |
-| **Latencia media** | **0.83s** | 0.96s | −0.13s |
-| **Latencia p95** | **1.24s** | 1.38s | −0.14s |
+| **Parse%** — sigue formato ROOT CAUSE/KUBECTL | 56.2% | **0.0%** | 38.6% |
+| **Keyword%** — menciona las palabras clave del fallo | 60.0% | **0.0%** | **92.4%** |
+| **ROUGE-L** — similitud con respuesta de referencia | **56.7%** | **0.0%** | 2.5% |
+| **NS-ok%** — kubectl incluye el namespace correcto | **33.0%** | **0.0%** | 1.4% |
+| **Verb-ok%** — kubectl usa el verbo correcto (logs/describe/get) | **41.0%** | 28.6% | 1.9% |
+| **Latencia media** | **0.82s** | 2.04s | 0.98s |
+| **Latencia p95** | **1.24s** | 2.25s | 1.38s |
 
-*N = 210 muestras por modelo*
+*N = 210 muestras por modelo · seed=99*
+
+> **DPO = resultado negativo**: el modelo DPO produjo colapso total de formato y vocabulario. Ver análisis en sección [DPO — Diagnóstico de fallo](#dpo--diagnóstico-de-fallo).
 
 ---
 
@@ -65,6 +67,43 @@ Esto es consistente con un **loss final de 0.0898 sobre 986 muestras** — seña
 
 ---
 
+## DPO — Diagnóstico de fallo
+
+### Configuración del experimento
+
+| Parámetro | Valor |
+|-----------|-------|
+| Base de partida | `k8s-rca-slm` (SFT QLoRA 4-bit) |
+| Dataset | 541 pares chosen/rejected (de 986 muestras SFT) |
+| β (beta) | 0.05 |
+| Épocas | 2 |
+| LR | 5e-5 |
+| Batch efectivo | 16 (batch=1 × grad_accum=16) |
+| Runtime | 12.1 min · A30 24GB |
+
+### Síntomas observados
+
+1. **Loss ≈ 0 desde el paso 1** — el modelo SFT ya asignaba probabilidad fuertemente mayor a los `chosen` que a los `rejected` antes de cualquier actualización. La señal de gradiente DPO fue prácticamente nula durante todo el entrenamiento (loss final: 3.04×10⁻⁷).
+2. **Colapso total en evaluación** — Parse%=0%, Keyword%=0%, ROUGE-L=0%. El modelo generó texto libre sin estructura en todas las 210 muestras.
+3. **Verb-ok%=28.6%** — única métrica no nula: casualmente menciona verbos de kubectl pero en respuestas completamente desestructuradas.
+
+### Causa raíz
+
+El SFT había memorizado las 986 muestras de entrenamiento con una **confianza extremadamente alta** (loss SFT final = 0.0898). Cuando el DPOTrainer calculó los logprobs de referencia, encontró que la política SFT ya distinguía perfectamente `chosen` de `rejected` — el margen de preferencia era máximo desde el inicio.
+
+Con **β=0.05** (muy bajo), la penalización KL por alejarse de la referencia era mínima. El optimizador recibió gradientes casi nulos, pero los pocos pasos de actualización que sí ocurrieron **corrompieron los pesos críticos** del formato (capas de atención que codificaban la estructura `ROOT CAUSE: / KUBECTL:`), destruyendo el formato aprendido en el SFT.
+
+### Lecciones
+
+| Problema | Causa | Corrección para siguiente intento |
+|----------|-------|-----------------------------------|
+| Loss≈0 desde paso 1 | Modelo SFT sobreajustado = referencia demasiado fuerte | Usar modelo base vanilla como referencia en lugar del SFT memorizado |
+| β=0.05 insuficiente | Regularización KL demasiado débil para señal tan pequeña | Subir β a 0.2–0.5 |
+| 2 épocas destructivas | Con gradientes mínimos, múltiples épocas acumulan ruido | Reducir a 1 época; añadir early stopping por reward margin |
+| Dataset rejected de baja calidad | El modelo vanilla (temp=0.7) no siempre genera respuestas claramente erróneas | Usar temperatura más baja (0.3) para el modelo vanilla al generar rejected |
+
+---
+
 ## Próximos pasos
 
 ### 1. Structured outputs (impacto inmediato, sin reentrenar)
@@ -72,12 +111,12 @@ Forzar el formato `ROOT CAUSE: / KUBECTL:` con grammar-constrained sampling en l
 **Objetivo:** Parse% → ~100%
 **Coste:** ninguno (configuración, no reentrenamiento)
 
-### 2. DPO fine-tuning (contribución metodológica principal)
-Construir pares `(chosen, rejected)` donde:
-- **chosen:** respuesta correcta del dataset original
-- **rejected:** salida del modelo base pre-SFT o variante alucinada
+### 2. DPO v2 — corrección de hiperparámetros *(pendiente)*
+El experimento DPO v1 fracasó por tres causas conocidas y corregibles:
+- Usar modelo base vanilla como `ref_model` (no el SFT sobreajustado)
+- β = 0.2–0.5
+- 1 época + early stopping
 
-DPO como mecanismo explícito de reducción de alucinación — el keyword gap (−32 pp) es el argumento cuantificado que lo justifica.
 **Objetivo:** Keyword% ≥ 80% manteniendo Parse% y ROUGE-L
 **Criterio de éxito:** este mismo harness
 
@@ -92,7 +131,8 @@ Comparar Q4_K_M vs Q8_0 vs fp16 con el mismo test set.
 | Archivo | Descripción |
 |---------|-------------|
 | `eval/test_set.jsonl` | 210 muestras ciegas (seed=99) |
-| `eval/results/eval_20260601_154131.json` | Resultados completos por muestra |
+| `eval/results/eval_20260601_154131.json` | Resultados SFT+Baseline por muestra |
+| `eval/results/eval_20260602_090116.json` | Resultados SFT+DPO+Baseline (3 modelos) |
 | `eval/metrics.py` | ROUGE-L, keyword oracle, parse rate |
 | `eval/runner.py` | Inferencia multi-modelo sobre Ollama |
 | `eval/run_eval.py` | Orquestador principal |
