@@ -1,0 +1,178 @@
+# Escenarios avanzados — variación estructural para romper sobreajuste
+# Cubren: DNS, RBAC, init containers, HPA, evictions por nodo, ingress,
+# ConfigMap mount, pod disruption budget, job failures, resource quotas.
+# Cada escenario usa parafraseo alternativo de la causa raíz para forzar
+# generalización en lugar de memorización de patrones fijos.
+
+scenarios:
+
+  - id: dns_resolution_fail
+    failure: Pod no puede resolver DNS dentro del cluster
+    events:
+      - reason: Unhealthy
+        message: "Readiness probe failed: dial tcp: lookup {svc}.{namespace}.svc.cluster.local: no such host"
+        count: [4, 18]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [3, 12]
+      - reason: Failed
+        message: "Failed to resolve DNS for {svc}.{namespace}.svc.cluster.local"
+        count: [2, 8]
+    root_cause: "Fallo de resolución DNS interna. El pod {pod} no puede encontrar el servicio '{svc}' en el namespace '{namespace}'. Posible problema con CoreDNS o el Service no existe."
+    kubectl: "kubectl exec {pod} -n {namespace} -- nslookup {svc}.{namespace}.svc.cluster.local"
+
+  - id: rbac_forbidden
+    failure: Pod sin permisos RBAC para acceder a la API de Kubernetes
+    events:
+      - reason: Failed
+        message: "Error from server (Forbidden): pods is forbidden: User \"system:serviceaccount:{namespace}:{pod}\" cannot list resource"
+        count: [5, 20]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [4, 15]
+    root_cause: "El pod {pod} no tiene permisos RBAC para acceder a la API de Kubernetes. La ServiceAccount del namespace '{namespace}' carece del ClusterRole o RoleBinding necesario."
+    kubectl: "kubectl auth can-i list pods --as=system:serviceaccount:{namespace}:default -n {namespace}"
+
+  - id: init_container_fail
+    failure: Init container falla antes de arrancar el contenedor principal
+    events:
+      - reason: Failed
+        message: "Error: failed to start init container \"{container}\": OCI runtime exec failed"
+        count: [3, 10]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [6, 25]
+      - reason: Killing
+        message: "Stopping container {container}"
+        count: [2, 6]
+    root_cause: "El init container '{container}' del pod {pod} falla en cada intento. El contenedor principal nunca arranca porque los init containers deben completar en orden. Revisar la imagen y el comando del init container."
+    kubectl: "kubectl logs {pod} -c {container} -n {namespace} --previous"
+
+  - id: hpa_max_replicas
+    failure: HPA alcanza el máximo de replicas sin resolver la carga
+    events:
+      - reason: SuccessfulRescale
+        message: "New size: {replicas}; reason: cpu resource utilization (percentage of request) above target"
+        count: [3, 10]
+      - reason: FailedGetScale
+        message: "HPA {deployment}: failed to get scale: the server could not find the requested resource"
+        count: [1, 4]
+      - reason: Unhealthy
+        message: "Readiness probe failed: HTTP probe failed with statuscode: {code} for pod {pod}"
+        count: [5, 20]
+    root_cause: "El HorizontalPodAutoscaler de '{deployment}' ha escalado al máximo de replicas ({replicas}) pero la carga sigue alta. El cuello de botella es downstream (base de datos, servicio externo) o los limits de CPU son demasiado bajos."
+    kubectl: "kubectl describe hpa {deployment} -n {namespace}"
+
+  - id: configmap_missing
+    failure: Pod no arranca por ConfigMap faltante
+    events:
+      - reason: Failed
+        message: "Error: configmap \"{secret}\" not found"
+        count: [3, 10]
+      - reason: FailedMount
+        message: "MountVolume.SetUp failed for volume \"{secret}\": configmap \"{secret}\" not found"
+        count: [2, 8]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [5, 20]
+    root_cause: "El pod {pod} no puede arrancar porque el ConfigMap '{secret}' referenciado como volumen no existe en el namespace '{namespace}'. El Deployment fue desplegado antes de crear el ConfigMap."
+    kubectl: "kubectl get configmap -n {namespace}"
+
+  - id: node_not_ready
+    failure: Nodo pasa a NotReady — pods eviccionados
+    events:
+      - reason: NodeNotReady
+        message: "Node {node} status is now: NodeNotReady"
+        count: [1, 3]
+      - reason: Evicted
+        message: "The node {node} is not Ready. Evicting pod {pod}"
+        count: [3, 15]
+      - reason: FailedScheduling
+        message: "0/3 nodes are available: 1 node(s) had taint: node.kubernetes.io/not-ready"
+        count: [4, 18]
+    root_cause: "El nodo {node} entró en estado NotReady. Los pods que corrían en él están siendo eviccionados y reprogramados. Causas frecuentes: kubelet caído, pérdida de red, o recursos agotados."
+    kubectl: "kubectl describe node {node}"
+
+  - id: pdb_disruption_blocked
+    failure: Rolling update bloqueado por PodDisruptionBudget
+    events:
+      - reason: FailedCreate
+        message: "Error creating: pods is forbidden: unable to validate against any pod security policy"
+        count: [2, 6]
+      - reason: Unhealthy
+        message: "Cannot evict pod as it would violate the pod's disruption budget"
+        count: [5, 20]
+      - reason: FailedScheduling
+        message: "pod disruption budget {deployment}-pdb is in invalid state"
+        count: [1, 4]
+    root_cause: "El rolling update del deployment '{deployment}' está bloqueado porque el PodDisruptionBudget no permite eliminar más pods. Hay pods unhealthy que reducen el número de replicas disponibles por debajo del minAvailable."
+    kubectl: "kubectl get pdb -n {namespace}"
+
+  - id: job_backoff_limit
+    failure: Job agota el backoffLimit y falla definitivamente
+    events:
+      - reason: BackoffLimitExceeded
+        message: "Job has reached the specified backoff limit"
+        count: [1, 2]
+      - reason: Failed
+        message: "Error from server: pods \"{pod}\" not found"
+        count: [3, 10]
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [6, 25]
+    root_cause: "El Job agotó su backoffLimit tras múltiples fallos del pod {pod}. El contenedor '{container}' termina con código de error en cada intento. El Job pasa a estado Failed permanente."
+    kubectl: "kubectl logs {pod} -n {namespace} --previous"
+
+  - id: resource_quota_exceeded
+    failure: Namespace alcanza ResourceQuota — no se pueden crear pods
+    events:
+      - reason: FailedCreate
+        message: "Error creating: pods \"\" is forbidden: exceeded quota: {namespace}-quota, requested: cpu=500m, used: cpu=9500m, limited: cpu=10000m"
+        count: [4, 15]
+      - reason: FailedScheduling
+        message: "0/3 nodes are available: 3 Insufficient cpu"
+        count: [3, 10]
+    root_cause: "El namespace '{namespace}' ha alcanzado el límite de CPU definido en su ResourceQuota. Los nuevos pods no pueden crearse hasta que se libere cuota o se aumente el límite."
+    kubectl: "kubectl describe resourcequota -n {namespace}"
+
+  - id: ingress_backend_not_found
+    failure: Ingress apunta a un Service que no existe
+    events:
+      - reason: Unhealthy
+        message: "Readiness probe failed: Get http://{ip}:{port}/health: dial tcp {ip}:{port}: connect: connection refused"
+        count: [5, 20]
+      - reason: FailedSync
+        message: "error obtaining Endpoints for Service \"{svc}/{namespace}\": no object matching key \"{svc}/{namespace}\" in local store"
+        count: [2, 8]
+    root_cause: "El Ingress apunta al Service '{svc}' en el namespace '{namespace}' pero el Service no tiene endpoints disponibles o no existe. El tráfico externo está siendo rechazado con 502/503."
+    kubectl: "kubectl get svc,endpoints -n {namespace}"
+
+  - id: storage_class_unavailable
+    failure: PVC no puede provisionarse — StorageClass no disponible
+    events:
+      - reason: ProvisioningFailed
+        message: "Failed to provision volume with StorageClass \"{sc}\": storageclass.storage.k8s.io \"{sc}\" not found"
+        count: [3, 12]
+      - reason: FailedScheduling
+        message: "0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims"
+        count: [4, 16]
+    root_cause: "El PVC no puede provisionarse porque la StorageClass '{sc}' no existe en el cluster. El pod {pod} queda en Pending indefinidamente. Verificar si el provisioner de almacenamiento está instalado."
+    kubectl: "kubectl get storageclass"
+
+  - id: image_tag_mutable_changed
+    failure: Imagen con tag mutable cambió — pod en CrashLoop por incompatibilidad
+    events:
+      - reason: BackOff
+        message: "Back-off restarting failed container {container} in pod {pod}"
+        count: [8, 30]
+      - reason: Pulled
+        message: "Successfully pulled image \"{image}\" in 2.3s"
+        count: [3, 10]
+      - reason: Failed
+        message: "Error: failed to create containerd task: failed to start shim: exit status 1"
+        count: [2, 6]
+      - reason: Killing
+        message: "Stopping container {container}"
+        count: [3, 8]
+    root_cause: "CrashLoopBackOff tras un cambio silencioso de la imagen '{image}'. El tag ':latest' o un tag mutable apuntó a una nueva versión incompatible con la configuración actual. El contenedor arranca y falla inmediatamente."
+    kubectl: "kubectl describe pod {pod} -n {namespace}"

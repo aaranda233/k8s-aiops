@@ -2,6 +2,13 @@
 Ejecuta inferencia en uno o varios modelos Ollama sobre el test set.
 
 Devuelve una lista de resultados con métricas por muestra.
+
+Modo grammar (--grammar):
+  Usa GBNF grammar-constrained sampling para forzar el formato
+  ROOT CAUSE: / KUBECTL: a nivel de token. Parse% -> ~100% garantizado.
+  Esto desacopla la calidad del CONTENIDO del fallo de formato:
+  una vez forzado el formato, Keyword%, NS-ok% y Verb-ok% miden
+  exclusivamente si el modelo sabe la respuesta, no si sabe escribirla.
 """
 
 from __future__ import annotations
@@ -33,6 +40,15 @@ KUBECTL: <exact command>
 
 Be concise. Focus on actionable diagnosis."""
 
+# GBNF grammar que garantiza el formato ROOT CAUSE: ... \n KUBECTL: ...
+# Desacopla la calidad del contenido del fallo de formato:
+# una vez forzado el formato, Keyword%/NS-ok%/Verb-ok% miden solo si
+# el modelo sabe la respuesta, no si sabe escribirla.
+_GRAMMAR_GBNF = r"""root   ::= "ROOT CAUSE: " rc-text "\nKUBECTL: " kubectl-text
+rc-text      ::= [^\n]+ (" " [^\n]+)*
+kubectl-text ::= "kubectl " [^\n]+
+"""
+
 
 @dataclass
 class ModelConfig:
@@ -41,6 +57,7 @@ class ModelConfig:
     host: str = "http://192.168.2.205:11434"
     temperature: float = 0.0
     num_predict: int = 300
+    use_grammar: bool = False   # activar grammar-constrained sampling
 
 
 def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
@@ -48,26 +65,50 @@ def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
     msgs = sample["messages"]
     user_content = msgs[1]["content"]
 
-    payload = {
-        "model": cfg.ollama_model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user",   "content": user_content},
-        ],
-        "stream": False,
-        "options": {
-            "temperature": cfg.temperature,
-            "num_predict": cfg.num_predict,
-        },
-    }
+    if cfg.use_grammar:
+        # Grammar-constrained sampling usa /api/generate (no /api/chat)
+        # porque el campo "grammar" solo esta disponible en ese endpoint.
+        prompt = (
+            f"<|im_start|>system\n{_SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>user\n{user_content}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        payload = {
+            "model":   cfg.ollama_model,
+            "prompt":  prompt,
+            "stream":  False,
+            "grammar": _GRAMMAR_GBNF,
+            "options": {
+                "temperature": cfg.temperature,
+                "num_predict": cfg.num_predict,
+            },
+        }
+        t0 = time.time()
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(f"{cfg.host}/api/generate", json=payload)
+            resp.raise_for_status()
+        latency = time.time() - t0
+        text = resp.json()["response"].strip()
+    else:
+        payload = {
+            "model": cfg.ollama_model,
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user",   "content": user_content},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": cfg.temperature,
+                "num_predict": cfg.num_predict,
+            },
+        }
+        t0 = time.time()
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(f"{cfg.host}/api/chat", json=payload)
+            resp.raise_for_status()
+        latency = time.time() - t0
+        text = resp.json()["message"]["content"].strip()
 
-    t0 = time.time()
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.post(f"{cfg.host}/api/chat", json=payload)
-        resp.raise_for_status()
-    latency = time.time() - t0
-
-    text = resp.json()["message"]["content"].strip()
     root_cause = "Could not parse root cause."
     kubectl_cmd = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
 
@@ -86,11 +127,14 @@ def evaluate_model(
     verbose: bool = True,
 ) -> tuple[list[dict], dict]:
     """
-    Evalúa un modelo sobre el test set.
+    Evalua un modelo sobre el test set.
 
     Returns:
         (per_sample_results, aggregate_metrics)
     """
+    if cfg.use_grammar and verbose:
+        print("  [grammar] GBNF activo — formato ROOT CAUSE/KUBECTL forzado a nivel token")
+
     results = []
     n = len(test_samples)
 
@@ -98,7 +142,6 @@ def evaluate_model(
         meta = sample.get("metadata", {})
         reference_output = sample["messages"][2]["content"]
 
-        # Extraer referencia
         ref_root_cause = ""
         ref_kubectl = ""
         for line in reference_output.splitlines():
@@ -127,6 +170,7 @@ def evaluate_model(
             "gen_kubectl":     gen_kubectl,
             "ref_root_cause":  ref_root_cause,
             "ref_kubectl":     ref_kubectl,
+            "grammar_forced":  cfg.use_grammar,
             "parsed":          parse_rate(gen_root_cause, gen_kubectl),
             "keyword_hit":     keyword_hit(gen_root_cause, scenario_id),
             "rouge_l":         rouge_l(gen_root_cause, ref_root_cause),

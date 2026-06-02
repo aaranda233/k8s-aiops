@@ -147,20 +147,50 @@ Con **β=0.05** (muy bajo), la penalización KL por alejarse de la referencia er
 
 ## Próximos pasos
 
-### 1. Structured outputs (impacto inmediato, sin reentrenar)
-Forzar el formato `ROOT CAUSE: / KUBECTL:` con grammar-constrained sampling en llama.cpp/Ollama.
-**Objetivo:** Parse% → ~100%
-**Coste:** ninguno (configuración, no reentrenamiento)
+### 1. Structured outputs — grammar-constrained sampling *(implementado)*
 
-### 2. Preference optimization v3 *(bloqueado hasta resolver causa raíz)*
-DPO v1 y SimPO han confirmado que el bloqueante no es la variante de loss sino el SFT sobreajustado. El prerequisito es ampliar el dataset SFT (≥5k muestras, mayor variación de namespaces/pod names/mensajes de error) y reentrenar antes de reintentar preference optimization.
+Forzar el formato `ROOT CAUSE: / KUBECTL:` con GBNF grammar en Ollama.
+**Parse% → ~100% garantizado por construcción.**
 
-**Prerrequisito:** SFT con loss > 0.3 (generalización real, no memorización)
-**Entonces:** DPO con ref_model=vanilla, β=0.2, 1 época
+**Advertencia crítica:** grammar arregla la forma, no el contenido. Un kubectl perfectamente formateado puede seguir siendo el comando equivocado. Su valor real es como **diagnóstico**: una vez forzado el formato, Keyword%, NS-ok% y Verb-ok% miden exclusivamente si el modelo sabe la respuesta — desacoplado del fallo de formato. Esto revelará cuánto del 56% de parse rate era "no sabe el formato" vs. "no sabe la respuesta".
 
-### 3. Ablation de cuantización (resultado de eficiencia)
+```bash
+# Activar grammar en la evaluación:
+python eval/run_eval.py --models sft,baseline --grammar
+```
+
+---
+
+### 2. Ampliar el dataset SFT — diversidad estructural, no solo volumen
+
+**El problema es diversidad, no número.** 5k muestras de las mismas 14 plantillas con variación superficial se memorizan igual que 986 — solo son más instancias del mismo molde.
+
+La variación tiene que ser **estructural**:
+- **Más escenarios** (añadidos en `dataset/scenarios/advanced.yaml`): DNS, RBAC, init containers, HPA, evictions por nodo, Ingress, ConfigMap missing, PDB, Jobs, ResourceQuota, StorageClass, imagen con tag mutable
+- **Parafraseo de la causa raíz**: misma causa expresada de varias formas, con y sin el pod name, con distintos niveles de detalle
+- **Ruido en los logs**: orden de eventos distinto, contadores variables, mensajes parciales
+- **Variación de namespace/pod** ya existe, mantener y ampliar
+
+**El held-out set de evaluación debe generarse con un proceso distinto** (seed diferente ✓, pero también escenarios distintos en el futuro). Si el eval set viene de la misma distribución de plantillas, no detectarás si rompiste el sobreajuste o solo lo trasladaste. El objetivo es loss de entrenamiento > 0.3 en held-out (no minimizar el loss de entrenamiento).
+
+---
+
+### 3. Reentrenar SFT y reintentar PO *(bloqueado hasta paso 2)*
+
+**Prerrequisitos antes de tocar Preference Optimization:**
+
+1. Verificar que el nuevo SFT generaliza sobre el held-out set antes de aplicar PO. Si loss de validación sigue convergiendo a ≈ 0, PO colapsará por la misma razón.
+2. Usar early stopping o menos épocas para mantener loss > 0.3 — el objetivo es held-out performance, no minimizar train loss.
+3. **Reconstruir los pares chosen/rejected**: el fallo de DPO/SimPO también estaba en los datos. Los rejected venían del Qwen vanilla → la señal era de *formato*, no de *calidad de diagnóstico*. El rejected debe venir del propio SFT (diagnósticos incompletos, causa raíz perturbada) para que chosen y rejected compartan formato y difieran en corrección del contenido.
+
+**Este paso es condicional, no obligatorio.** Si el SFT ampliado + grammar ya alcanza los números objetivo, no es necesario añadir PO. No hacerlo solo por cerrar el círculo experimental.
+
+---
+
+### 4. Ablación de cuantización *(independiente)*
+
 Comparar Q4_K_M vs Q8_0 vs fp16 con el mismo test set.
-**Resultado esperado para el paper:** "retenemos X% de precisión a 1/4 del tamaño"
+**Resultado esperado:** "retenemos X% de precisión a 1/4 del tamaño de modelo"
 
 ---
 

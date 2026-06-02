@@ -91,6 +91,7 @@ def _build_context(scenario: dict) -> dict:
         "ip":         _random_ip(),
         "user":       "aaranda233",
         "token":      "ghp_xxxxxxxxxxxx",
+        "replicas":   str(random.choice([5, 8, 10, 15, 20])),
     }
 
 

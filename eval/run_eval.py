@@ -128,6 +128,9 @@ def parse_args():
                    help="Modelos a evaluar: sft,baseline (o solo uno)")
     p.add_argument("--regen", action="store_true",
                    help="Regenerar test set aunque ya exista")
+    p.add_argument("--grammar", action="store_true",
+                   help="Activar GBNF grammar-constrained sampling (fuerza formato ROOT CAUSE/KUBECTL). "
+                        "Desacopla calidad de contenido del fallo de formato.")
     return p.parse_args()
 
 
@@ -149,7 +152,8 @@ def main():
             continue
 
         ollama_model = MODELS[key]
-        cfg = ModelConfig(name=key, ollama_model=ollama_model, host=args.host)
+        cfg = ModelConfig(name=key, ollama_model=ollama_model, host=args.host,
+                          use_grammar=args.grammar)
 
         print(f"{'─'*60}")
         print(f"  Evaluando: {key} ({ollama_model})")
