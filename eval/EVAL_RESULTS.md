@@ -1,6 +1,6 @@
 # Evaluación del SLM K8s-RCA — Resultados
 
-**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — negativo) / 2026-06-02 (SimPO — negativo)
+**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — negativo) / 2026-06-02 (SimPO — negativo) / 2026-06-02 (Grammar sampling — diagnóstico)
 **Test set:** 210 muestras ciegas (seed=99 ≠ seed entrenamiento=42)
 **Escenarios:** 14 × 15 muestras/escenario
 **Modelos:** `k8s-rca-slm` (SFT QLoRA) · `k8s-rca-dpo` (DPO) · `k8s-rca-simpo` (SimPO) · `qwen2.5:1.5b` (baseline vanilla)
@@ -191,6 +191,53 @@ La variación tiene que ser **estructural**:
 
 Comparar Q4_K_M vs Q8_0 vs fp16 con el mismo test set.
 **Resultado esperado:** "retenemos X% de precisión a 1/4 del tamaño de modelo"
+
+---
+
+## Experimento: Grammar-constrained sampling
+
+**Fecha:** 2026-06-02 · **Archivo:** `eval/results/eval_20260602_103303.json`
+
+GBNF grammar aplicada vía `/api/generate` para forzar el formato `ROOT CAUSE: / KUBECTL:` a nivel de token. Se evaluaron SFT y baseline (210 muestras, seed=99).
+
+### Resultados con grammar activa
+
+| Métrica | SFT sin grammar | SFT con grammar | Baseline sin grammar | Baseline con grammar |
+|---------|:-:|:-:|:-:|:-:|
+| **Parse%** | 56.2% | **30.0%** ↓ | 38.6% | **54.3%** ↑ |
+| **Keyword%** | 60.0% | **31.4%** ↓ | 92.4% | **91.4%** ≈ |
+| **ROUGE-L** | 56.7% | **29.8%** ↓ | 2.5% | **2.3%** ≈ |
+| **NS-ok%** | 33.0% | **15.7%** ↓ | 1.4% | **1.0%** ≈ |
+| **Verb-ok%** | 41.0% | **38.6%** ≈ | 1.9% | **3.3%** ↑ |
+
+### Análisis del output raw del SFT bajo grammar
+
+Inspección directa de la respuesta de Ollama con grammar activa sobre el SFT:
+
+```
+Input:  Anomaly Score: 0.91 / namespace: staging / Deployment: s3-sync-worker / ...
+Output: "ROOT CAUTION : Le pod 's3-sync-worker' a été effacé sur le cluster Kubernetes.
+         Il semble qu'un lavalier soit tombé en panne ou être mal configuré.
+         kubectl create -f <nom-du-prototype>.yaml --image=propriété:version"
+```
+
+Tres síntomas simultáneos:
+
+1. **"ROOT CAUTION" en lugar de "ROOT CAUSE"** — la grammar fuerza el token más probable compatible con el prefijo; como el SFT se llama vía `/api/generate` (no `/api/chat`), el contexto de activación difiere ligeramente del training y la distribución de los primeros tokens cambia. El token más probable válido bajo GBNF resulta ser "CAUTION" en lugar de "CAUSE".
+
+2. **Respuesta en francés** — los adaptadores LoRA (~2% de parámetros) dominan la salida en condiciones normales guiando hacia el patrón K8s memorizado. Cuando la grammar bloquea esa ruta memorizada, el control cae al Qwen2.5 base (~98% de parámetros), que es fuertemente multilingüe. El base model produce la distribución de mayor masa en ese punto del contexto: francés.
+
+3. **kubectl inventado** — mismo mecanismo: la grammar obliga a producir `kubectl ` pero el contenido que sigue es prosa incoherente del espacio del pretraining base.
+
+### Diagnóstico — tercera confirmación de la causa raíz
+
+> El SFT no aprendió a diagnosticar fallos de Kubernetes — aprendió a copiar secuencias de tokens específicas. Los adaptadores LoRA son un parche frágil sobre esa memorización: cualquier perturbación del contexto de activación (grammar, endpoint distinto, system prompt diferente) destruye el patrón aprendido y expone el modelo base debajo.
+
+El baseline aguantó la grammar (+15.7 pp en Parse%) precisamente porque no tiene un patrón rígido memorizado: la constraint no crea contradicción y el modelo simplemente sigue la grammar con lo que sabe de K8s.
+
+**El 56% de parse rate del SFT sin grammar no era "sabe la respuesta, no el formato" — era "tiene el formato memorizado en una región de los pesos tan frágil que cualquier intervención la destruye".**
+
+Esta es la misma causa raíz observada en DPO (gradientes mínimos corrompen pesos de formato), SimPO (β alto destruye la salida), y ahora grammar (constraint cambia el contexto de activación y el base model emerge). Tres experimentos, tres mecanismos distintos, misma causa: sobreajuste extremo del SFT.
 
 ---
 

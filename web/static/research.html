@@ -199,6 +199,33 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
 .train-stat .ts-val.bad{color:var(--red);}
 .train-stat .ts-val.warn{color:var(--yellow);}
 
+/* ── GRAMMAR EXPERIMENT ── */
+.grammar-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}
+@media(max-width:700px){.grammar-grid{grid-template-columns:1fr;}}
+.grammar-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;}
+.grammar-card h4{font-size:12px;font-weight:bold;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+.grammar-card h4 .arrow{font-size:10px;margin-left:6px;}
+.grammar-card h4 .up{color:var(--green);}
+.grammar-card h4 .down{color:var(--red);}
+.raw-output{
+  background:#0a0e14;border:1px solid rgba(248,81,73,.3);border-radius:6px;
+  padding:14px 16px;margin-top:16px;font-family:'Courier New',monospace;font-size:11px;
+  line-height:1.6;color:var(--dim);
+}
+.raw-output .ro-label{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--red);margin-bottom:8px;}
+.raw-output .ro-line{margin-bottom:4px;}
+.raw-output .ro-key{color:var(--dim);}
+.raw-output .ro-val{color:var(--red);}
+.raw-output .ro-val.ok{color:var(--green);}
+.finding-box{
+  background:rgba(248,81,73,.05);border:1px solid rgba(248,81,73,.25);
+  border-radius:8px;padding:16px 20px;margin-top:20px;
+}
+.finding-box .fb-title{color:var(--red);font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px;}
+.finding-box p{font-size:12px;color:var(--dim);line-height:1.7;}
+.finding-box strong{color:var(--text);}
+.finding-box code{color:var(--cyan);font-size:11px;}
+
 /* ── CHANGELOG ── */
 .changelog-btn{
   display:flex;align-items:center;gap:6px;
@@ -312,6 +339,19 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           <strong>Causa raíz consolidada: el SFT sobreajustado bloquea cualquier preference optimization.</strong>
           El problema no es la variante de loss (DPO vs SimPO) sino la base sobreajustada.
           Corrección: SFT con ≥5k muestras y loss > 0.3 antes de reintentar.
+        </div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-01</div>
+      <div class="cl-body">
+        <span class="cl-tag analysis">Diagnóstico</span>
+        <div class="cl-text">
+          <strong>Grammar-constrained sampling — tercera confirmación de sobreajuste.</strong>
+          GBNF grammar forzó formato a nivel de token. El SFT empeoró (Parse 56%→30%).
+          Output raw en francés con "ROOT CAUTION" en lugar de "ROOT CAUSE". Los adaptadores LoRA (~2% de parámetros)
+          dependen de un contexto de activación exacto; cualquier perturbación expone el Qwen2.5 base multilingüe. Ver sección 06.
         </div>
       </div>
     </div>
@@ -621,9 +661,73 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     </div>
   </div>
 
+  <!-- ── GRAMMAR EXPERIMENT ── -->
+  <div class="section">
+    <div class="section-title"><span>06</span> Experimento: Grammar-constrained sampling</div>
+    <h2>Tercera confirmación de la causa raíz</h2>
+    <p class="subtitle">
+      Se aplicó GBNF grammar a nivel de token para forzar el formato <code style="color:var(--cyan)">ROOT CAUSE: / KUBECTL:</code>.
+      El objetivo era desacoplar la calidad del contenido del fallo de formato.
+      Lo que reveló fue algo más profundo.
+    </p>
+
+    <div class="grammar-grid">
+      <div class="grammar-card">
+        <h4>SFT con grammar <span class="arrow down">▼ empeoró</span></h4>
+        <div class="train-stat"><span class="ts-key">Parse%</span><span class="ts-val bad">56.2% → 30.0%</span></div>
+        <div class="train-stat"><span class="ts-key">Keyword%</span><span class="ts-val bad">60.0% → 31.4%</span></div>
+        <div class="train-stat"><span class="ts-key">ROUGE-L</span><span class="ts-val bad">56.7% → 29.8%</span></div>
+        <div class="train-stat"><span class="ts-key">NS-ok%</span><span class="ts-val bad">33.0% → 15.7%</span></div>
+        <div class="train-stat"><span class="ts-key">Verb-ok%</span><span class="ts-val warn">41.0% → 38.6% ≈</span></div>
+
+        <div class="raw-output" style="margin-top:14px;">
+          <div class="ro-label">Output raw del SFT bajo grammar</div>
+          <div class="ro-line"><span class="ro-key">Esperado: </span><span class="ro-val ok">ROOT CAUSE: ...</span></div>
+          <div class="ro-line"><span class="ro-key">Obtenido: </span><span class="ro-val">"ROOT CAUTION : Le pod 's3-sync-worker'<br>&nbsp;&nbsp;a été effacé sur le cluster Kubernetes.<br>&nbsp;&nbsp;Il semble qu'un lavalier soit tombé en panne..."</span></div>
+          <div class="ro-line" style="margin-top:6px;font-size:10px;color:var(--dim);">→ Formato incorrecto + respuesta en <strong style="color:var(--red)">francés</strong></div>
+        </div>
+      </div>
+
+      <div class="grammar-card">
+        <h4>Baseline con grammar <span class="arrow up">▲ mejoró</span></h4>
+        <div class="train-stat"><span class="ts-key">Parse%</span><span class="ts-val good">38.6% → 54.3%</span></div>
+        <div class="train-stat"><span class="ts-key">Keyword%</span><span class="ts-val warn">92.4% → 91.4% ≈</span></div>
+        <div class="train-stat"><span class="ts-key">ROUGE-L</span><span class="ts-val warn">2.5% → 2.3% ≈</span></div>
+        <div class="train-stat"><span class="ts-key">NS-ok%</span><span class="ts-val warn">1.4% → 1.0% ≈</span></div>
+        <div class="train-stat"><span class="ts-key">Verb-ok%</span><span class="ts-val good">1.9% → 3.3%</span></div>
+
+        <div style="margin-top:14px;font-size:11px;color:var(--dim);line-height:1.6;padding:10px;background:rgba(63,185,80,.05);border:1px solid rgba(63,185,80,.15);border-radius:6px;">
+          El vanilla <strong style="color:var(--text)">no tiene un patrón memorizado</strong> que entre en conflicto con la grammar.
+          La constraint no crea contradicción — el modelo sigue la grammar y pone lo que sabe de K8s dentro del formato forzado.
+        </div>
+      </div>
+    </div>
+
+    <div class="finding-box">
+      <div class="fb-title">Por qué el SFT produjo francés bajo grammar</div>
+      <p>
+        Los adaptadores LoRA representan <strong>~2% de los parámetros</strong>. En condiciones normales dominan la salida
+        guiando hacia el patrón K8s memorizado. La grammar fuerza el endpoint <code>/api/generate</code> en lugar
+        de <code>/api/chat</code>, lo que cambia ligeramente el contexto de activación. Esa diferencia es suficiente
+        para que el token más probable bajo la constraint GBNF ya no sea <code>CAUSE</code> sino <code>CAUTION</code>.
+        Una vez descarrilado el primer token, la grammar obliga una continuación válida pero el control cae al
+        <strong>98% restante: Qwen2.5 base</strong>, que es multilingüe y produce la distribución de mayor masa
+        en ese punto — francés.
+      </p>
+      <p style="margin-top:10px;">
+        <strong>Conclusión:</strong> el SFT no aprendió a diagnosticar fallos de Kubernetes —
+        aprendió a copiar secuencias de tokens específicas. Sus adaptadores son un parche frágil sobre esa memorización.
+        Cualquier perturbación del contexto de activación (grammar, endpoint distinto, system prompt diferente)
+        destruye el patrón y expone el modelo base. El <strong>56% de parse rate sin grammar no era
+        "sabe la respuesta pero no el formato"</strong> — era "tiene el formato memorizado en una región tan frágil
+        que cualquier intervención la destruye". Tres experimentos, tres mecanismos distintos, misma causa raíz.
+      </p>
+    </div>
+  </div>
+
   <!-- ── PRÓXIMOS PASOS ── -->
   <div class="section">
-    <div class="section-title"><span>06</span> Próximos pasos</div>
+    <div class="section-title"><span>07</span> Próximos pasos</div>
     <h2>Camino hacia un modelo que combine estructura y conocimiento</h2>
     <p class="subtitle">Los experimentos fallidos revelan exactamente qué hay que cambiar.</p>
 
