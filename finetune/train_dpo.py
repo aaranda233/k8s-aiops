@@ -29,8 +29,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--beta",       type=float, default=0.05,
                    help="Parámetro β de DPO — controla desviación del ref model. "
                         "Bajo (0.05) = conservador, evita colapso sobre SFT memorizado.")
-    p.add_argument("--batch-size", type=int,   default=2)
-    p.add_argument("--grad-accum", type=int,   default=8,
+    p.add_argument("--batch-size", type=int,   default=1,
+                   help="DPO necesita chosen+rejected+ref simultáneo: batch=1 para 24GB")
+    p.add_argument("--grad-accum", type=int,   default=16,
                    help="Batch efectivo = batch_size * grad_accum = 16 por defecto")
     p.add_argument("--lr",         type=float, default=5e-5,
                    help="LR más bajo que SFT (2e-4) para estabilidad DPO")
@@ -156,6 +157,7 @@ def train(args: argparse.Namespace) -> None:
         cache_dir           = str(Path(args.sft_model).parent.parent / ".cache"),
     )
     base.config.use_cache = False
+    base.gradient_checkpointing_enable()
     base.enable_input_require_grads()
 
     # Cargar los pesos LoRA del SFT (los campos desconocidos se ignoran automáticamente en peft>=0.19)
@@ -195,6 +197,7 @@ def train(args: argparse.Namespace) -> None:
         report_to                   = "none",
         seed                        = 42,
         remove_unused_columns       = False,
+        gradient_checkpointing      = True,
     )
 
     trainer = DPOTrainer(
