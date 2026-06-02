@@ -1,4 +1,4 @@
-FROM ./output/k8s-rca-dpo-Q4_K_M.gguf
+FROM ./output/k8s-rca-dpo-Q8_0.gguf
 
 PARAMETER temperature 0.1
 PARAMETER top_p 0.9
