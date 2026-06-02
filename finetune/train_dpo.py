@@ -190,7 +190,7 @@ def train(args: argparse.Namespace) -> None:
         optim                       = "adamw_8bit",
         weight_decay                = 0.01,
         max_length                  = args.max_seq_len,
-        max_prompt_length           = 768,
+        max_prompt_length           = 512,
         logging_steps               = 10,
         save_strategy               = "epoch",
         save_total_limit            = 2,
@@ -198,6 +198,7 @@ def train(args: argparse.Namespace) -> None:
         seed                        = 42,
         remove_unused_columns       = False,
         gradient_checkpointing      = True,
+        precompute_ref_log_probs    = True,  # Precomputa logprobs de referencia 1 vez → mitad de memoria en training
     )
 
     trainer = DPOTrainer(
