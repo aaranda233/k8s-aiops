@@ -31,6 +31,7 @@ RESULTS_DIR   = PROJECT_ROOT / "eval" / "results"
 MODELS = {
     "sft":      "k8s-rca-slm",
     "dpo":      "k8s-rca-dpo",
+    "simpo":    "k8s-rca-simpo",
     "baseline": "qwen2.5:1.5b",
 }
 

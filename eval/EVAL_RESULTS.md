@@ -1,28 +1,28 @@
 # Evaluación del SLM K8s-RCA — Resultados
 
-**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — resultado negativo)
+**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — negativo) / 2026-06-02 (SimPO — negativo)
 **Test set:** 210 muestras ciegas (seed=99 ≠ seed entrenamiento=42)
 **Escenarios:** 14 × 15 muestras/escenario
-**Modelos:** `k8s-rca-slm` (SFT QLoRA) · `k8s-rca-dpo` (DPO sobre SFT) · `qwen2.5:1.5b` (baseline vanilla)
+**Modelos:** `k8s-rca-slm` (SFT QLoRA) · `k8s-rca-dpo` (DPO) · `k8s-rca-simpo` (SimPO) · `qwen2.5:1.5b` (baseline vanilla)
 **Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q4_K_M/Q8_0
 
 ---
 
-## Tabla comparativa (3 modelos)
+## Tabla comparativa (4 modelos)
 
-| Métrica | SFT (nuestro) | DPO (sobre SFT) | Baseline (vanilla) |
-|---------|:---:|:---:|:---:|
-| **Parse%** — sigue formato ROOT CAUSE/KUBECTL | 56.2% | **0.0%** | 38.6% |
-| **Keyword%** — menciona las palabras clave del fallo | 60.0% | **0.0%** | **92.4%** |
-| **ROUGE-L** — similitud con respuesta de referencia | **56.7%** | **0.0%** | 2.5% |
-| **NS-ok%** — kubectl incluye el namespace correcto | **33.0%** | **0.0%** | 1.4% |
-| **Verb-ok%** — kubectl usa el verbo correcto (logs/describe/get) | **41.0%** | 28.6% | 1.9% |
-| **Latencia media** | **0.82s** | 2.04s | 0.98s |
-| **Latencia p95** | **1.24s** | 2.25s | 1.38s |
+| Métrica | SFT (nuestro) | DPO | SimPO | Baseline (vanilla) |
+|---------|:---:|:---:|:---:|:---:|
+| **Parse%** — sigue formato ROOT CAUSE/KUBECTL | 56.2% | 0.0% | 0.5% | 38.6% |
+| **Keyword%** — menciona las palabras clave del fallo | 60.0% | 0.0% | 0.0% | **92.4%** |
+| **ROUGE-L** — similitud con respuesta de referencia | **56.7%** | 0.0% | 0.0% | 2.5% |
+| **NS-ok%** — kubectl incluye el namespace correcto | **33.0%** | 0.0% | 0.0% | 1.4% |
+| **Verb-ok%** — kubectl usa el verbo correcto (logs/describe/get) | **41.0%** | 28.6% | 28.1% | 1.9% |
+| **Latencia media** | **0.82s** | 2.04s | 1.60s | 0.98s |
+| **Latencia p95** | **1.24s** | 2.25s | 2.21s | 1.38s |
 
 *N = 210 muestras por modelo · seed=99*
 
-> **DPO = resultado negativo**: el modelo DPO produjo colapso total de formato y vocabulario. Ver análisis en sección [DPO — Diagnóstico de fallo](#dpo--diagnóstico-de-fallo).
+> **DPO y SimPO = resultados negativos**: ambos modelos colapsaron formato y vocabulario. El Verb-ok% ~28% en los dos modelos fallidos es texto en prosa que casualmente contiene verbos de kubectl, no comandos reales. Ver análisis en sección [Diagnóstico de colapso por preference optimization](#diagnóstico-de-colapso-por-preference-optimization).
 
 ---
 
@@ -64,6 +64,47 @@
 > El SFT presenta **sobreajuste de formato**: aprendió a copiar la estructura y el texto exacto de las 986 muestras de entrenamiento, pero no generalizó el conocimiento subyacente. Al ver muestras con variaciones (seed diferente), pierde vocabulario técnico aunque mantiene la estructura.
 
 Esto es consistente con un **loss final de 0.0898 sobre 986 muestras** — señal clásica de memorización.
+
+---
+
+## Diagnóstico de colapso por preference optimization
+
+### Patrón común — DPO y SimPO
+
+Ambos experimentos producen el mismo colapso con mecanismos distintos:
+
+| | DPO v1 | SimPO |
+|---|---|---|
+| β | 0.05 | 2.0 |
+| γ | — | 1.0 |
+| cpo_alpha | — | 0.1 |
+| Épocas | 2 | 1 |
+| Loss paso 1 | ≈ 0 (señal nula) | 0.045 (señal real) |
+| Loss final | 3.04×10⁻⁷ | 0.011 |
+| rewards/margins final | — | 12.47 |
+| Parse% | 0.0% | 0.5% |
+| Keyword% | 0.0% | 0.0% |
+
+**DPO v1:** π_θ ≈ π_ref desde el inicio → gradiente ≈ 0 → corrupciones aleatorias acumuladas.
+
+**SimPO:** señal real pero β=2.0 demasiado alto → el modelo aprende a reducir log π(rejected) → −∞ en lugar de mejorar los chosen. Resultado: la mitad de las respuestas son casi vacías (lat ~0.2s) y la otra mitad son prosa sin estructura (lat ~2s).
+
+### Causa raíz compartida
+
+El SFT sobreajustó sobre 986 ejemplos sintéticos (loss=0.089). Cualquier método de preference optimization sobre un modelo memorizado converge sobre una representación frágil que colapsa ante gradientes de preferencia:
+
+- Los pares chosen/rejected vienen de la misma distribución memorizada
+- Las capas de atención que codifican el formato `ROOT CAUSE: / KUBECTL:` son sensibles a pequeñas perturbaciones
+- No existe generalización que el preference learning pueda mejorar — el modelo ya es "perfecto" en su distribución de entrenamiento
+
+### Lecciones consolidadas
+
+| Problema | Corrección |
+|----------|-----------|
+| SFT sobreajustado | Más datos (≥5k) con mayor variación antes de preference optimization |
+| DPO: ref_model = política entrenada | Usar modelo base vanilla como ref_model |
+| SimPO: β=2.0 demasiado agresivo | β ≤ 0.5 para datasets pequeños |
+| Ambos: dataset de 818 pares insuficiente | Mínimo 2k pares con mayor diversidad semántica |
 
 ---
 
@@ -111,14 +152,11 @@ Forzar el formato `ROOT CAUSE: / KUBECTL:` con grammar-constrained sampling en l
 **Objetivo:** Parse% → ~100%
 **Coste:** ninguno (configuración, no reentrenamiento)
 
-### 2. DPO v2 — corrección de hiperparámetros *(pendiente)*
-El experimento DPO v1 fracasó por tres causas conocidas y corregibles:
-- Usar modelo base vanilla como `ref_model` (no el SFT sobreajustado)
-- β = 0.2–0.5
-- 1 época + early stopping
+### 2. Preference optimization v3 *(bloqueado hasta resolver causa raíz)*
+DPO v1 y SimPO han confirmado que el bloqueante no es la variante de loss sino el SFT sobreajustado. El prerequisito es ampliar el dataset SFT (≥5k muestras, mayor variación de namespaces/pod names/mensajes de error) y reentrenar antes de reintentar preference optimization.
 
-**Objetivo:** Keyword% ≥ 80% manteniendo Parse% y ROUGE-L
-**Criterio de éxito:** este mismo harness
+**Prerrequisito:** SFT con loss > 0.3 (generalización real, no memorización)
+**Entonces:** DPO con ref_model=vanilla, β=0.2, 1 época
 
 ### 3. Ablation de cuantización (resultado de eficiencia)
 Comparar Q4_K_M vs Q8_0 vs fp16 con el mismo test set.
@@ -133,6 +171,8 @@ Comparar Q4_K_M vs Q8_0 vs fp16 con el mismo test set.
 | `eval/test_set.jsonl` | 210 muestras ciegas (seed=99) |
 | `eval/results/eval_20260601_154131.json` | Resultados SFT+Baseline por muestra |
 | `eval/results/eval_20260602_090116.json` | Resultados SFT+DPO+Baseline (3 modelos) |
+| `eval/results/eval_20260602_094119.json` | Resultados SFT+Baseline (confirmación) |
+| `eval/results/eval_20260602_*.json` | Resultados SimPO (210 muestras, colapso) |
 | `eval/metrics.py` | ROUGE-L, keyword oracle, parse rate |
 | `eval/runner.py` | Inferencia multi-modelo sobre Ollama |
 | `eval/run_eval.py` | Orquestador principal |
