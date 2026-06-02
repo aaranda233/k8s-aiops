@@ -198,6 +198,43 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
 .train-stat .ts-val.good{color:var(--green);}
 .train-stat .ts-val.bad{color:var(--red);}
 .train-stat .ts-val.warn{color:var(--yellow);}
+
+/* ── CHANGELOG ── */
+.changelog-btn{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.35);
+  color:var(--green);padding:4px 12px;border-radius:20px;font-size:11px;
+  cursor:pointer;font-family:inherit;transition:all .2s;white-space:nowrap;
+}
+.changelog-btn:hover{background:rgba(63,185,80,.2);}
+.changelog-btn .v-dot{
+  width:7px;height:7px;border-radius:50%;background:var(--green);
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.5;transform:scale(.8);}}
+.changelog-panel{
+  background:var(--bg2);border:1px solid rgba(63,185,80,.25);border-radius:10px;
+  margin-bottom:32px;overflow:hidden;max-height:0;transition:max-height .4s ease, padding .3s ease;
+  padding:0 24px;
+}
+.changelog-panel.open{max-height:600px;padding:20px 24px;}
+.cl-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+.cl-title{font-size:13px;font-weight:bold;color:var(--green);}
+.cl-subtitle{font-size:11px;color:var(--dim);}
+.cl-entry{
+  display:flex;gap:16px;padding:12px 0;border-bottom:1px solid var(--bg3);
+}
+.cl-entry:last-child{border-bottom:none;}
+.cl-date{font-size:10px;color:var(--dim);white-space:nowrap;padding-top:2px;min-width:80px;}
+.cl-body .cl-tag{
+  display:inline-block;font-size:9px;padding:1px 7px;border-radius:10px;margin-bottom:5px;font-weight:bold;
+}
+.cl-tag.feat{background:rgba(88,166,255,.15);color:var(--blue);border:1px solid rgba(88,166,255,.3);}
+.cl-tag.exp{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3);}
+.cl-tag.data{background:rgba(188,140,255,.15);color:var(--purple);border:1px solid rgba(188,140,255,.3);}
+.cl-tag.analysis{background:rgba(227,179,65,.15);color:var(--yellow);border:1px solid rgba(227,179,65,.3);}
+.cl-body .cl-text{font-size:11px;color:var(--dim);line-height:1.6;}
+.cl-body .cl-text strong{color:var(--text);}
 </style>
 </head>
 <body>
@@ -208,12 +245,90 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     <a class="nav-link" href="/index.html">Pipeline Demo</a>
     <a class="nav-link active" href="/research.html">Investigación SLM</a>
   </nav>
-  <div class="header-right">
-    Qwen2.5-1.5B · A30 24GB · Ollama · GGUF
+  <div class="header-right" style="display:flex;align-items:center;gap:12px;">
+    <span style="font-size:11px;color:var(--dim);">Qwen2.5-1.5B · A30 24GB · Ollama · GGUF</span>
+    <button class="changelog-btn" onclick="toggleChangelog()">
+      <span class="v-dot"></span>
+      v2 · Novedades
+    </button>
   </div>
 </header>
 
 <div class="page">
+
+  <!-- ── CHANGELOG ── -->
+  <div class="changelog-panel" id="changelog">
+    <div class="cl-header">
+      <div>
+        <div class="cl-title">Novedades — v2</div>
+        <div class="cl-subtitle">Últimas actualizaciones del experimento · 2026-06-02</div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-02</div>
+      <div class="cl-body">
+        <span class="cl-tag data">HuggingFace</span>
+        <div class="cl-text">
+          <strong>Todos los modelos y datasets subidos públicamente.</strong>
+          3 repositorios: <code>k8s-rca-dataset</code> (SFT + DPO pairs + eval),
+          <code>k8s-rca-slm</code> (GGUF Q4_K_M + Q8_0), <code>k8s-rca-experiments</code>
+          (DPO + SimPO LoRA adapters + GGUF SimPO). Reproducible por terceros.
+        </div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-02</div>
+      <div class="cl-body">
+        <span class="cl-tag exp">Experimento</span>
+        <div class="cl-text">
+          <strong>SimPO implementado y evaluado — resultado negativo confirmado.</strong>
+          Elimina el ref_model (problema del DPO v1). Señal real en training
+          (loss 0.045 → 0.011, rewards/margins 6.87 → 12.47) pero β=2.0 demasiado agresivo:
+          el modelo aprende a suprimir salida en lugar de mejorarla. Parse% = 0.5%.
+        </div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-02</div>
+      <div class="cl-body">
+        <span class="cl-tag exp">Experimento</span>
+        <div class="cl-text">
+          <strong>DPO v1 evaluado — resultado negativo.</strong>
+          π_θ ≈ π_ref desde el paso 1 (SFT memorizado = referencia perfecta).
+          Loss final 3.04 × 10⁻⁷. Gradientes casi nulos corrompieron pesos de formato.
+          Parse% = 0.0%.
+        </div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-02</div>
+      <div class="cl-body">
+        <span class="cl-tag analysis">Diagnóstico</span>
+        <div class="cl-text">
+          <strong>Causa raíz consolidada: el SFT sobreajustado bloquea cualquier preference optimization.</strong>
+          El problema no es la variante de loss (DPO vs SimPO) sino la base sobreajustada.
+          Corrección: SFT con ≥5k muestras y loss > 0.3 antes de reintentar.
+        </div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-01</div>
+      <div class="cl-body">
+        <span class="cl-tag feat">Base</span>
+        <div class="cl-text">
+          <strong>SFT QLoRA entrenado y evaluado.</strong>
+          986 muestras sintéticas, 14 escenarios K8s. Resultado:
+          Parse% 56.2%, ROUGE-L 56.7%, latencia 0.82s — único modelo funcional.
+          Modelo base: Qwen2.5-1.5B-Instruct en GPU A30 24GB.
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── INTRO ── -->
   <div class="section">
@@ -600,6 +715,17 @@ new Chart(document.getElementById('chart-quality'), {
     }
   }
 });
+
+// ── Changelog toggle ─────────────────────────────────────────────────────────
+function toggleChangelog() {
+  const panel = document.getElementById('changelog');
+  panel.classList.toggle('open');
+}
+// Auto-abrir si viene con #novedades o es la primera visita
+if (location.hash === '#novedades' || !sessionStorage.getItem('cl_seen')) {
+  document.getElementById('changelog').classList.add('open');
+  sessionStorage.setItem('cl_seen', '1');
+}
 </script>
 </body>
 </html>
