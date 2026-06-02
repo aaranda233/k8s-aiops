@@ -119,30 +119,35 @@ def train(args: argparse.Namespace) -> None:
         bnb_4bit_use_double_quant  = True,
     )
 
-    # Cargar el modelo base con los adaptadores SFT ya aplicados
+    # El checkpoint SFT tiene campos propietarios de unsloth en adapter_config.json.
+    # Cargamos el modelo base de HF directamente y aplicamos los pesos LoRA manualmente.
+    import json, tempfile, shutil
+    from peft import PeftModel
+
+    # Leer el base_model del config SFT para saber qué modelo base usar
+    sft_cfg_path = Path(args.sft_model) / "adapter_config.json"
+    with open(sft_cfg_path) as f:
+        sft_cfg = json.load(f)
+
+    # unsloth usa su propio hub slug — mapeamos al original de HuggingFace
+    base_model_id = sft_cfg.get("base_model_name_or_path", "Qwen/Qwen2.5-1.5B-Instruct")
+    if "unsloth" in base_model_id:
+        base_model_id = "Qwen/Qwen2.5-1.5B-Instruct"
+    print(f"  Base model: {base_model_id}")
+
     base = AutoModelForCausalLM.from_pretrained(
-        args.sft_model,
+        base_model_id,
         quantization_config = bnb_cfg,
         device_map          = "auto",
         torch_dtype         = torch.bfloat16,
+        cache_dir           = str(Path(args.sft_model).parent.parent / ".cache"),
     )
     base.config.use_cache = False
     base.enable_input_require_grads()
 
-    # ── 2. Añadir adaptadores LoRA nuevos para DPO ───────────────────────────
-    print("[2/4] Configurando adaptadores LoRA para DPO...")
-    lora_cfg = LoraConfig(
-        r              = args.lora_r,
-        lora_alpha     = args.lora_alpha,
-        lora_dropout   = 0.05,
-        target_modules = [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
-        bias           = "none",
-        task_type      = "CAUSAL_LM",
-    )
-    model = get_peft_model(base, lora_cfg)
+    # Cargar los pesos LoRA del SFT (los campos desconocidos se ignoran automáticamente en peft>=0.19)
+    model = PeftModel.from_pretrained(base, args.sft_model, is_trainable=True)
+    print("  Adaptadores SFT cargados correctamente.")
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total     = sum(p.numel() for p in model.parameters())
