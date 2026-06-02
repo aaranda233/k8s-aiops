@@ -100,41 +100,49 @@ def train(args: argparse.Namespace) -> None:
     print(f"  Output     : {args.output}")
     print("═" * 60 + "\n")
 
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model, PeftModel
     from trl import DPOTrainer, DPOConfig
 
-    # Intentar parche de unsloth (acelera 2x) — ignorar si hay incompatibilidad de versiones
-    try:
-        from unsloth import FastLanguageModel, PatchDPOTrainer
-        PatchDPOTrainer()
-        print("  [unsloth] PatchDPOTrainer activado.")
-    except Exception as e:
-        print(f"  [unsloth] PatchDPOTrainer no disponible ({e}) — usando TRL estándar.")
-        from unsloth import FastLanguageModel
+    # ── 1. Cargar tokenizer y modelo SFT con QLoRA 4-bit ─────────────────────
+    print("[1/4] Cargando modelo SFT con QLoRA 4-bit (PEFT + bitsandbytes)...")
 
-    # ── 1. Cargar modelo SFT (punto de partida del DPO) ──────────────────────
-    print("[1/4] Cargando modelo SFT con QLoRA 4-bit...")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name     = args.sft_model,
-        max_seq_length = args.max_seq_len,
-        dtype          = None,
-        load_in_4bit   = True,
+    tokenizer = AutoTokenizer.from_pretrained(args.sft_model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_cfg = BitsAndBytesConfig(
+        load_in_4bit               = True,
+        bnb_4bit_quant_type        = "nf4",
+        bnb_4bit_compute_dtype     = torch.bfloat16,
+        bnb_4bit_use_double_quant  = True,
     )
+
+    # Cargar el modelo base con los adaptadores SFT ya aplicados
+    base = AutoModelForCausalLM.from_pretrained(
+        args.sft_model,
+        quantization_config = bnb_cfg,
+        device_map          = "auto",
+        torch_dtype         = torch.bfloat16,
+    )
+    base.config.use_cache = False
+    base.enable_input_require_grads()
 
     # ── 2. Añadir adaptadores LoRA nuevos para DPO ───────────────────────────
     print("[2/4] Configurando adaptadores LoRA para DPO...")
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r                = args.lora_r,
-        lora_alpha       = args.lora_alpha,
-        lora_dropout     = 0.05,
-        target_modules   = [
+    lora_cfg = LoraConfig(
+        r              = args.lora_r,
+        lora_alpha     = args.lora_alpha,
+        lora_dropout   = 0.05,
+        target_modules = [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
         ],
-        bias             = "none",
-        use_gradient_checkpointing = "unsloth",
-        random_state     = 42,
+        bias           = "none",
+        task_type      = "CAUSAL_LM",
     )
+    model = get_peft_model(base, lora_cfg)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total     = sum(p.numel() for p in model.parameters())
@@ -195,33 +203,47 @@ def train(args: argparse.Namespace) -> None:
 # ── Cuantización a GGUF Q4_K_M ───────────────────────────────────────────────
 
 def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
+    """Fusiona LoRA + exporta GGUF usando unsloth (solo para export, no training)."""
     import shutil
-    from unsloth import FastLanguageModel
+    import subprocess
 
-    out_dir  = Path(output_dir)
-    tmp_dir  = out_dir / "_merged_tmp"
+    out_dir = Path(output_dir)
+    tmp_dir = out_dir / "_merged_tmp"
 
-    print("  Fusionando LoRA con modelo base...")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        lora_path,
-        max_seq_length=1024,
-        load_in_4bit=True,
+    print("  Fusionando adaptadores LoRA con modelo base (fp16)...")
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from peft import PeftModel
+
+    tokenizer = AutoTokenizer.from_pretrained(lora_path)
+    base = AutoModelForCausalLM.from_pretrained(
+        lora_path, torch_dtype=torch.float16, device_map="auto"
     )
-    model.save_pretrained_merged(str(tmp_dir), tokenizer, save_method="merged_16bit")
-    del model
+    merged = PeftModel.from_pretrained(base, lora_path)
+    merged = merged.merge_and_unload()
+    merged.save_pretrained(str(tmp_dir))
+    tokenizer.save_pretrained(str(tmp_dir))
+    del merged, base
+    print(f"  Modelo fusionado en: {tmp_dir}")
 
-    print("  Cuantizando a Q4_K_M...")
-    model_f16, tok = FastLanguageModel.from_pretrained(str(tmp_dir), load_in_4bit=False)
-    model_f16.save_pretrained_gguf(
-        str(out_dir / "k8s-rca-dpo"),
-        tok,
-        quantization_method="q4_k_m",
+    # Convertir a GGUF con llama.cpp (debe estar instalado en el sistema)
+    gguf_path = out_dir / "k8s-rca-dpo-Q4_K_M.gguf"
+    print("  Convirtiendo a GGUF Q4_K_M con llama.cpp...")
+    result = subprocess.run(
+        ["python3", "convert_hf_to_gguf.py", str(tmp_dir),
+         "--outfile", str(gguf_path), "--outtype", "q4_k_m"],
+        capture_output=True, text=True
     )
+    if result.returncode != 0:
+        print(f"  [!] Error en conversión GGUF: {result.stderr[:500]}")
+        print(f"  Modelo fusionado disponible en: {tmp_dir}")
+        print(f"  Convierte manualmente con llama.cpp")
+    else:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        print(f"  GGUF listo: {gguf_path}")
 
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    print(f"  GGUF listo: {out_dir}/k8s-rca-dpo-Q4_K_M.gguf")
     print(f"\n  Registrar en Ollama:")
-    print(f"    ollama create k8s-rca-dpo -f finetune/Modelfile_dpo")
+    print(f"    cd finetune && ollama create k8s-rca-dpo -f Modelfile_dpo")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
