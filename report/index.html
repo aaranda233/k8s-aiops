@@ -526,6 +526,7 @@
     <a href="#capa3">Diagnóstico</a>
     <a href="#dataset">Dataset</a>
     <a href="#entrenamiento">Entrenamiento</a>
+    <a href="#alineacion">Alineación</a>
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
     <a href="#artifacts">Artefactos</a>
@@ -823,6 +824,128 @@ KUBECTL: kubectl [comando exacto para investigar o mitigar]</pre>
   </div>
 </section>
 
+<!-- ALINEACIÓN -->
+<section id="alineacion">
+  <div class="container">
+    <h2>Alineación del SLM — DPO y ORPO</h2>
+    <p class="section-lead">5 experimentos de alineación por preferencias · 7 modelos evaluados · 210 muestras ciegas · seed=99</p>
+
+    <p>El SFT v1 establece que el modelo aprende el formato estructurado <code>ROOT CAUSE / KUBECTL</code>, pero con un coste: la memorización reduce el vocabulario libre (Keyword% cae de 92.4% a 60.0%). La segunda fase del proyecto busca resolver esta tensión mediante técnicas de alineación por preferencias.</p>
+
+    <div class="callout">
+      <strong>Tensión fundamental identificada:</strong> existe un trade-off empírico entre Parse% y Keyword% a lo largo de todos los experimentos. Los métodos que mejoran el vocabulario libre (DPO) destruyen el formato; los que aprenden formato (SFT) restringen el vocabulario. ORPO es el primer método que, por diseño matemático, optimiza simultáneamente ambas señales.
+    </div>
+
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Direct Preference Optimization (DPO)</h3>
+    <p>DPO (Rafailov et al., 2023) elimina la necesidad de un modelo de recompensa explícito. La pérdida se define directamente sobre pares <em>chosen / rejected</em> usando un cociente de log-probabilidades como reward implícita:</p>
+
+    <pre style="font-size:13px; margin:16px 0;">L_DPO = −log σ( β · log[P_θ(chosen)/P_ref(chosen)] − β · log[P_θ(rejected)/P_ref(rejected)] )
+
+β      = peso de la divergencia respecto al modelo de referencia
+P_ref  = modelo de referencia fijo (checkpoint antes del entrenamiento DPO)
+
+Reward implícita: r(x,y) = β · log[ P_θ(y|x) / P_ref(y|x) ]
+No hay evaluador externo — el cociente de log-probabilidades es la señal.</pre>
+
+    <h4 style="margin-top:32px; font-size:15px; color:var(--text);">Experimento DPO v1 — problema de formato en rejected</h4>
+    <p>El baseline <code>qwen2.5:1.5b</code> genera formato ROOT CAUSE/KUBECTL solo el <strong>38.6%</strong> del tiempo. Al usar sus respuestas como <em>rejected</em>, el modelo aprende que el formato es la característica discriminante y lo evita:</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Par DPO v1</th><th>Formato</th><th>Contenido</th></tr>
+        <tr><td>chosen</td><td>ROOT CAUSE + KUBECTL ✓</td><td>Correcto ✓</td></tr>
+        <tr><td>rejected (60% de los casos)</td><td>Texto libre sin estructura ✗</td><td>Incorrecto ✗</td></tr>
+      </table>
+    </div>
+    <p style="font-size:14px; color:var(--muted); margin-top:8px;">Resultado: DPO v1 mejora Keyword% (82.9%) pero destruye Parse% (16.2%). El modelo aprendió que el formato diferencia bueno de malo — y lo evita.</p>
+
+    <h4 style="margin-top:32px; font-size:15px; color:var(--text);">Experimento DPO v2 — formato garantizado en ambos lados</h4>
+    <p>1960 pares donde chosen y rejected comparten exactamente los mismos tokens de estructura. El gradiente de preferencia actúa solo sobre contenido semántico:</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Tipo de par</th><th>%</th><th>Descripción</th></tr>
+        <tr><td>cross_scenario</td><td>70%</td><td>chosen correcto · rejected = respuesta de escenario distinto (mismo formato, contenido incorrecto)</td></tr>
+        <tr><td>wrong_kubectl</td><td>30%</td><td>chosen correcto · rejected = misma ROOT CAUSE + verbo kubectl incorrecto para el tipo de fallo</td></tr>
+      </table>
+    </div>
+
+    <h4 style="margin-top:32px; font-size:15px; color:var(--text);">Mode collapse en DPO v2 — señales de training</h4>
+    <p>A pesar del dataset mejorado, DPO v2 colapsa en el step 20 (epoch 0.16/1.0). Los pares cross_scenario son semánticamente muy distintos — el modelo los distingue perfectamente desde el inicio, la accuracy satura a 100% y el entrenamiento restante solo deriva la distribución:</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Step</th><th>Loss</th><th>Rewards/acc</th><th>logps/chosen</th><th>logps/rejected</th></tr>
+        <tr><td>10</td><td>0.287</td><td>92.5%</td><td>−22.7</td><td>−102.9</td></tr>
+        <tr style="background:#fef2f2;"><td><strong>20</strong></td><td><strong>0.001</strong></td><td><strong>100%</strong> ⚠️ colapso</td><td>−40.2</td><td>−191.8</td></tr>
+        <tr><td>30</td><td>0.039</td><td>99.4%</td><td>−94.1</td><td>−314.6</td></tr>
+        <tr><td>120</td><td>0.000</td><td>100%</td><td>−104.1</td><td>−358.3</td></tr>
+      </table>
+    </div>
+    <p style="font-size:14px; color:var(--muted); margin-top:8px;"><strong>logps/chosen</strong> cae de −22 a −104: el modelo se vuelve menos probable de generar incluso las respuestas correctas. DPO v2 alcanza Keyword%=87.1% (máximo contenido) pero Parse%=8.1% (mínimo formato). Esta disociación entre conocimiento y expresión estructurada es el problema central que ORPO resuelve.</p>
+
+    <h3 style="margin-top:56px; font-family:'Lora',serif; font-size:22px;">ORPO — Odds Ratio Preference Optimization</h3>
+    <p>ORPO (Hong et al., 2024) combina la pérdida SFT y la pérdida de preferencia en un único paso, sin modelo de referencia separado. El término L_SFT actúa como ancla continua de formato durante todo el entrenamiento:</p>
+
+    <pre style="font-size:13px; margin:16px 0;">L_ORPO = L_SFT + λ · L_OR
+
+L_SFT = cross-entropy sobre chosen tokens          → ancla el formato en cada step
+L_OR  = −log σ( log[P(chosen)/P(rejected)] )       → aprende preferencia vía odds ratio
+λ     = balance entre ambas pérdidas (λ = 0.1)
+
+Sin modelo de referencia: el odds ratio entre chosen y rejected es suficiente.
+L_SFT previene que L_OR desvíe al modelo de la distribución estructurada.</pre>
+
+    <div class="table-wrap" style="margin-top:20px;">
+      <table>
+        <tr><th>Aspecto</th><th>DPO</th><th>ORPO</th></tr>
+        <tr><td>Modelo de referencia</td><td>Necesario (ref_model)</td><td>No necesario</td></tr>
+        <tr><td>Señal de formato</td><td>Solo indirecta (regularización β)</td><td>Directa — L_SFT en cada step</td></tr>
+        <tr><td>Hiperparámetro crítico</td><td>β — divergencia del ref</td><td>λ — balance SFT/preferencia</td></tr>
+        <tr><td>Riesgo de colapso de formato</td><td>Alto si base es débil en formato</td><td>Bajo — L_SFT lo previene</td></tr>
+        <tr><td>Eficiencia de memoria</td><td>Requiere ref en memoria</td><td>Solo un modelo</td></tr>
+        <tr><td>Punto de partida</td><td>Desde checkpoint SFT</td><td>Desde modelo base directamente</td></tr>
+      </table>
+    </div>
+
+    <h4 style="margin-top:32px; font-size:15px; color:var(--text);">Señales de training ORPO — saludables (3 épocas, 369 steps)</h4>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Step</th><th>Loss</th><th>Rewards/acc</th><th>logps/chosen</th><th>logps/rejected</th></tr>
+        <tr><td>10</td><td>1.119</td><td>80.0%</td><td>−2.39</td><td>−2.76</td></tr>
+        <tr><td>60</td><td>0.652</td><td>96.9%</td><td>−1.67</td><td>−2.26</td></tr>
+        <tr><td>120 (fin época 1)</td><td>0.534</td><td>99.3%</td><td>−1.52</td><td>−2.21</td></tr>
+        <tr><td>240 (fin época 2)</td><td>0.388</td><td>100%</td><td>−1.12</td><td>−2.09</td></tr>
+        <tr style="background:#f0fdf4;"><td><strong>369 (fin época 3)</strong></td><td><strong>0.307</strong></td><td>100%</td><td><strong>−0.75</strong> ✅</td><td>−2.16</td></tr>
+      </table>
+    </div>
+    <p style="font-size:14px; color:var(--muted); margin-top:8px;"><strong>logps/chosen</strong> sube de −2.39 a −0.75 (el modelo es más probable de generar chosen). Contraste con DPO v2 donde cayó de −22 a −104. nll_loss (L_SFT) baja de 1.06 a 0.28: el formato se consolida progresivamente en cada step.</p>
+
+    <h3 style="margin-top:56px; font-family:'Lora',serif; font-size:22px;">Comparativa cuantitativa de todos los modelos</h3>
+    <p>Harness de evaluación: 210 muestras ciegas · 14 escenarios · seed=99 · inferencia CPU Intel Xeon Gold 6526Y</p>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Modelo</th><th>Parse%</th><th>Keyword%</th><th>ROUGE-L</th><th>NS-ok%</th><th>Verb-ok%</th><th>Lat. media</th></tr>
+        <tr><td>Baseline (Qwen2.5-1.5B)</td><td>38.6%</td><td>92.4%</td><td>2.5%</td><td>1.4%</td><td>1.9%</td><td>1.00s</td></tr>
+        <tr><td>SFT v1</td><td>56.2%</td><td>60.0%</td><td>56.7%</td><td>32.9%</td><td>41.0%</td><td>0.86s</td></tr>
+        <tr><td>SFT v2</td><td>35.2%</td><td>64.3%</td><td>41.2%</td><td>22.4%</td><td>43.3%</td><td>0.89s</td></tr>
+        <tr><td>DPO v1</td><td>16.2%</td><td>82.9%</td><td>2.4%</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>SimPO</td><td>16.7%</td><td>86.7%</td><td>57.7%</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>DPO v2</td><td>8.1%</td><td>87.1%</td><td>21.7%</td><td>6.2%</td><td>31.9%</td><td>0.81s</td></tr>
+        <tr style="background:#f0fdf4; font-weight:600;"><td>ORPO ✅</td><td>58.1%</td><td>67.1%</td><td>16.2%</td><td>48.1%</td><td>49.5%</td><td>0.91s</td></tr>
+      </table>
+    </div>
+
+    <div class="chart-box" style="margin-top:32px;">
+      <h4>Parse% · Keyword% · NS-ok% por modelo</h4>
+      <p>ORPO es el único método que mejora simultáneamente Parse% (≥SFT v1) y kubectl accuracy (NS/Verb-ok%) sin colapsar en formato.</p>
+      <canvas id="alignChart" height="110"></canvas>
+    </div>
+
+  </div>
+</section>
+
 <!-- RESULTADOS -->
 <section id="resultados">
   <div class="container">
@@ -1096,6 +1219,70 @@ new Chart(ctx, {
         grid: { drawOnChartArea: false },
         ticks: { color: '#7c3aed', font: { size: 11 }, callback: v => v.toExponential(1) },
         title: { display: true, text: 'Learning Rate', color: '#7c3aed', font: { size: 12 } },
+      }
+    }
+  }
+});
+
+// Alignment comparison chart
+const alignCtx = document.getElementById('alignChart').getContext('2d');
+const alignModels = ['Baseline', 'SFT v1', 'SFT v2', 'DPO v1', 'SimPO', 'DPO v2', 'ORPO'];
+new Chart(alignCtx, {
+  type: 'bar',
+  data: {
+    labels: alignModels,
+    datasets: [
+      {
+        label: 'Parse%',
+        data: [38.6, 56.2, 35.2, 16.2, 16.7, 8.1, 58.1],
+        backgroundColor: 'rgba(37,99,235,0.75)',
+        borderColor: '#2563eb',
+        borderWidth: 1,
+        borderRadius: 3,
+      },
+      {
+        label: 'Keyword%',
+        data: [92.4, 60.0, 64.3, 82.9, 86.7, 87.1, 67.1],
+        backgroundColor: 'rgba(124,58,237,0.65)',
+        borderColor: '#7c3aed',
+        borderWidth: 1,
+        borderRadius: 3,
+      },
+      {
+        label: 'NS-ok%',
+        data: [1.4, 32.9, 22.4, null, null, 6.2, 48.1],
+        backgroundColor: 'rgba(21,128,61,0.65)',
+        borderColor: '#15803d',
+        borderWidth: 1,
+        borderRadius: 3,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#78716c', font: { size: 12 } } },
+      tooltip: {
+        backgroundColor: '#fff',
+        borderColor: '#e5e2da',
+        borderWidth: 1,
+        titleColor: '#1c1917',
+        bodyColor: '#78716c',
+        callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y !== null ? ctx.parsed.y.toFixed(1) + '%' : '—'}` }
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: '#f0ede8' },
+        ticks: { color: '#78716c', font: { size: 11 } }
+      },
+      y: {
+        grid: { color: '#f0ede8' },
+        ticks: { color: '#78716c', font: { size: 11 }, callback: v => v + '%' },
+        min: 0,
+        max: 100,
+        title: { display: true, text: 'Porcentaje (%)', color: '#78716c', font: { size: 12 } }
       }
     }
   }

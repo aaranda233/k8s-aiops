@@ -32,6 +32,8 @@ MODELS = {
     "sft":      "k8s-rca-slm",
     "sft_v2":   "k8s-rca-slm-v2",
     "dpo":      "k8s-rca-dpo",
+    "dpo_v2":   "k8s-rca-dpo-v2",
+    "orpo":     "k8s-rca-orpo",
     "simpo":    "k8s-rca-simpo",
     "baseline": "qwen2.5:1.5b",
 }
