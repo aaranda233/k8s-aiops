@@ -934,12 +934,30 @@ L_SFT previene que L_OR desvíe al modelo de la distribución estructurada.</pre
         <tr><td>SimPO</td><td>16.7%</td><td>86.7%</td><td>57.7%</td><td>—</td><td>—</td><td>—</td></tr>
         <tr><td>DPO v2</td><td>8.1%</td><td>87.1%</td><td>21.7%</td><td>6.2%</td><td>31.9%</td><td>0.81s</td></tr>
         <tr style="background:#f0fdf4; font-weight:600;"><td>ORPO ✅</td><td>58.1%</td><td>67.1%</td><td>16.2%</td><td>48.1%</td><td>49.5%</td><td>0.91s</td></tr>
+        <tr style="background:#fef2f2;"><td>KTO ❌</td><td>0.0%</td><td>0.0%</td><td>0.0%</td><td>0.0%</td><td>28.6%</td><td><strong>0.49s</strong></td></tr>
       </table>
     </div>
 
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">KTO — Kahneman-Tversky Optimization</h3>
+    <p>KTO (Ethayarajh et al., 2023) es el único método probado que no requiere pares chosen/rejected. Cada muestra se etiqueta independientemente como deseable o indeseable, basándose en la <strong>prospect theory</strong>:</p>
+
+    <pre style="font-size:13px; margin:16px 0;">L_KTO_d = 1 − σ( β·(log[Pθ/Pref] − z_ref) )   ← muestras deseables (label=True)
+L_KTO_u = 1 − σ( β·(z_ref − log[Pθ/Pref]) )   ← muestras indeseables (label=False)
+
+z_ref = KL(Pθ || Pref)   ← divergencia KL como punto de referencia
+
+Dataset: 980 positivos (ground-truth SFT) + 980 negativos (rejected DPO v2)
+Sin pares — cada muestra es independiente.</pre>
+
+    <p>A pesar de que las señales de training eran aparentemente saludables (rewards/margins=+8.5, loss=0.16), KTO colapsa completamente en formato. La causa es la misma que en DPO pero amplificada: <strong>sin L_SFT que ancle el formato y sin comparación directa de pares en el batch</strong>, el modelo aprende a distinguir bueno/malo en el espacio de rewards pero pierde la estructura. El único indicador positivo: Verb-ok%=28.6% — el modelo conoce los comandos kubectl pero no puede expresarlos en el formato requerido.</p>
+
+    <div class="callout">
+      <strong>Conclusión experimental:</strong> KTO confirma que el ancla continua de formato (L_SFT en ORPO) es el factor determinante para evitar el colapso en SLMs pequeños de generación estructurada. Ningún método basado únicamente en preferencias (DPO, SimPO, KTO) logra mantener el formato sin esta señal explícita.
+    </div>
+
     <div class="chart-box" style="margin-top:32px;">
-      <h4>Parse% · Keyword% · NS-ok% por modelo</h4>
-      <p>ORPO es el único método que mejora simultáneamente Parse% (≥SFT v1) y kubectl accuracy (NS/Verb-ok%) sin colapsar en formato.</p>
+      <h4>Parse% · Keyword% · NS-ok% — todos los modelos</h4>
+      <p>KTO y DPO v2 colapsan en formato. ORPO es el único que equilibra ambas señales.</p>
       <canvas id="alignChart" height="110"></canvas>
     </div>
 
@@ -1226,7 +1244,7 @@ new Chart(ctx, {
 
 // Alignment comparison chart
 const alignCtx = document.getElementById('alignChart').getContext('2d');
-const alignModels = ['Baseline', 'SFT v1', 'SFT v2', 'DPO v1', 'SimPO', 'DPO v2', 'ORPO'];
+const alignModels = ['Baseline', 'SFT v1', 'SFT v2', 'DPO v1', 'SimPO', 'DPO v2', 'ORPO', 'KTO'];
 new Chart(alignCtx, {
   type: 'bar',
   data: {
@@ -1234,7 +1252,7 @@ new Chart(alignCtx, {
     datasets: [
       {
         label: 'Parse%',
-        data: [38.6, 56.2, 35.2, 16.2, 16.7, 8.1, 58.1],
+        data: [38.6, 56.2, 35.2, 16.2, 16.7, 8.1, 58.1, 0.0],
         backgroundColor: 'rgba(37,99,235,0.75)',
         borderColor: '#2563eb',
         borderWidth: 1,
@@ -1242,7 +1260,7 @@ new Chart(alignCtx, {
       },
       {
         label: 'Keyword%',
-        data: [92.4, 60.0, 64.3, 82.9, 86.7, 87.1, 67.1],
+        data: [92.4, 60.0, 64.3, 82.9, 86.7, 87.1, 67.1, 0.0],
         backgroundColor: 'rgba(124,58,237,0.65)',
         borderColor: '#7c3aed',
         borderWidth: 1,
@@ -1250,7 +1268,7 @@ new Chart(alignCtx, {
       },
       {
         label: 'NS-ok%',
-        data: [1.4, 32.9, 22.4, null, null, 6.2, 48.1],
+        data: [1.4, 32.9, 22.4, null, null, 6.2, 48.1, 0.0],
         backgroundColor: 'rgba(21,128,61,0.65)',
         borderColor: '#15803d',
         borderWidth: 1,

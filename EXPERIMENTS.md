@@ -23,6 +23,7 @@
 | SimPO (TEMPLATE fijo) | SFT v1 | 826 pares, baseline rejected | 16.7% | **86.7%** | 57.7% | ⚠️ colapsó formato |
 | DPO v2 | SFT v2 | 1960 pares, formato garantizado | 8.1% | **87.1%** | 21.7% | ❌ mode collapse |
 | **ORPO** | Qwen2.5-1.5B | 1960 pares, formato garantizado | **58.1%** | 67.1% | 16.2% | ✅ mejor formato+kubectl |
+| KTO | Qwen2.5-1.5B | 1960 muestras (980 pos/980 neg), no pareadas | 0.0% | 0.0% | 0.0% | ❌ colapso total de formato |
 
 *Harness: 210 muestras × 14 escenarios, seed=99, Ollama GGUF en CPU Intel Xeon Gold 6526Y*
 
@@ -386,12 +387,96 @@ DPO v1           16.2%     82.9%      2.4%   ← recupera vocabulario, destruye 
 SimPO            16.7%     86.7%     57.7%   ← similar a DPO v1, mejor ROUGE
 DPO v2            8.1%     87.1%     21.7%   ← máximo vocabulario, mínimo formato
 ORPO             58.1%     67.1%      16.2%  ← ✅ hipótesis confirmada: balance
+KTO               0.0%      0.0%      0.0%   ← colapso total — sin L_SFT ni modelo ref estable
 ```
 
 **Tensión fundamental identificada:** existe un trade-off empírico entre Parse% y Keyword%
 a lo largo de todos los experimentos. Los métodos que mejoran el vocabulario libre (DPO, SimPO)
 destruyen el formato; los que aprenden formato (SFT) restringen el vocabulario. ORPO es el
 primer método que, por diseño matemático, optimiza simultáneamente ambas señales.
+
+---
+
+## Experimento 6 — KTO (Kahneman-Tversky Optimization)
+
+**Fecha:** 2026-06-04
+**Scripts:** `finetune/generate_kto_dataset.py` + `finetune/train_kto.py`
+**Referencia:** Ethayarajh et al. (2023), "KTO: Model Alignment as Prospect Theoretic Optimization"
+**Objetivo:** contrastar ORPO (datos pareados) vs KTO (datos no pareados) para generación estructurada.
+
+### Motivación científica
+
+KTO es el único método probado que no requiere pares chosen/rejected. Cada muestra se etiqueta independientemente como deseable o indeseable, basándose en la prospect theory de Kahneman & Tversky:
+
+```
+L_KTO_d = 1 − σ( β·(log[Pθ/Pref] − z_ref) )   ← deseables
+L_KTO_u = 1 − σ( β·(z_ref − log[Pθ/Pref]) )   ← indeseables
+
+z_ref = KL(Pθ || Pref)   ← divergencia KL como punto de referencia
+```
+
+La hipótesis era: ¿un método basado en prospect theory (datos no pareados) puede igualar a ORPO (odds ratio, datos pareados) en generación estructurada?
+
+### Dataset KTO
+
+- **1960 muestras individuales** (no pareadas): 980 deseables (True) + 980 indeseables (False), ratio 1:1
+- **Deseables (True):** respuestas ground-truth del dataset SFT (`combined.jsonl`)
+- **Indeseables (False):** respuestas `rejected` extraídas del dataset DPO v2
+- Script: `finetune/generate_kto_dataset.py`
+
+### Configuración
+
+| Hiperparámetro | Valor |
+|----------------|-------|
+| Base model | Qwen2.5-1.5B-Instruct (igual que ORPO) |
+| Dataset | kto_dataset.jsonl — 1960 muestras individuales |
+| β (divergencia KL) | 0.1 (igual que DPO/ORPO para comparabilidad) |
+| LR | 8e-6, cosine (igual que ORPO) |
+| Épocas | 3 (369 steps) |
+| Batch size | 2 (KTO requiere batch > 1 para calcular z_ref) |
+| Grad accum | 8 → batch efectivo 16 |
+| Runtime | ~44 min en A30 24GB |
+| Train loss final | 0.1629 |
+
+### Señales de training — colapso tardío
+
+| Step | Loss | rewards/chosen | rewards/rejected | rewards/margins | KL |
+|------|------|----------------|------------------|-----------------|-----|
+| 10 | — | — | — | — | — |
+| fin época 3 | 0.163 | +3.4 | −5.0 | **+8.5** | ~0.3 |
+
+El training parecía saludable (rewards/margins positivo y creciente). Sin embargo, **logps/chosen cayó a −133**: el modelo aprendió a distinguir deseables de indeseables en el espacio de rewards, pero se alejó tanto de la distribución original que perdió completamente el formato.
+
+### Resultados
+
+| Métrica | KTO | ORPO | SFT v1 | Baseline |
+|---------|-----|------|--------|----------|
+| **Parse%** | **0.0%** ❌ | 58.1% | 56.2% | 38.6% |
+| **Keyword%** | **0.0%** | 67.1% | 60.0% | 92.4% |
+| **ROUGE-L** | **0.0%** | 16.2% | 56.7% | 2.5% |
+| **NS-ok%** | **0.0%** | 48.1% | 32.9% | 1.4% |
+| **Verb-ok%** | 28.6% | 49.5% | 41.0% | 1.9% |
+| **Lat. media** | **0.49s** ✅ | 0.91s | 0.86s | 0.96s |
+
+*N = 210 muestras ciegas, seed=99*
+
+### Interpretación
+
+KTO sufre el colapso de formato más severo de todos los experimentos (Parse%=0.0%) a pesar de que las señales de training eran aparentemente saludables. Tres causas:
+
+1. **Sin L_SFT:** KTO no tiene un término de cross-entropy sobre las respuestas deseables que ancle el formato en cada step — el mismo problema que DPO, pero más grave porque tampoco tiene el ancla del odds ratio de ORPO.
+
+2. **Necesita ref_model:** Como DPO, KTO depende de un modelo de referencia para calcular z_ref. El modelo base Qwen2.5-1.5B-Instruct tiene Parse%=38.6% — inestable. La divergencia KL acumula errores relativos a una referencia imperfecta en formato.
+
+3. **Datos no pareados amplían el problema:** Sin la comparación directa chosen/rejected en el mismo batch, el modelo no recibe señal sobre qué diferencia una respuesta bien formateada de otra mal formateada — solo sabe que las deseables son "buenas" en abstracto.
+
+**Hallazgo notable:** Verb-ok%=28.6% con Parse%=0.0% indica que el modelo genera texto con verbos kubectl válidos embebidos en lenguaje libre — sabe el contenido pero no puede estructurarlo. Idéntico patrón al DPO v2 (Keyword%=87%, Parse%=8%) pero más extremo.
+
+**Latencia más baja de todos los modelos (0.49s):** el colapso de formato genera respuestas cortas sin estructura → inferencia más rápida. No es una ventaja útil en este contexto.
+
+### Conclusión para la tesis
+
+> KTO confirma la hipótesis central del proyecto: sin un anclaje explícito de formato durante el entrenamiento (L_SFT en ORPO), cualquier método de alineación por preferencias colapsa el formato en SLMs pequeños (1.5B) especializados en generación estructurada. ORPO es el único método que evita este colapso por diseño matemático.
 
 ---
 
