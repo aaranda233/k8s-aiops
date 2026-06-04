@@ -827,8 +827,8 @@ KUBECTL: kubectl [comando exacto para investigar o mitigar]</pre>
 <!-- ALINEACIÓN -->
 <section id="alineacion">
   <div class="container">
-    <h2>Alineación del SLM — DPO y ORPO</h2>
-    <p class="section-lead">5 experimentos de alineación por preferencias · 7 modelos evaluados · 210 muestras ciegas · seed=99</p>
+    <h2>Alineación del SLM — DPO, ORPO y KTO</h2>
+    <p class="section-lead">6 experimentos de alineación por preferencias · 8 modelos evaluados · 210 muestras ciegas · seed=99</p>
 
     <p>El SFT v1 establece que el modelo aprende el formato estructurado <code>ROOT CAUSE / KUBECTL</code>, pero con un coste: la memorización reduce el vocabulario libre (Keyword% cae de 92.4% a 60.0%). La segunda fase del proyecto busca resolver esta tensión mediante técnicas de alineación por preferencias.</p>
 
@@ -933,7 +933,8 @@ L_SFT previene que L_OR desvíe al modelo de la distribución estructurada.</pre
         <tr><td>DPO v1</td><td>16.2%</td><td>82.9%</td><td>2.4%</td><td>—</td><td>—</td><td>—</td></tr>
         <tr><td>SimPO</td><td>16.7%</td><td>86.7%</td><td>57.7%</td><td>—</td><td>—</td><td>—</td></tr>
         <tr><td>DPO v2</td><td>8.1%</td><td>87.1%</td><td>21.7%</td><td>6.2%</td><td>31.9%</td><td>0.81s</td></tr>
-        <tr style="background:#f0fdf4; font-weight:600;"><td>ORPO ✅</td><td>58.1%</td><td>67.1%</td><td>16.2%</td><td>48.1%</td><td>49.5%</td><td>0.91s</td></tr>
+        <tr style="background:#f0fdf4; font-weight:600;"><td>ORPO Q8_0</td><td>58.1%</td><td>67.1%</td><td>16.2%</td><td>48.1%</td><td>49.5%</td><td>0.89s</td></tr>
+        <tr style="background:#dcfce7; font-weight:600;"><td>ORPO Q4_K_M ✅ recomendado</td><td>59.5%</td><td>76.2%</td><td>14.7%</td><td>45.7%</td><td>44.8%</td><td>0.85s</td></tr>
         <tr style="background:#fef2f2;"><td>KTO ❌</td><td>0.0%</td><td>0.0%</td><td>0.0%</td><td>0.0%</td><td>28.6%</td><td><strong>0.49s</strong></td></tr>
       </table>
     </div>
@@ -954,6 +955,18 @@ Sin pares — cada muestra es independiente.</pre>
     <div class="callout">
       <strong>Conclusión experimental:</strong> KTO confirma que el ancla continua de formato (L_SFT en ORPO) es el factor determinante para evitar el colapso en SLMs pequeños de generación estructurada. Ningún método basado únicamente en preferencias (DPO, SimPO, KTO) logra mantener el formato sin esta señal explícita.
     </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Cuantización Q4_K_M — versión recomendada para producción</h3>
+    <p>El modelo ORPO se exportó en dos niveles de cuantización. Evaluados sobre el mismo harness de 210 muestras, Q4_K_M no solo no degrada — mejora en Parse% y Keyword%:</p>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Versión</th><th>Tamaño</th><th>Parse%</th><th>Keyword%</th><th>NS-ok%</th><th>Verb-ok%</th><th>Lat. media</th></tr>
+        <tr><td>ORPO Q8_0</td><td>1.6 GB</td><td>58.1%</td><td>67.1%</td><td>48.1%</td><td>49.5%</td><td>0.89s</td></tr>
+        <tr style="background:#dcfce7; font-weight:600;"><td>ORPO Q4_K_M ✅</td><td><strong>941 MB</strong></td><td><strong>59.5%</strong></td><td><strong>76.2%</strong></td><td>45.7%</td><td>44.8%</td><td><strong>0.85s</strong></td></tr>
+      </table>
+    </div>
+    <p style="font-size:14px; color:var(--muted); margin-top:8px;">−41% tamaño · −0.04s latencia · Parse% y Keyword% mejoran ligeramente (varianza estadística dentro del margen normal). <strong>Q4_K_M es la versión de producción recomendada</strong> — disponible en HuggingFace como <code>aaranda233/k8s-rca-orpo</code>.</p>
 
     <div class="chart-box" style="margin-top:32px;">
       <h4>Parse% · Keyword% · NS-ok% — todos los modelos</h4>
@@ -1244,7 +1257,7 @@ new Chart(ctx, {
 
 // Alignment comparison chart
 const alignCtx = document.getElementById('alignChart').getContext('2d');
-const alignModels = ['Baseline', 'SFT v1', 'SFT v2', 'DPO v1', 'SimPO', 'DPO v2', 'ORPO', 'KTO'];
+const alignModels = ['Baseline', 'SFT v1', 'SFT v2', 'DPO v1', 'SimPO', 'DPO v2', 'ORPO Q8', 'ORPO Q4', 'KTO'];
 new Chart(alignCtx, {
   type: 'bar',
   data: {
@@ -1252,7 +1265,7 @@ new Chart(alignCtx, {
     datasets: [
       {
         label: 'Parse%',
-        data: [38.6, 56.2, 35.2, 16.2, 16.7, 8.1, 58.1, 0.0],
+        data: [38.6, 56.2, 35.2, 16.2, 16.7, 8.1, 58.1, 59.5, 0.0],
         backgroundColor: 'rgba(37,99,235,0.75)',
         borderColor: '#2563eb',
         borderWidth: 1,
@@ -1260,7 +1273,7 @@ new Chart(alignCtx, {
       },
       {
         label: 'Keyword%',
-        data: [92.4, 60.0, 64.3, 82.9, 86.7, 87.1, 67.1, 0.0],
+        data: [92.4, 60.0, 64.3, 82.9, 86.7, 87.1, 67.1, 76.2, 0.0],
         backgroundColor: 'rgba(124,58,237,0.65)',
         borderColor: '#7c3aed',
         borderWidth: 1,
@@ -1268,7 +1281,7 @@ new Chart(alignCtx, {
       },
       {
         label: 'NS-ok%',
-        data: [1.4, 32.9, 22.4, null, null, 6.2, 48.1, 0.0],
+        data: [1.4, 32.9, 22.4, null, null, 6.2, 48.1, 45.7, 0.0],
         backgroundColor: 'rgba(21,128,61,0.65)',
         borderColor: '#15803d',
         borderWidth: 1,

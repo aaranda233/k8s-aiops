@@ -36,6 +36,7 @@ MODELS = {
     "orpo":     "k8s-rca-orpo",
     "simpo":    "k8s-rca-simpo",
     "kto":      "k8s-rca-kto",
+    "orpo_q4":  "k8s-rca-orpo-q4",
     "baseline": "qwen2.5:1.5b",
 }
 
