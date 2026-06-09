@@ -15,7 +15,9 @@ from config.settings import PipelineConfig
 from src.collector.k8s_collector import K8sCollector
 from src.detector.isolation_forest import AnomalyDetector, ScoredWindow
 from src.detector.window import WindowBuilder
+from src.diagnostics.hybrid_react_agent import HybridReActAgent
 from src.diagnostics.ollama_rca import DiagnosisResult, OllamaRCA
+from src.diagnostics.react_agent import ReActAgent
 from src.parser.log_parser import LogParser
 from src.tracking.mlflow_tracker import MLflowTracker, RetrainEvent
 
@@ -38,12 +40,36 @@ class AIOPsPipeline:
             contamination=cfg.detector.contamination,
             random_state=cfg.detector.random_state,
         )
-        self.rca = OllamaRCA(
-            host=cfg.diagnostics.host,
-            model=cfg.diagnostics.model,
-            max_logs=cfg.diagnostics.max_logs_in_prompt,
-            timeout=cfg.diagnostics.timeout_seconds,
-        ) if cfg.diagnostics.enabled else None
+        if cfg.diagnostics.enabled:
+            mode = cfg.diagnostics.react_mode
+            if mode == "hybrid":
+                self.rca = HybridReActAgent(
+                    host=cfg.diagnostics.host,
+                    base_model=cfg.diagnostics.react_base_model,
+                    expert_model=cfg.diagnostics.model,
+                    max_logs=cfg.diagnostics.max_logs_in_prompt,
+                    timeout=cfg.diagnostics.timeout_seconds,
+                    max_steps=cfg.diagnostics.react_max_steps,
+                    dry_run=cfg.diagnostics.react_dry_run,
+                )
+            elif mode == "react":
+                self.rca = ReActAgent(
+                    host=cfg.diagnostics.host,
+                    model=cfg.diagnostics.model,
+                    max_logs=cfg.diagnostics.max_logs_in_prompt,
+                    timeout=cfg.diagnostics.timeout_seconds,
+                    max_steps=cfg.diagnostics.react_max_steps,
+                    dry_run=cfg.diagnostics.react_dry_run,
+                )
+            else:  # single_shot (default)
+                self.rca = OllamaRCA(
+                    host=cfg.diagnostics.host,
+                    model=cfg.diagnostics.model,
+                    max_logs=cfg.diagnostics.max_logs_in_prompt,
+                    timeout=cfg.diagnostics.timeout_seconds,
+                )
+        else:
+            self.rca = None
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)
         self._scored_windows: list[ScoredWindow] = []
@@ -252,17 +278,34 @@ class AIOPsPipeline:
             result = self.rca.diagnose(scored)
             latency = time.time() - t0
             self._diagnoses.append(result)
+            mode_tag = f"[dim][{result.mode} · {result.steps_taken} paso(s) · confianza={result.confidence}][/]"
             console.print(f"  [bold]Causa:[/] {result.root_cause}")
-            console.print(f"  [bold]kubectl:[/] [cyan]{result.kubectl_command}[/]\n")
+            console.print(f"  [bold]kubectl:[/] [cyan]{result.kubectl_command}[/]")
+            console.print(f"  {mode_tag}\n")
             self._tracker.log_rca(result, latency_s=latency)
-            self._emit("rca", {
+            rca_event: dict = {
                 "window_index": result.window_index,
                 "score": round(result.anomaly_score, 4),
                 "namespaces": sorted(result.namespaces),
                 "root_cause": result.root_cause,
                 "kubectl": result.kubectl_command,
                 "model_version": result.model_version,
-            })
+                "mode": result.mode,
+                "confidence": result.confidence,
+                "steps_taken": result.steps_taken,
+            }
+            if result.react_trace:
+                rca_event["trace"] = [
+                    {
+                        "step": s.step,
+                        "thought": s.thought,
+                        "action": s.action,
+                        "observation": (s.observation or "")[:300],
+                        "is_final": s.is_final,
+                    }
+                    for s in result.react_trace
+                ]
+            self._emit("rca", rca_event)
         except Exception as e:
             console.print(f"  [red]Error RCA: {e}[/]")
             self._emit("rca", {"error": str(e), "window_index": scored.window.index})

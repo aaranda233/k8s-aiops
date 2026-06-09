@@ -3,9 +3,13 @@ Capa 3 — Root Cause Analysis via SLM local (Ollama).
 Solo se activa de forma reactiva cuando score >= threshold.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from src.diagnostics.react_agent import TraceStep
 
 _SYSTEM_PROMPT = """\
 You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
@@ -27,6 +31,11 @@ class DiagnosisResult:
     root_cause: str
     kubectl_command: str
     model_version: int
+    # Campos ReAct (opcionales, compatibles con single-shot)
+    confidence: str = "unknown"
+    steps_taken: int = 1
+    react_trace: list = field(default_factory=list)
+    mode: str = "single_shot"
 
 
 class OllamaRCA:

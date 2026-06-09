@@ -13,10 +13,15 @@ Modo grammar (--grammar):
 
 from __future__ import annotations
 
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
+
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from eval.metrics import (
     aggregate,
@@ -58,6 +63,17 @@ class ModelConfig:
     temperature: float = 0.0
     num_predict: int = 300
     use_grammar: bool = False   # activar grammar-constrained sampling
+
+
+@dataclass
+class HybridModelConfig:
+    name: str
+    base_model: str            # investigador vanilla (qwen2.5:1.5b)
+    expert_model: str          # diagnosticador fine-tuneado (k8s-rca-orpo)
+    host: str = "http://192.168.2.205:11434"
+    max_steps: int = 3
+    temperature: float = 0.0
+    num_predict: int = 300
 
 
 def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
@@ -188,6 +204,181 @@ def evaluate_model(
                 f"parsed={parsed_ok} kw={kw_ok} "
                 f"rl={result['rouge_l']:.2f} "
                 f"lat={latency:.2f}s"
+            )
+
+    agg = aggregate(results)
+    return results, agg
+
+
+# ---------------------------------------------------------------------------
+# Modo HYBRID: base model investiga, expert model diagnostica
+# ---------------------------------------------------------------------------
+
+_INVESTIGATOR_SYSTEM = """\
+You are a Kubernetes SRE assistant. Given anomalous cluster events, plan your investigation.
+
+For each step output:
+THOUGHT: <reasoning about what to check>
+ACTION: kubectl <read-only command>
+
+When done (or after 3 steps), output:
+THOUGHT: <final summary>
+DONE"""
+
+_EXPERT_SYSTEM = """\
+You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
+You receive raw Kubernetes events from a time window flagged as anomalous by an ML model.
+Your task:
+1. Identify the root cause of the anomaly in 2-3 sentences.
+2. Propose ONE specific kubectl command to investigate or mitigate the issue.
+
+Output format (strict):
+ROOT CAUSE: <explanation>
+KUBECTL: <exact command>
+
+Be concise. Focus on actionable diagnosis."""
+
+
+def _call_hybrid(sample: dict, cfg: HybridModelConfig) -> tuple[str, str, float, int]:
+    """Llama al pipeline híbrido y devuelve (root_cause, kubectl, latency_s, steps)."""
+    user_content = sample["messages"][1]["content"]
+    t0 = time.time()
+
+    # Fase 1: investigador (base model)
+    messages = [
+        {"role": "system", "content": _INVESTIGATOR_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+    plan_lines: list[str] = []
+    steps = 0
+
+    with httpx.Client(timeout=120.0) as client:
+        for _ in range(cfg.max_steps):
+            payload = {
+                "model": cfg.base_model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": cfg.temperature, "num_predict": 200},
+            }
+            resp = client.post(f"{cfg.host}/api/chat", json=payload)
+            resp.raise_for_status()
+            response = resp.json()["message"]["content"].strip()
+            steps += 1
+
+            thought, action, is_done = "", None, False
+            for line in response.splitlines():
+                line = line.strip()
+                if line.startswith("THOUGHT:"):
+                    thought = line.removeprefix("THOUGHT:").strip()
+                elif line.startswith("ACTION:"):
+                    action = line.removeprefix("ACTION:").strip()
+                elif line == "DONE":
+                    is_done = True
+
+            if thought:
+                plan_lines.append(f"  Step {steps} thought: {thought}")
+            if action:
+                plan_lines.append(f"  Step {steps} action (planned): {action}")
+
+            if is_done or not action:
+                break
+
+            messages.append({"role": "assistant", "content": response})
+            messages.append({
+                "role": "user",
+                "content": "[dry-run: no cluster access] Continue or output DONE.",
+            })
+
+        # Fase 2: experto (fine-tuned model)
+        plan_section = ""
+        if plan_lines:
+            plan_section = "\n\n[Investigation notes from first-pass analysis:]\n" + "\n".join(plan_lines)
+
+        expert_payload = {
+            "model": cfg.expert_model,
+            "messages": [
+                {"role": "system", "content": _EXPERT_SYSTEM},
+                {"role": "user", "content": user_content + plan_section},
+            ],
+            "stream": False,
+            "options": {"temperature": cfg.temperature, "num_predict": cfg.num_predict},
+        }
+        resp = client.post(f"{cfg.host}/api/chat", json=expert_payload)
+        resp.raise_for_status()
+        expert_text = resp.json()["message"]["content"].strip()
+
+    latency = time.time() - t0
+    root_cause = "Could not parse root cause."
+    kubectl_cmd = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
+    for line in expert_text.splitlines():
+        if line.startswith("ROOT CAUSE:"):
+            root_cause = line.removeprefix("ROOT CAUSE:").strip()
+        elif line.startswith("KUBECTL:"):
+            kubectl_cmd = line.removeprefix("KUBECTL:").strip()
+
+    return root_cause, kubectl_cmd, latency, steps
+
+
+def evaluate_hybrid_model(
+    test_samples: list[dict],
+    cfg: HybridModelConfig,
+    verbose: bool = True,
+) -> tuple[list[dict], dict]:
+    """Evalúa el pipeline híbrido sobre el test set."""
+    if verbose:
+        print(f"  [hybrid] base={cfg.base_model} + expert={cfg.expert_model} · max_steps={cfg.max_steps}")
+
+    results = []
+    n = len(test_samples)
+
+    for i, sample in enumerate(test_samples):
+        meta = sample.get("metadata", {})
+        reference_output = sample["messages"][2]["content"]
+
+        ref_root_cause, ref_kubectl = "", ""
+        for line in reference_output.splitlines():
+            if line.startswith("ROOT CAUSE:"):
+                ref_root_cause = line.removeprefix("ROOT CAUSE:").strip()
+            elif line.startswith("KUBECTL:"):
+                ref_kubectl = line.removeprefix("KUBECTL:").strip()
+
+        try:
+            gen_root_cause, gen_kubectl, latency, steps = _call_hybrid(sample, cfg)
+        except Exception as e:
+            if verbose:
+                print(f"  [!] error en muestra {i}: {e}")
+            gen_root_cause, gen_kubectl, latency, steps = "", "", 0.0, 0
+
+        scenario_id = meta.get("scenario_id", "")
+        namespace   = meta.get("namespace", "")
+
+        result = {
+            "idx":             i,
+            "scenario_id":     scenario_id,
+            "namespace":       namespace,
+            "gen_root_cause":  gen_root_cause,
+            "gen_kubectl":     gen_kubectl,
+            "ref_root_cause":  ref_root_cause,
+            "ref_kubectl":     ref_kubectl,
+            "grammar_forced":  False,
+            "parsed":          parse_rate(gen_root_cause, gen_kubectl),
+            "keyword_hit":     keyword_hit(gen_root_cause, scenario_id),
+            "rouge_l":         rouge_l(gen_root_cause, ref_root_cause),
+            "kubectl_ns_ok":   kubectl_ns_ok(gen_kubectl, namespace),
+            "kubectl_verb_ok": kubectl_verb_ok(gen_kubectl, scenario_id),
+            "latency_s":       latency,
+            "hybrid_steps":    steps,
+        }
+        results.append(result)
+
+        if verbose:
+            parsed_ok = "✓" if result["parsed"] else "✗"
+            kw_ok     = "✓" if result["keyword_hit"] else "✗"
+            print(
+                f"  [{i+1:3d}/{n}] {scenario_id:<30} "
+                f"parsed={parsed_ok} kw={kw_ok} "
+                f"rl={result['rouge_l']:.2f} "
+                f"steps={steps} lat={latency:.2f}s"
             )
 
     agg = aggregate(results)

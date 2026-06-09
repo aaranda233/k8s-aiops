@@ -35,6 +35,14 @@ class DiagnosticsConfig:
     enabled: bool = True
     max_logs_in_prompt: int = 40
     timeout_seconds: float = 120.0
+    # Modo de diagnóstico: "single_shot" | "react" | "hybrid"
+    #   single_shot — OllamaRCA, una llamada al fine-tuneado (default)
+    #   react       — ReActAgent, fine-tuneado intenta formato ReAct
+    #   hybrid      — HybridReActAgent: base investiga + fine-tuneado diagnostica
+    react_mode: str = field(default_factory=lambda: os.getenv("REACT_MODE", "single_shot"))
+    react_base_model: str = field(default_factory=lambda: os.getenv("REACT_BASE_MODEL", "qwen2.5:1.5b"))
+    react_max_steps: int = 3
+    react_dry_run: bool = field(default_factory=lambda: os.getenv("REACT_DRY_RUN", "true").lower() != "false")
 
 
 @dataclass

@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from dataset.generator import generate, load_scenarios
-from eval.runner import ModelConfig, evaluate_model
+from eval.runner import HybridModelConfig, ModelConfig, evaluate_hybrid_model, evaluate_model
 
 SCENARIOS_DIR = PROJECT_ROOT / "dataset" / "scenarios"
 TEST_SET_PATH = PROJECT_ROOT / "eval" / "test_set.jsonl"
@@ -38,6 +38,20 @@ MODELS = {
     "kto":      "k8s-rca-kto",
     "orpo_q4":  "k8s-rca-orpo-q4",
     "baseline": "qwen2.5:1.5b",
+}
+
+# Configuraciones del pipeline híbrido (base investiga + expert diagnostica)
+HYBRID_CONFIGS: dict[str, HybridModelConfig] = {
+    "hybrid_orpo": HybridModelConfig(
+        name="hybrid_orpo",
+        base_model="qwen2.5:1.5b",
+        expert_model="k8s-rca-orpo",
+    ),
+    "hybrid_sft": HybridModelConfig(
+        name="hybrid_sft",
+        base_model="qwen2.5:1.5b",
+        expert_model="k8s-rca-slm",
+    ),
 }
 
 
@@ -130,7 +144,7 @@ def parse_args():
     p.add_argument("--host", default="http://192.168.2.205:11434",
                    help="URL de Ollama")
     p.add_argument("--models", default="sft,baseline",
-                   help="Modelos a evaluar: sft,baseline (o solo uno)")
+                   help="Modelos a evaluar: sft,orpo,baseline,hybrid_orpo,hybrid_sft (separados por coma)")
     p.add_argument("--regen", action="store_true",
                    help="Regenerar test set aunque ya exista")
     p.add_argument("--grammar", action="store_true",
@@ -152,22 +166,29 @@ def main():
 
     # 2. Evaluar cada modelo
     for key in models_to_run:
-        if key not in MODELS:
-            print(f"[!] modelo desconocido: {key}. Opciones: {list(MODELS)}")
+        print(f"{'─'*60}")
+
+        if key in HYBRID_CONFIGS:
+            hcfg = HYBRID_CONFIGS[key]
+            hcfg.host = args.host
+            print(f"  Evaluando (hybrid): {key}")
+            print(f"{'─'*60}")
+            per_sample, agg = evaluate_hybrid_model(test_samples, hcfg, verbose=True)
+
+        elif key in MODELS:
+            ollama_model = MODELS[key]
+            cfg = ModelConfig(name=key, ollama_model=ollama_model, host=args.host,
+                              use_grammar=args.grammar)
+            print(f"  Evaluando: {key} ({ollama_model})")
+            print(f"{'─'*60}")
+            per_sample, agg = evaluate_model(test_samples, cfg, verbose=True)
+
+        else:
+            print(f"[!] desconocido: {key}. Opciones: {list(MODELS) + list(HYBRID_CONFIGS)}")
             continue
 
-        ollama_model = MODELS[key]
-        cfg = ModelConfig(name=key, ollama_model=ollama_model, host=args.host,
-                          use_grammar=args.grammar)
-
-        print(f"{'─'*60}")
-        print(f"  Evaluando: {key} ({ollama_model})")
-        print(f"{'─'*60}")
-
-        per_sample, agg = evaluate_model(test_samples, cfg, verbose=True)
         all_per_sample[key] = per_sample
         all_agg[key]        = agg
-
         print_scenario_breakdown(per_sample, key)
 
     # 3. Tabla comparativa

@@ -1,0 +1,210 @@
+"""
+Agente híbrido de dos fases para Root Cause Analysis.
+
+Fase 1 — Investigador (modelo base, qwen2.5:1.5b vanilla):
+  Lee los eventos, planea qué comandos kubectl ejecutaría, razona paso a paso.
+  Modelo pequeño sin fine-tune → sigue instrucciones nuevas sin problemas.
+
+Fase 2 — Experto (modelo fine-tuneado, k8s-rca-orpo):
+  Recibe los eventos originales + el plan de investigación acumulado.
+  Produce el diagnóstico final en el formato ROOT CAUSE / KUBECTL que conoce.
+
+Resultado: mejor razonamiento (fase 1) + mejor formato/dominio K8s (fase 2).
+"""
+
+import time
+from dataclasses import dataclass, field
+
+import httpx
+
+from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
+from src.diagnostics.ollama_rca import DiagnosisResult
+
+_INVESTIGATOR_SYSTEM = """\
+You are a Kubernetes SRE assistant. Given anomalous cluster events, plan your investigation.
+
+For each step output exactly:
+THOUGHT: <reasoning about what to check>
+ACTION: kubectl <read-only command>
+
+When you have enough to diagnose (or after 3 steps), output:
+THOUGHT: <final summary of what you investigated>
+DONE
+
+Available commands: describe, get, logs, top (read-only only).
+Be specific with names and namespaces from the context."""
+
+_EXPERT_SYSTEM = """\
+You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
+You receive raw Kubernetes events from a time window flagged as anomalous by an ML model.
+Your task:
+1. Identify the root cause in 2-3 sentences.
+2. Propose ONE specific kubectl command to investigate or mitigate.
+
+Output format (strict, no extra text):
+ROOT CAUSE: <explanation>
+KUBECTL: <exact command>"""
+
+
+@dataclass
+class InvestigationStep:
+    step: int
+    thought: str
+    action: str | None
+    observation: str | None
+    is_done: bool = False
+
+
+@dataclass
+class HybridReActAgent:
+    host: str = "http://localhost:11434"
+    base_model: str = "qwen2.5:1.5b"
+    expert_model: str = "k8s-rca-orpo:latest"
+    max_logs: int = 40
+    timeout: float = 120.0
+    max_steps: int = 3
+    dry_run: bool = True
+
+    def diagnose(self, scored_window) -> DiagnosisResult:
+        w = scored_window.window
+        t0 = time.time()
+
+        sample = w.raw_logs[-self.max_logs:]
+        logs_text = "\n".join(f"  {l}" for l in sample)
+        initial_context = (
+            f"Anomaly Score: {scored_window.score:.3f}\n"
+            f"Namespaces affected: {', '.join(w.namespaces)}\n"
+            f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
+            f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
+            f"Event sample (last {len(sample)}):\n{logs_text}"
+        )
+
+        # Fase 1: investigador (base model)
+        investigation_steps = self._investigate(initial_context)
+
+        # Fase 2: experto (fine-tuned model) con contexto enriquecido
+        root_cause, kubectl_cmd = self._expert_diagnose(initial_context, investigation_steps)
+
+        return DiagnosisResult(
+            window_index=w.index,
+            anomaly_score=scored_window.score,
+            namespaces=w.namespaces,
+            root_cause=root_cause,
+            kubectl_command=kubectl_cmd,
+            model_version=scored_window.model_version,
+            confidence="medium",
+            steps_taken=len(investigation_steps),
+            react_trace=investigation_steps,
+            mode="hybrid",
+        )
+
+    def _investigate(self, initial_context: str) -> list[InvestigationStep]:
+        messages = [
+            {"role": "system", "content": _INVESTIGATOR_SYSTEM},
+            {"role": "user", "content": initial_context},
+        ]
+        steps: list[InvestigationStep] = []
+        seen_actions: set[str] = set()
+
+        for i in range(1, self.max_steps + 1):
+            response = self._call(messages, model=self.base_model, num_predict=250)
+            thought, action, is_done = _parse_investigator(response)
+
+            if is_done or not action or action in seen_actions:
+                steps.append(InvestigationStep(step=i, thought=thought, action=None,
+                                               observation=None, is_done=True))
+                break
+
+            seen_actions.add(action)
+            observation = self._run_tool(action)
+            steps.append(InvestigationStep(step=i, thought=thought, action=action,
+                                           observation=observation))
+            messages.append({"role": "assistant", "content": response})
+            messages.append({
+                "role": "user",
+                "content": f"OBSERVATION:\n{observation}\n\nContinue or output DONE.",
+            })
+
+        return steps
+
+    def _expert_diagnose(self, initial_context: str, steps: list[InvestigationStep]) -> tuple[str, str]:
+        plan_lines = []
+        for s in steps:
+            if s.thought:
+                plan_lines.append(f"  Step {s.step} thought: {s.thought}")
+            if s.action:
+                plan_lines.append(f"  Step {s.step} action: {s.action}")
+            if s.observation and not s.observation.startswith("[dry-run]"):
+                plan_lines.append(f"  Step {s.step} observation: {s.observation[:200]}")
+
+        # El plan se añade al final del user message para no interferir
+        # con el system prompt nativo del modelo fine-tuneado
+        plan_section = ""
+        if plan_lines:
+            plan_section = "\n\n[Investigation notes from first-pass analysis:]\n" + "\n".join(plan_lines)
+
+        messages = [
+            {"role": "system", "content": _EXPERT_SYSTEM},
+            {"role": "user", "content": initial_context + plan_section},
+        ]
+        response = self._call(messages, model=self.expert_model, num_predict=300)
+
+        root_cause = "Could not parse root cause."
+        kubectl_cmd = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
+        for line in response.splitlines():
+            if line.startswith("ROOT CAUSE:"):
+                root_cause = line.removeprefix("ROOT CAUSE:").strip()
+            elif line.startswith("KUBECTL:"):
+                kubectl_cmd = line.removeprefix("KUBECTL:").strip()
+
+        return root_cause, kubectl_cmd
+
+    def _call(self, messages: list[dict], model: str, num_predict: int = 300) -> str:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": num_predict},
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(f"{self.host}/api/chat", json=payload)
+            resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+
+    def _run_tool(self, action: str) -> str:
+        if self.dry_run:
+            return f"[dry-run] Would execute: {action}"
+        result = kubectl_execute(action)
+        if result.error and not result.stdout:
+            return f"Error: {result.error}"
+        return result.stdout or f"Empty output (exit {result.returncode})"
+
+    def health_check(self) -> bool:
+        try:
+            with httpx.Client(timeout=5.0) as c:
+                resp = c.get(f"{self.host}/api/tags")
+                models = [m["name"] for m in resp.json().get("models", [])]
+                return (
+                    any(self.base_model in m for m in models) and
+                    any(self.expert_model.split(":")[0] in m for m in models)
+                )
+        except Exception:
+            return False
+
+
+def _parse_investigator(text: str) -> tuple[str, str | None, bool]:
+    """Devuelve (thought, action, is_done)."""
+    thought = ""
+    action = None
+    is_done = False
+
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("THOUGHT:"):
+            thought = line.removeprefix("THOUGHT:").strip()
+        elif line.startswith("ACTION:"):
+            action = line.removeprefix("ACTION:").strip()
+        elif line == "DONE":
+            is_done = True
+
+    return thought, action, is_done
