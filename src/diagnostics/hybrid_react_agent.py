@@ -20,6 +20,13 @@ import httpx
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import DiagnosisResult
 
+# GBNF grammar que fuerza ROOT CAUSE: ... \n KUBECTL: kubectl ... a nivel de token.
+# Elimina el fallo de formato independientemente del contexto extra que recibe el experto.
+_GRAMMAR_GBNF = r"""root         ::= "ROOT CAUSE: " rc-text "\nKUBECTL: " kubectl-text
+rc-text      ::= [^\n]+ (" " [^\n]+)*
+kubectl-text ::= "kubectl " [^\n]+
+"""
+
 _INVESTIGATOR_SYSTEM = """\
 You are a Kubernetes SRE assistant. Given anomalous cluster events, plan your investigation.
 
@@ -137,26 +144,42 @@ class HybridReActAgent:
             if s.observation and not s.observation.startswith("[dry-run]"):
                 plan_lines.append(f"  Step {s.step} observation: {s.observation[:200]}")
 
-        # El plan se añade al final del user message para no interferir
-        # con el system prompt nativo del modelo fine-tuneado
         plan_section = ""
         if plan_lines:
             plan_section = "\n\n[Investigation notes from first-pass analysis:]\n" + "\n".join(plan_lines)
 
-        messages = [
-            {"role": "system", "content": _EXPERT_SYSTEM},
-            {"role": "user", "content": initial_context + plan_section},
-        ]
-        response = self._call(messages, model=self.expert_model, num_predict=300)
+        user_content = initial_context + plan_section
+        # Grammar-constrained sampling via /api/generate — garantiza formato ROOT CAUSE/KUBECTL
+        # independientemente del tamaño del contexto.
+        root_cause, kubectl_cmd = self._call_expert_with_grammar(user_content)
+        return root_cause, kubectl_cmd
+
+    def _call_expert_with_grammar(self, user_content: str) -> tuple[str, str]:
+        """Llama al experto con GBNF grammar para formato garantizado."""
+        prompt = (
+            f"<|im_start|>system\n{_EXPERT_SYSTEM}<|im_end|>\n"
+            f"<|im_start|>user\n{user_content}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        payload = {
+            "model": self.expert_model,
+            "prompt": prompt,
+            "stream": False,
+            "grammar": _GRAMMAR_GBNF,
+            "options": {"temperature": 0.1, "num_predict": 300, "num_ctx": 2048},
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(f"{self.host}/api/generate", json=payload)
+            resp.raise_for_status()
+        text = resp.json()["response"].strip()
 
         root_cause = "Could not parse root cause."
         kubectl_cmd = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
-        for line in response.splitlines():
+        for line in text.splitlines():
             if line.startswith("ROOT CAUSE:"):
                 root_cause = line.removeprefix("ROOT CAUSE:").strip()
             elif line.startswith("KUBECTL:"):
                 kubectl_cmd = line.removeprefix("KUBECTL:").strip()
-
         return root_cause, kubectl_cmd
 
     def _call(self, messages: list[dict], model: str, num_predict: int = 300) -> str:

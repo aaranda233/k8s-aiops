@@ -289,23 +289,30 @@ def _call_hybrid(sample: dict, cfg: HybridModelConfig) -> tuple[str, str, float,
                 "content": "[dry-run: no cluster access] Continue or output DONE.",
             })
 
-        # Fase 2: experto (fine-tuned model)
+        # Fase 2: experto con grammar-constrained sampling → formato garantizado
         plan_section = ""
         if plan_lines:
             plan_section = "\n\n[Investigation notes from first-pass analysis:]\n" + "\n".join(plan_lines)
 
+        expert_prompt = (
+            f"<|im_start|>system\n{_EXPERT_SYSTEM}<|im_end|>\n"
+            f"<|im_start|>user\n{user_content + plan_section}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
         expert_payload = {
             "model": cfg.expert_model,
-            "messages": [
-                {"role": "system", "content": _EXPERT_SYSTEM},
-                {"role": "user", "content": user_content + plan_section},
-            ],
+            "prompt": expert_prompt,
             "stream": False,
-            "options": {"temperature": cfg.temperature, "num_predict": cfg.num_predict},
+            "grammar": _GRAMMAR_GBNF,
+            "options": {
+                "temperature": cfg.temperature,
+                "num_predict": cfg.num_predict,
+                "num_ctx": 2048,
+            },
         }
-        resp = client.post(f"{cfg.host}/api/chat", json=expert_payload)
+        resp = client.post(f"{cfg.host}/api/generate", json=expert_payload)
         resp.raise_for_status()
-        expert_text = resp.json()["message"]["content"].strip()
+        expert_text = resp.json()["response"].strip()
 
     latency = time.time() - t0
     root_cause = "Could not parse root cause."
