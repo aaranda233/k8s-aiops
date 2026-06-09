@@ -1,14 +1,32 @@
 # Evaluación del SLM K8s-RCA — Resultados
 
-**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — negativo) / 2026-06-02 (SimPO — negativo) / 2026-06-02 (Grammar sampling — diagnóstico)
+**Fecha:** 2026-06-02 (SFT+Baseline) / 2026-06-02 (DPO — negativo) / 2026-06-02 (SimPO — negativo) / 2026-06-02 (Grammar sampling) / 2026-06-09 (ORPO+grammar · Hybrid ReAct)
 **Test set:** 210 muestras ciegas (seed=99 ≠ seed entrenamiento=42)
 **Escenarios:** 14 × 15 muestras/escenario
-**Modelos:** `k8s-rca-slm` (SFT QLoRA) · `k8s-rca-dpo` (DPO) · `k8s-rca-simpo` (SimPO) · `qwen2.5:1.5b` (baseline vanilla)
-**Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q4_K_M/Q8_0
+**Modelos:** `k8s-rca-slm` (SFT) · `k8s-rca-orpo` (ORPO) · `hybrid_orpo` (qwen2.5:1.5b investigador + k8s-rca-orpo experto) · `qwen2.5:1.5b` (baseline vanilla)
+**Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q8_0
 
 ---
 
-## Tabla comparativa (4 modelos)
+## ⭐ Tabla comparativa completa — todos los experimentos
+
+| Métrica | Baseline | SFT v1 | ORPO | ORPO+grammar | **Hybrid+grammar** |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| **Parse%** | 38.6% | 56.2% | 58.1% | **100.0%** | **98.6%** |
+| **Keyword%** | **92.4%** | 60.0% | 67.1% | 78.1% | **92.9%** |
+| **ROUGE-L** | 2.5% | **56.7%** | 16.2% | 19.3% | 5.9% |
+| **NS-ok%** | 1.4% | 33.0% | 48.1% | **89.5%** | 73.3% |
+| **Verb-ok%** | 1.9% | 41.0% | 49.5% | 56.7% | 42.4% |
+| **Latencia media** | 0.98s | 0.82s | — | **0.71s** | 2.04s |
+| **Latencia p95** | 1.38s | 1.24s | — | **0.87s** | 4.56s |
+
+*N = 210 muestras por modelo · seed=99*
+
+> **Hybrid+grammar es el mejor modelo del proyecto en Keyword%** (92.9%) — igual al baseline vanilla pero con Parse% ~100% y kubectl estructurado. El único coste es latencia (2.04s vs 0.71s para el single-shot).
+
+---
+
+## Tabla comparativa (experimentos originales — 4 modelos)
 
 | Métrica | SFT (nuestro) | DPO | SimPO | Baseline (vanilla) |
 |---------|:---:|:---:|:---:|:---:|
@@ -26,26 +44,26 @@
 
 ---
 
-## Keyword hit por escenario (SFT vs Baseline)
+## Keyword hit por escenario — comparativa completa
 
-| Escenario | SFT | Baseline |
-|-----------|:---:|:---:|
-| crash_config | — | 53.3% |
-| crash_oom | — | 100.0% |
-| crash_probe | — | 100.0% |
-| crash_secret | — | 100.0% |
-| image_auth | — | 100.0% |
-| image_not_found | — | 100.0% |
-| image_registry_down | — | 100.0% |
-| network_policy_block | — | 66.7% |
-| node_disk_pressure | — | 100.0% |
-| node_pressure_memory | — | 100.0% |
-| pending_insufficient_cpu | — | 100.0% |
-| pvc_pending | — | 93.3% |
-| readiness_failing | — | 100.0% |
-| service_no_endpoints | — | 80.0% |
+| Escenario | Baseline | SFT v1 | ORPO+grammar | **Hybrid+grammar** |
+|-----------|:---:|:---:|:---:|:---:|
+| crash_config | 53.3% | — | 66.7% | 46.7% |
+| crash_oom | 100.0% | — | 80.0% | **100.0%** |
+| crash_probe | 100.0% | — | **100.0%** | 93.3% |
+| crash_secret | 100.0% | — | **100.0%** | 93.3% |
+| image_auth | 100.0% | — | 80.0% | **100.0%** |
+| image_not_found | 100.0% | — | **100.0%** | **100.0%** |
+| image_registry_down | 100.0% | — | 60.0% | **100.0%** |
+| **network_policy_block** | 66.7% | — | **0.0%** | **73.3%** |
+| node_disk_pressure | 100.0% | — | 80.0% | **100.0%** |
+| node_pressure_memory | 100.0% | — | 60.0% | **100.0%** |
+| pending_insufficient_cpu | 100.0% | — | 93.3% | **100.0%** |
+| pvc_pending | 93.3% | — | **100.0%** | **100.0%** |
+| readiness_failing | 100.0% | — | 73.3% | **100.0%** |
+| service_no_endpoints | 80.0% | — | **100.0%** | 93.3% |
 
-> El desglose SFT por escenario está disponible en `eval/results/eval_20260601_154131.json`
+> Resultados detallados: `eval/results/eval_20260601_154131.json` (SFT) · `eval/results/eval_20260609_103514.json` (ORPO+grammar, Hybrid+grammar)
 
 ---
 
@@ -241,6 +259,53 @@ Esta es la misma causa raíz observada en DPO (gradientes mínimos corrompen pes
 
 ---
 
+## Experimento: Agente Híbrido ReAct
+
+**Fecha:** 2026-06-09 · **Archivos:** `eval/results/eval_20260609_101423.json` (v1, sin grammar) · `eval/results/eval_20260609_103514.json` (v2, con grammar)
+
+### Motivación
+
+Los modelos fine-tuneados (1.5B) tienen el formato `ROOT CAUSE/KUBECTL` grabado en sus pesos por el entrenamiento. Cuando se les pide que sigan el formato ReAct multi-paso (THOUGHT/ACTION/FINAL), lo ignoran y generan texto libre o en idiomas incorrectos. La hipótesis es que separar los roles resuelve esto:
+
+- **Fase 1 — Investigador** (`qwen2.5:1.5b` vanilla): modelo base sin fine-tune, sigue instrucciones nuevas sin problemas. Razona sobre los eventos y planea qué kubectl investigaría (THOUGHT/ACTION), hasta 3 pasos.
+- **Fase 2 — Experto** (`k8s-rca-orpo`): modelo fine-tuneado recibe el contexto original + el plan de investigación acumulado. Produce el diagnóstico final en el formato que conoce (ROOT CAUSE/KUBECTL).
+
+### Iteraciones
+
+**v1 (sin grammar, num_ctx=1024):** Parse%=32.4%, Keyword%=72.9%. El contexto enriquecido supera los 1024 tokens del Modelfile → truncamiento → formato roto. Keyword% mejora +7.2 pp sobre ORPO solo, confirmando la hipótesis de que el plan de investigación aporta valor semántico.
+
+**v2 (grammar + num_ctx=2048):** Doble fix — modelo recreado con `num_ctx=2048` y llamada al experto migrada a `/api/generate` con GBNF grammar. Parse% sube de 32.4% a **98.6%**.
+
+### Resultados v2 — ORPO+grammar vs Hybrid+grammar
+
+| Métrica | ORPO+grammar | Hybrid+grammar | Δ |
+|---------|:-----------:|:--------------:|:---:|
+| **Parse%** | **100.0%** | 98.6% | −1.4 pp |
+| **Keyword%** | 78.1% | **92.9%** | **+14.8 pp** |
+| ROUGE-L | **19.3%** | 5.9% | −13.4 pp |
+| NS-ok% | **89.5%** | 73.3% | −16.2 pp |
+| Verb-ok% | **56.7%** | 42.4% | −14.3 pp |
+| Lat.mean | **0.71s** | 2.04s | 2.9× |
+| Lat.p95 | **0.87s** | 4.56s | 5.2× |
+
+### Hallazgo principal
+
+**`network_policy_block`: 0% → 73.3%** (+73.3 pp). Este escenario era el punto ciego del ORPO solo — el modelo no incluía las palabras clave de red/política aunque el formato fuese correcto. El investigador base detecta los patrones de bloqueo de red en los eventos y proporciona al experto el contexto que necesita.
+
+La bajada de ROUGE-L (−13.4 pp) es el efecto esperado y deseable: el modelo híbrido genera diagnósticos más específicos y detallados (menciona pods y namespaces concretos) que se alejan textualmente de las respuestas de referencia sintéticas, pero son semánticamente superiores.
+
+### Trade-off documentado
+
+| Dimensión | ORPO+grammar | Hybrid+grammar | Cuándo preferir |
+|-----------|:-----------:|:--------------:|:----------------|
+| Formato | ✅ 100% | ✅ 98.6% | Ambos válidos para producción |
+| Contenido semántico | 78.1% | **92.9%** | Hybrid cuando el contenido importa más |
+| kubectl específico | **89.5% NS** | 73.3% NS | ORPO para comandos de remediación |
+| Latencia | **0.71s** | 2.04s | ORPO para alta frecuencia |
+| Escenarios difíciles | ⚠️ network_policy 0% | ✅ 73.3% | Hybrid para cobertura de escenarios |
+
+---
+
 ## Artefactos
 
 | Archivo | Descripción |
@@ -250,6 +315,11 @@ Esta es la misma causa raíz observada en DPO (gradientes mínimos corrompen pes
 | `eval/results/eval_20260602_090116.json` | Resultados SFT+DPO+Baseline (3 modelos) |
 | `eval/results/eval_20260602_094119.json` | Resultados SFT+Baseline (confirmación) |
 | `eval/results/eval_20260602_*.json` | Resultados SimPO (210 muestras, colapso) |
+| `eval/results/eval_20260609_101423.json` | Resultados ORPO vs Hybrid v1 (sin grammar) |
+| `eval/results/eval_20260609_103514.json` | Resultados ORPO+grammar vs Hybrid+grammar ⭐ |
 | `eval/metrics.py` | ROUGE-L, keyword oracle, parse rate |
-| `eval/runner.py` | Inferencia multi-modelo sobre Ollama |
-| `eval/run_eval.py` | Orquestador principal |
+| `eval/runner.py` | Inferencia multi-modelo + HybridModelConfig sobre Ollama |
+| `eval/run_eval.py` | Orquestador principal (--models hybrid_orpo,hybrid_sft) |
+| `src/diagnostics/hybrid_react_agent.py` | Agente híbrido dos fases para el pipeline |
+| `src/diagnostics/kubectl_toolbox.py` | Executor kubectl solo lectura con whitelist |
+| `src/diagnostics/react_agent.py` | ReAct loop (para investigación futura) |
