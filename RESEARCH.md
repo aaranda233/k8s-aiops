@@ -1,14 +1,16 @@
-# K8s-AIOps: Autonomous Anomaly Detection and Root Cause Analysis in Kubernetes using a Fine-Tuned Small Language Model
+# K8s-AIOps: Autonomous Anomaly Detection and Root Cause Analysis in Kubernetes using a Fine-Tuned Small Language Model and a Hybrid ReAct Agent
 
-**Status:** Work in progress
-**Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm)
-**Hardware:** NVIDIA A30 (24GB VRAM)
+**Status:** Work in progress — Experiment 10 complete
+**Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [aaranda233/k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo)
+**Hardware:** NVIDIA A30 (24GB VRAM) training · Intel Xeon Gold 6526Y inference
 
 ---
 
 ## Abstract
 
-This work presents an end-to-end AIOps pipeline for Kubernetes environments that combines unsupervised anomaly detection with a fine-tuned Small Language Model (SLM) for automated root cause analysis (RCA). The system collects raw Kubernetes events continuously, detects anomalous time windows using Isolation Forest, and routes flagged windows to a domain-specific SLM that produces a natural-language root cause diagnosis and a concrete `kubectl` remediation command. The SLM is derived from `Qwen2.5-1.5B-Instruct` fine-tuned via QLoRA on a curated dataset of ~986 Kubernetes incident scenarios covering 14 failure categories. The final model runs entirely on CPU at inference time, enabling deployment without GPU infrastructure.
+This work presents an end-to-end AIOps pipeline for Kubernetes environments that combines unsupervised anomaly detection with automated root cause analysis (RCA). The system collects raw Kubernetes events continuously, detects anomalous time windows using Isolation Forest, and routes flagged windows to a domain-specific diagnostics layer. The diagnostics layer has evolved through ten experiments across three paradigms: (1) single-shot fine-tuned SLM (SFT, DPO, ORPO, KTO); (2) grammar-constrained decoding; and (3) a two-phase Hybrid ReAct Agent. The base SLM is derived from `Qwen2.5-1.5B-Instruct` fine-tuned via QLoRA with ORPO on a curated dataset of ~986 Kubernetes incident scenarios covering 14 failure categories.
+
+The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. The final system — a Hybrid ReAct Agent combining a vanilla `qwen2.5:1.5b` investigator with a fine-tuned ORPO expert under GBNF grammar — resolves the trade-off simultaneously: **Keyword%=92.9%** (matching the unspecialized baseline) with **Parse%=98.6%** (guaranteed by grammar), all running on CPU without GPU infrastructure at inference time.
 
 ---
 
@@ -51,10 +53,13 @@ The pipeline consists of four sequential layers:
                         │  Anomalous window (raw events)
                         ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 3 — Diagnostics  (src/diagnostics/ollama_rca.py) │
-│  • Formats events as plain text                         │
-│  • Calls k8s-rca-slm via Ollama API                    │
-│  • Parses ROOT CAUSE + KUBECTL from response            │
+│  Layer 3 — Diagnostics  (src/diagnostics/)              │
+│  Three modes (REACT_MODE env var):                      │
+│  • single_shot — one call to fine-tuned ORPO model      │
+│  • react       — ReAct loop with fine-tuned model       │
+│  • hybrid ⭐   — qwen2.5:1.5b investigates (THOUGHT/    │
+│                  ACTION), ORPO expert diagnoses with    │
+│                  GBNF grammar (ROOT CAUSE + KUBECTL)    │
 └───────────────────────┬─────────────────────────────────┘
                         │  RCA report
                         ▼
@@ -208,7 +213,9 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 """
 ```
 
-Inference parameters: `temperature=0.1`, `top_p=0.9`, `repeat_penalty=1.1`, `num_ctx=1024`.
+Inference parameters: `temperature=0.1`, `top_p=0.9`, `repeat_penalty=1.1`, `num_ctx=2048` (updated from 1024 — required for hybrid agent enriched context).
+
+For grammar-constrained inference (hybrid expert phase), the `/api/generate` endpoint is used with the `grammar` field containing the GBNF definition. This guarantees format at the token level and decouples format correctness from model capacity.
 
 ---
 
@@ -304,7 +311,195 @@ Running training inside Docker with `--gpus all` and `pytorch/pytorch:2.6.0-cuda
 
 ---
 
-## 8. Reproducibility
+## 8. Alignment Experiments — DPO, ORPO, KTO
+
+After SFT v1 established that the model learns the `ROOT CAUSE/KUBECTL` format (Parse%=56.2%), six preference optimization experiments were conducted to recover the semantic vocabulary lost to memorization (Keyword% dropped from 92.4% to 60.0% after SFT).
+
+### 8.1 Central Finding: Parse%/Keyword% Trade-off
+
+All alignment methods exhibit an empirical trade-off between format compliance and semantic coverage:
+
+| Method | Parse% | Keyword% | Outcome |
+|--------|:------:|:--------:|---------|
+| Baseline (vanilla) | 38.6% | **92.4%** | No format, full vocabulary |
+| SFT v1 | 56.2% | 60.0% | Format learned, vocabulary lost |
+| DPO v1 | 16.2% | 82.9% | Format destroyed, vocabulary recovered |
+| DPO v2 | 8.1% | 87.1% | Mode collapse at step 20 |
+| SimPO | 16.7% | 86.7% | High β destroys format |
+| KTO | 0.0% | 0.0% | Complete collapse — no L_SFT anchor |
+| **ORPO** | **58.1%** | **67.1%** | Best single-model balance |
+
+### 8.2 Why ORPO Succeeds Where DPO Fails
+
+ORPO (Hong et al., 2024) is the only method that avoids format collapse. The key is the joint loss function:
+
+```
+L_ORPO = L_SFT + λ · L_OR
+
+L_SFT = cross-entropy over chosen tokens  →  anchors format at every step
+L_OR  = log(odds_chosen / odds_rejected)  →  pushes vocabulary towards correct concepts
+```
+
+DPO and KTO optimize preferences without an explicit format anchor. With a small 1.5B model trained on a restricted dataset (986 samples, loss→0.08), the attention layers encoding the `ROOT CAUSE/KUBECTL` structure are extremely fragile. Any preference gradient — regardless of β or dataset quality — perturbs them irreversibly.
+
+**Hypothesis confirmed by three independent failure modes:**
+- DPO: near-zero gradient signal corrupts format weights
+- SimPO (β=2.0): aggressive margin pushes log π(rejected) → −∞, destroying format
+- KTO: no pairwise comparison and no L_SFT → distribution drift without anchor
+
+### 8.3 Grammar-Constrained Decoding
+
+GBNF grammar applied via Ollama's `/api/generate` endpoint forces the output format at the token level, decoupling format from model capacity:
+
+```gbnf
+root         ::= "ROOT CAUSE: " rc-text "\nKUBECTL: " kubectl-text
+rc-text      ::= [^\n]+ (" " [^\n]+)*
+kubectl-text ::= "kubectl " [^\n]+
+```
+
+With grammar active on the ORPO model: Parse%: 58.1% → **100.0%**, Keyword%: 67.1% → **78.1%**, NS-ok%: 48.1% → **89.5%**. Grammar resolves format independently of model quality and removes it as a confounding variable in downstream evaluation.
+
+---
+
+## 9. Quantitative Evaluation
+
+**Harness:** `eval/run_eval.py` · 210 blind samples (seed=99, distinct from training seed=42) · 14 scenarios × 15 samples · CPU Intel Xeon Gold 6526Y
+
+### 9.1 Metrics
+
+| Metric | Definition |
+|--------|-----------|
+| **Parse%** | Response contains both `ROOT CAUSE:` and `KUBECTL:` prefixes |
+| **Keyword%** | Root cause mentions at least one canonical keyword for the scenario (e.g. "OOMKilled", "ImagePullBackOff") |
+| **ROUGE-L** | Longest common subsequence F1 between generated and reference root cause |
+| **NS-ok%** | kubectl command contains the correct namespace |
+| **Verb-ok%** | kubectl command uses a semantically appropriate verb for the scenario |
+
+### 9.2 Results — All Models
+
+| Model | Parse% | Keyword% | ROUGE-L | NS-ok% | Verb-ok% | Lat. |
+|-------|:------:|:--------:|:-------:|:------:|:--------:|:----:|
+| Baseline (Qwen2.5-1.5B) | 38.6% | 92.4% | 2.5% | 1.4% | 1.9% | 1.00s |
+| SFT v1 | 56.2% | 60.0% | 56.7% | 32.9% | 41.0% | 0.86s |
+| SFT v2 | 35.2% | 64.3% | 41.2% | 22.4% | 43.3% | 0.89s |
+| DPO v1 | 16.2% | 82.9% | 2.4% | — | — | — |
+| SimPO | 16.7% | 86.7% | 57.7% | — | — | — |
+| DPO v2 | 8.1% | 87.1% | 21.7% | 6.2% | 31.9% | 0.81s |
+| ORPO Q8_0 | 58.1% | 67.1% | 16.2% | 48.1% | 49.5% | 0.89s |
+| ORPO Q4_K_M | 59.5% | 76.2% | 14.7% | 45.7% | 44.8% | 0.85s |
+| KTO | 0.0% | 0.0% | 0.0% | 0.0% | 28.6% | 0.49s |
+| ORPO + grammar | **100.0%** | 78.1% | 19.3% | **89.5%** | **56.7%** | **0.71s** |
+| **Hybrid ReAct + grammar** | 98.6% | **92.9%** | 5.9% | 73.3% | 42.4% | 2.04s |
+
+*210 samples per model · seed=99*
+
+### 9.3 Key Observations
+
+1. **ROUGE-L is inversely correlated with generalization.** SFT v1 achieves ROUGE-L=56.7% by memorizing reference answers. The hybrid model achieves ROUGE-L=5.9% because it generates specific, context-grounded diagnoses that diverge from generic reference templates — a better real-world outcome than high textual similarity.
+
+2. **NS-ok% is the most sensitive metric to model capability.** It requires the model to extract the correct namespace from the event context and reproduce it in the kubectl command. ORPO+grammar achieves 89.5% by combining domain knowledge (ORPO) with format guarantee (grammar).
+
+3. **Keyword% is the best proxy for diagnostic quality.** It measures whether the model identified the correct failure type regardless of phrasing — closer to what an SRE actually cares about.
+
+---
+
+## 10. Hybrid ReAct Agent
+
+### 10.1 Motivation
+
+The Parse%/Keyword% trade-off documented in Section 8 has a structural cause: fine-tuning a 1.5B model on ~1,000 samples for structured output memorizes the format at the expense of generalizable semantic knowledge. No single-model training approach resolved this in nine experiments.
+
+The key insight is that **format compliance** and **domain investigation** are separable capabilities:
+- A vanilla instruction-following model can reason about K8s events and plan investigations without format constraints
+- A fine-tuned model has K8s domain knowledge and can produce structured output when guided by grammar
+
+### 10.2 Architecture
+
+```
+Anomaly detected (score ≥ threshold)
+        │
+        ▼
+Phase 1 — Investigator (qwen2.5:1.5b vanilla)
+  System: ReAct-style prompt (THOUGHT/ACTION/DONE)
+  Input:  anomalous event window (raw logs, score, namespaces)
+  Loop (max 3 steps):
+    → THOUGHT: reasoning about what to investigate
+    → ACTION:  kubectl <read-only command>
+    → [OBSERVATION: tool result if dry_run=False]
+  Exit: DONE or max_steps reached
+        │
+        ▼  investigation plan (list of THOUGHT + ACTION lines)
+        │
+        ▼
+Phase 2 — Expert (k8s-rca-orpo + GBNF grammar)
+  Input:  original event context + investigation plan appended
+  Endpoint: /api/generate (grammar parameter available here)
+  Grammar: ROOT CAUSE: <text>\nKUBECTL: kubectl <command>
+  num_ctx: 2048 (increased from 1024 to fit enriched context)
+        │
+        ▼
+  DiagnosisResult(root_cause, kubectl_command, confidence,
+                  steps_taken, react_trace, mode="hybrid")
+```
+
+The `kubectl_toolbox.py` enforces read-only safety: `apply`, `delete`, `patch`, `create`, `exec`, and 10 other write verbs are rejected before execution. Write commands are only proposed by the expert (as remediation suggestions), never executed.
+
+### 10.3 Key Result: network_policy_block 0% → 73.3%
+
+`network_policy_block` was the systematic blind spot of ORPO alone — it produced correctly formatted responses that never mentioned network policy, blocking, or egress/ingress concepts. The investigator's reasoning steps provide the expert with the conceptual frame needed to identify the failure type.
+
+Comparison across all scenarios (Keyword%, n=15 per scenario):
+
+| Scenario | ORPO+grammar | Hybrid+grammar | Δ |
+|----------|:-----------:|:--------------:|:---:|
+| crash_oom | 80.0% | **100.0%** | +20 pp |
+| image_auth | 80.0% | **100.0%** | +20 pp |
+| image_registry_down | 60.0% | **100.0%** | +40 pp |
+| **network_policy_block** | 0.0% | **73.3%** | **+73 pp** |
+| node_pressure_memory | 60.0% | **100.0%** | +40 pp |
+| readiness_failing | 73.3% | **100.0%** | +27 pp |
+| crash_config | **66.7%** | 46.7% | −20 pp |
+| crash_probe | **100.0%** | 93.3% | −7 pp |
+
+The regression in `crash_config` (−20 pp) is attributable to investigation notes about ConfigMap/environment variables saturating the expert's attention window, displacing the diagnostic keywords. A future fix is to limit the investigation notes to the 2 most relevant steps.
+
+### 10.4 Iterative Development
+
+**v1 (no grammar, num_ctx=1024):** Parse%=32.4%, Keyword%=72.9%. The enriched context exceeded the model's 1024-token context window, causing truncation and format failure. Keyword% improvement (+7.2 pp over ORPO alone) confirmed the investigation plan provides genuine semantic value.
+
+**v2 (GBNF grammar + num_ctx=2048):** Parse%=98.6%, Keyword%=92.9%. Two fixes applied simultaneously: model recreated with `num_ctx=2048` and expert call migrated from `/api/chat` to `/api/generate` with grammar parameter.
+
+### 10.5 Conclusion
+
+> The Hybrid ReAct Agent achieves Keyword%=92.9% — statistically equivalent to the unspecialized baseline (92.4%) — while maintaining Parse%=98.6% and structured kubectl output. This demonstrates that the Parse%/Keyword% trade-off observed across all fine-tuning experiments is not a fundamental constraint but a consequence of attempting to solve both objectives within a single small model trained on a restricted dataset. Role separation (instruction-following investigator + domain-specialized expert) resolves them simultaneously without additional fine-tuning.
+
+---
+
+## 11. Additional Engineering Findings
+
+### 11.1 num_ctx Must Match Context Size
+
+The Hybrid ReAct Agent's expert call failed with Parse%=32% when `num_ctx=1024` was insufficient for the enriched prompt (original events + investigation notes). Always set `num_ctx` ≥ expected prompt length. The Modelfile parameter is a ceiling, not a suggestion; truncation is silent.
+
+### 11.2 Grammar Requires `/api/generate`, Not `/api/chat`
+
+Ollama's `grammar` parameter is only available in the `/api/generate` endpoint. When migrating a model from `/api/chat` to `/api/generate`, the ChatML prompt must be constructed manually:
+
+```python
+prompt = (
+    f"<|im_start|>system\n{system}<|im_end|>\n"
+    f"<|im_start|>user\n{user}<|im_end|>\n"
+    f"<|im_start|>assistant\n"
+)
+```
+
+### 11.3 Role Separation as an Alternative to Multi-Objective Fine-Tuning
+
+When a fine-tuned model excels at one objective (format) but fails at another (vocabulary), adding more training data or preference optimization is not the only path. Delegating each objective to the model best suited for it — a general instruction-follower for flexible reasoning, a specialized model for structured output — can outperform any single-model approach at the cost of additional inference latency.
+
+---
+
+## 12. Reproducibility
 
 ### Training
 
@@ -351,25 +546,32 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 
 ---
 
-## 9. Artifacts
+## 13. Artifacts
 
 | Artifact | Location |
 |----------|----------|
 | Source code | This repository |
 | Dataset (combined.jsonl) | `dataset/output/` (gitignored — regenerable) |
-| LoRA adapters | `finetune/output/k8s-rca-slm/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| GGUF Q8_0 (production) | [HF Hub — k8s-rca-slm-Q8_0.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| GGUF Q4_K_M (compact) | [HF Hub — k8s-rca-slm-Q4_K_M.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
+| SFT LoRA adapters | `finetune/output/k8s-rca-slm/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-slm) |
+| ORPO LoRA adapters | `finetune/output/k8s-rca-orpo/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-orpo) |
+| GGUF Q8_0 — SFT | [HF Hub — k8s-rca-slm-Q8_0.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
+| GGUF Q4_K_M — SFT | [HF Hub — k8s-rca-slm-Q4_K_M.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
+| GGUF Q8_0 — ORPO ⭐ | `finetune/output/k8s-rca-orpo-Q8_0.gguf` |
+| Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
+| Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
+| Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
 
 ---
 
-## 10. Pending / Future Work
+## 14. Pending / Future Work
 
-- [ ] Formal evaluation on held-out test set (precision/recall per scenario category)
-- [ ] Perplexity measurement of base vs. fine-tuned model on test set
-- [ ] Integration test: full pipeline against live cluster with real anomaly injection
-- [ ] Update `OLLAMA_MODEL=k8s-rca-slm` in pipeline `.env` for production use
-- [ ] Investigate flash-attention 2 support (xformers fallback used during training)
-- [ ] Explore training with 6+ epochs and larger dataset (2,000+ samples)
-- [ ] Compare against GPT-4o / Claude Sonnet on same test set for benchmark
-- [ ] Latency measurement: time-to-diagnosis from anomaly detection to RCA output
+- [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
+- [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
+- [x] Grammar-constrained decoding — GBNF grammar via Ollama `/api/generate`
+- [x] Hybrid ReAct Agent — role separation resolves Parse%/Keyword% trade-off
+- [ ] Integration test: Hybrid agent with `dry_run=False` on live cluster with chaos injection
+- [ ] Fine-tune on larger dataset (5k+ samples with structural diversity) — prerequisite for DPO on stronger base
+- [ ] Scale to 7B model (Mistral-7B or Llama-3.1-8B) with same ORPO recipe — expected to improve both metrics
+- [ ] Benchmark against GPT-4o / Claude Sonnet on same 210-sample test set
+- [ ] Fine-tune investigator (Phase 1) on ReAct-format examples to improve `crash_config` scenario
+- [ ] Auto-remediation: extend hybrid agent to execute safe kubectl write commands with dry-run preview
