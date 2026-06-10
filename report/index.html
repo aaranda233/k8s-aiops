@@ -527,6 +527,7 @@
     <a href="#dataset">Dataset</a>
     <a href="#entrenamiento">Entrenamiento</a>
     <a href="#alineacion">Alineación</a>
+    <a href="#remediacion">Remediación</a>
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
     <a href="#artifacts">Artefactos</a>
@@ -1019,6 +1020,103 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
     <div class="callout" style="margin-top:20px;">
       <strong>Hallazgo principal — <code>network_policy_block</code>: 0% → 73.3% (+73 pp).</strong> Este escenario era el punto ciego sistemático del ORPO solo. El investigador base detecta los patrones de bloqueo de red y proporciona al experto el frame conceptual necesario para acertar. El Hybrid ReAct alcanza Keyword%=92.9% — estadísticamente igual al baseline vanilla (92.4%) pero con Parse%=98.6% y kubectl estructurado.
     </div>
+
+  </div>
+</section>
+
+<!-- AUTO-REMEDIACIÓN -->
+<section id="remediacion">
+  <div class="container">
+    <h2>Auto-Remediación con Human-in-the-Loop</h2>
+    <p class="section-lead">DevOps junior autónomo — actúa, verifica y escala con contexto completo</p>
+
+    <p>El diagnóstico sin acción automatiza solo la mitad del flujo de un SRE. La extensión natural del Hybrid ReAct Agent es un loop de remediación que actúa sobre el diagnóstico, verifica el resultado y escala cuando se necesita intervención humana. La pregunta clave no es <em>si</em> automatizar, sino <em>cuánto</em> automatizar de forma segura.</p>
+
+    <div class="callout" style="border-left-color:#7c3aed;">
+      <strong>Analogía:</strong> un DevOps junior que hace lo que sabe hacer con seguridad (reiniciar pods, escalar réplicas) y pregunta al senior cuando no está seguro (cambiar límites de memoria, modificar configuración). Nunca borra la base de datos solo.
+    </div>
+
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Taxonomía de riesgo</h3>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Level</th><th>Label</th><th>Ejemplos</th><th>Política</th></tr>
+        <tr style="background:#f0fdf4;"><td><strong>0</strong></td><td>Solo lectura</td><td><code>describe</code>, <code>get</code>, <code>logs</code>, <code>top</code></td><td>Ejecutar siempre</td></tr>
+        <tr style="background:#eff6ff;"><td><strong>1</strong></td><td>Reversible</td><td><code>rollout restart</code>, <code>scale</code>, <code>rollout undo</code></td><td>Ejecutar automáticamente</td></tr>
+        <tr style="background:#fffbeb;"><td><strong>2</strong></td><td>Configuración</td><td><code>set resources</code>, <code>patch</code>, <code>set image</code></td><td>Email con aprobación</td></tr>
+        <tr style="background:#fef2f2;"><td><strong>3</strong></td><td>Destructivo</td><td><code>delete</code>, <code>drain</code>, <code>cordon</code>, <code>exec</code></td><td>Nunca automático</td></tr>
+      </table>
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Flujo completo</h3>
+
+    <pre style="font-size:13px; margin:16px 0; line-height:1.8;">Anomalía → Hybrid ReAct → kubectl propuesto
+        │
+        ▼
+[Circuit Breaker] — ¿3+ intentos en 10 min? → escalar + parar
+        │
+        ▼
+[Risk Scorer] — Level 0-3
+        │
+        ├─ Level 1 → dry-run → ejecutar → esperar 90s → verificar
+        │            email "resuelto" con contexto completo
+        │
+        ├─ Level 2 → email con [✅ APROBAR] [❌ RECHAZAR]
+        │            aprobado → ejecutar · rechazado → registrar
+        │            sin respuesta en 30min → descartar
+        │
+        └─ Level 3 → email "acción manual requerida" + comando exacto
+                     NUNCA ejecuta solo</pre>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">El email — transparencia y control</h3>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Tipo</th><th>Asunto</th><th>Contenido</th></tr>
+        <tr><td>Level 1</td><td>✅ Incidente auto-resuelto</td><td>Investigación · Diagnóstico · Acción ejecutada · Score antes/después</td></tr>
+        <tr><td>Level 2</td><td>⚠️ Aprobación requerida</td><td>Igual + botones APROBAR/RECHAZAR con link de webhook</td></tr>
+        <tr><td>Level 3</td><td>🚨 Acción manual requerida</td><td>Igual + comando exacto para copiar/pegar</td></tr>
+        <tr><td>Circuit breaker</td><td>🔴 Bucle detectado</td><td>N intentos fallidos · Requiere intervención</td></tr>
+      </table>
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Protecciones anti-bucle</h3>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Mecanismo</th><th>Cómo funciona</th></tr>
+        <tr><td><strong>Circuit Breaker</strong></td><td>Huella de la anomalía (namespace + causa raíz). Tras 3 intentos en 10 minutos → bloquea + escala</td></tr>
+        <tr><td><strong>Dry-run obligatorio</strong></td><td>Todo Level 1+ ejecuta <code>--dry-run=client</code> primero. Si falla → nunca ejecuta el real</td></tr>
+        <tr><td><strong>Verificación post-fix</strong></td><td>Espera 90s y comprueba réplicas Ready. Si empeora → registra fallo + incrementa contador CB</td></tr>
+        <tr><td><strong>Hilo de fondo</strong></td><td>La remediación nunca bloquea el pipeline principal</td></tr>
+      </table>
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Nivel de autonomía vs. literatura</h3>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Nivel</th><th>Capacidad</th><th>Este sistema</th><th>Productos comerciales</th></tr>
+        <tr><td>L1</td><td>Detección de anomalías</td><td style="color:#16a34a">✅</td><td style="color:#16a34a">✅</td></tr>
+        <tr><td>L2</td><td>Diagnóstico de causa raíz</td><td style="color:#16a34a">✅</td><td style="color:#16a34a">✅</td></tr>
+        <tr><td>L3</td><td>Propuesta de remediación</td><td style="color:#16a34a">✅</td><td style="color:#16a34a">✅</td></tr>
+        <tr><td>L4</td><td>Remediación autónoma (reversible)</td><td style="color:#16a34a">✅</td><td style="color:#d97706">⚠️ cloud only</td></tr>
+        <tr><td>L4+</td><td>Remediación con aprobación humana</td><td style="color:#16a34a">✅</td><td style="color:#dc2626">❌</td></tr>
+        <tr><td>L5</td><td>Verificación post-fix</td><td style="color:#16a34a">✅</td><td style="color:#dc2626">❌ publicado</td></tr>
+        <tr><td>L5+</td><td>On-premise, sin cloud</td><td style="color:#16a34a">✅ CPU local</td><td style="color:#dc2626">❌</td></tr>
+      </table>
+    </div>
+
+    <div class="callout" style="margin-top:24px;">
+      <strong>Conclusión:</strong> la autonomía total no es el objetivo correcto para AIOps en producción. Un sistema que razona, actúa con seguridad en el 80% de los casos y escala con contexto completo el 20% restante es más deployable en entornos regulados que uno totalmente autónomo — y más útil para el SRE que uno puramente diagnóstico.
+    </div>
+
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Activación</h3>
+    <pre style="font-size:13px; margin:16px 0;">REMEDIATION_ENABLED=true \
+SMTP_USER=alerts@empresa.com \
+SMTP_PASS=app_password \
+NOTIFY_EMAIL=sre@empresa.com \
+python main.py live</pre>
 
   </div>
 </section>

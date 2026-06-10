@@ -632,6 +632,11 @@ La bajada de ROUGE-L (−13.4 pp) y NS-ok% (−16.2 pp) refleja que el modelo h�
 | `src/diagnostics/hybrid_react_agent.py` | Agente híbrido dos fases (investigador + experto) |
 | `src/diagnostics/kubectl_toolbox.py` | Executor kubectl solo lectura con whitelist de seguridad |
 | `src/diagnostics/react_agent.py` | ReAct loop con fine-tuned (experimental) |
+| `src/remediation/risk_scorer.py` | Clasificador de riesgo kubectl (Level 0-3) |
+| `src/remediation/circuit_breaker.py` | Prevención de bucles de remediación |
+| `src/remediation/executor.py` | Ejecución segura con dry-run obligatorio |
+| `src/remediation/notifier.py` | Email HTML con botones APROBAR/RECHAZAR |
+| `src/remediation/auto_remediation.py` | Orquestador completo en hilo de fondo |
 | `finetune/Modelfile` | Ollama config SFT v1 (con TEMPLATE corregido) |
 | `finetune/Modelfile_v2` | Ollama config SFT v2 |
 | `finetune/Modelfile_dpo` | Ollama config DPO v1 |

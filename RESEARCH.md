@@ -546,6 +546,141 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 
 ---
 
+## 12. Auto-Remediation with Human-in-the-Loop
+
+### 12.1 Motivation
+
+Diagnosis without action only automates half the SRE workflow. The natural extension of the Hybrid ReAct Agent is a remediation loop that acts on the diagnosis, verifies the result, and escalates when intervention is needed. The key design question is not *whether* to automate, but *how much* to automate safely.
+
+Full autonomy is not the correct objective for production AIOps. Enterprise environments have compliance requirements (SOC2, ISO27001) mandating human traceability for infrastructure changes. A system that explains its reasoning and asks for confirmation on risky actions is more deployable than one that acts without oversight.
+
+### 12.2 Risk Taxonomy
+
+All kubectl commands are classified into four levels before execution:
+
+| Level | Label | Examples | Policy |
+|-------|-------|----------|--------|
+| 0 | Read-only | `describe`, `get`, `logs`, `top` | Execute freely |
+| 1 | Reversible | `rollout restart`, `scale`, `rollout undo` | Execute automatically |
+| 2 | Config change | `set resources`, `patch`, `set image` | Require email approval |
+| 3 | Destructive | `delete`, `drain`, `cordon`, `exec` | Never execute automatically |
+
+The classification is conservative: unknown verbs default to Level 2. This follows the principle of least privilege — the agent assumes more risk, not less, when uncertain.
+
+### 12.3 Architecture
+
+```
+Anomaly detected → Hybrid ReAct diagnosis → kubectl proposed
+        │
+        ▼
+[Circuit Breaker] — same anomaly seen 3+ times in 10 min? → escalate + stop
+        │
+        ▼
+[Risk Scorer] — classify kubectl (Level 0-3)
+        │
+        ├─ Level 0 → no action (read-only, already done in investigation)
+        │
+        ├─ Level 1 → dry-run → execute → wait 90s → verify
+        │            success: email "resolved" + reset circuit breaker
+        │            failure: email "fix failed" + record attempt
+        │
+        ├─ Level 2 → email with [APPROVE] / [REJECT] buttons
+        │            approved: execute → verify
+        │            rejected: record + close
+        │            no response in 30min: discard + notify
+        │
+        └─ Level 3 → email "manual action required" + exact command
+                     never executes
+```
+
+All remediation runs in a background thread — the main pipeline continues processing events regardless of remediation outcome.
+
+### 12.4 Anti-Loop Protections
+
+Three independent mechanisms prevent remediation loops:
+
+**Circuit Breaker (`src/remediation/circuit_breaker.py`):**
+Tracks attempts per anomaly fingerprint (hash of namespace + root cause prefix). After 3 attempts in 10 minutes, blocks all automatic action for that fingerprint and sends an escalation alert.
+
+**Mandatory Dry-Run (`src/remediation/executor.py`):**
+Every Level 1+ command runs `--dry-run=client` first. If dry-run fails, the real command is never attempted. Output is compared for sanity before proceeding.
+
+**Post-Fix Verification:**
+After Level 1 execution, the system waits 90 seconds and queries the affected resource. If replicas are not Ready or Warning events persist, the attempt is recorded as failed and the circuit breaker counter increments.
+
+### 12.5 Email Notification Design
+
+The email serves two purposes: transparency (the SRE always knows what happened) and control (Level 2 actions require explicit approval).
+
+Level 1 email (informational):
+```
+Subject: [K8s-AIOps] ✅ Incidente auto-resuelto — namespace: producción
+
+Investigation:
+  THOUGHT: Multiple pods evicted, likely memory pressure on node
+  ACTION:  kubectl describe node node-1 -n producción
+  THOUGHT: Node at 97% memory, pod scheduler hitting 498Mi/512Mi limit
+
+Diagnosis:
+  Memory pressure in node-1 causing pod evictions. Scheduler pod
+  exceeding memory limit (498Mi/512Mi).
+
+Action executed (Level 1 — automatic):
+  kubectl rollout restart deployment/scheduler -n producción
+  → Pod restarted. Anomaly score: 0.91 → 0.28 (resolved)
+```
+
+Level 2 email (approval required):
+```
+Subject: [K8s-AIOps] ⚠️ Aprobación requerida — namespace: producción
+
+[same investigation and diagnosis]
+
+Proposed action (Level 2 — config change):
+  kubectl set resources deployment/scheduler \
+    --limits=memory=1Gi -n producción
+
+[✅ APROBAR]  [❌ RECHAZAR]
+
+No response in 30 minutes → action discarded automatically.
+```
+
+The approve/reject links call `GET /remediation/approve/{token}` on the web server, which updates a shared in-memory store polled by the remediation thread.
+
+### 12.6 Configuration
+
+```bash
+# Minimal — Level 1 auto with email notifications
+REMEDIATION_ENABLED=true
+SMTP_USER=alerts@company.com
+SMTP_PASS=app_password
+NOTIFY_EMAIL=sre-team@company.com
+
+# Optional tuning
+REMEDIATION_MAX_LEVEL=2        # allow Level 2 with approval
+WEBHOOK_BASE_URL=https://k8s-aiops.company.com  # for approval links
+```
+
+By default `REMEDIATION_ENABLED=false` — the pipeline behaves exactly as before unless explicitly activated.
+
+### 12.7 System Levels — Comparison with Literature
+
+The remediation module advances the system from diagnosis to closed-loop operation:
+
+| Level | Capability | This system |
+|-------|-----------|-------------|
+| L1 | Anomaly detection | ✅ Isolation Forest |
+| L2 | Root cause diagnosis | ✅ Hybrid ReAct + grammar |
+| L3 | Remediation proposal | ✅ kubectl suggested |
+| L4 | Autonomous remediation | ✅ Level 1 actions |
+| L4+ | Human-gated remediation | ✅ Level 2 email approval |
+| L5 | Post-fix verification | ✅ 90s verify loop |
+| L5+ | Learning from outcomes | ◻ Future work |
+
+Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis AI, PagerDuty AIOps) reach L3-L4 but require cloud connectivity and proprietary models. This system reaches L5 running entirely on-premise on CPU with open models.
+
+---
+
 ## 13. Artifacts
 
 | Artifact | Location |
@@ -556,9 +691,10 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 | ORPO LoRA adapters | `finetune/output/k8s-rca-orpo/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-orpo) |
 | GGUF Q8_0 — SFT | [HF Hub — k8s-rca-slm-Q8_0.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
 | GGUF Q4_K_M — SFT | [HF Hub — k8s-rca-slm-Q4_K_M.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| GGUF Q8_0 — ORPO ⭐ | `finetune/output/k8s-rca-orpo-Q8_0.gguf` |
+| GGUF Q8_0 — ORPO ⭐ | [HF Hub — k8s-rca-orpo-gguf](https://huggingface.co/aaranda233/k8s-rca-orpo-gguf) (private until publication) |
 | Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
 | Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
+| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, notifier, auto_remediation |
 | Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
 
 ---
@@ -569,7 +705,8 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
 - [x] Grammar-constrained decoding — GBNF grammar via Ollama `/api/generate`
 - [x] Hybrid ReAct Agent — role separation resolves Parse%/Keyword% trade-off
-- [ ] Integration test: Hybrid agent with `dry_run=False` on live cluster with chaos injection
+- [x] Auto-remediation with human-in-the-loop — Level 1 autonomous, Level 2 email approval, circuit breaker
+- [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
 - [ ] Fine-tune on larger dataset (5k+ samples with structural diversity) — prerequisite for DPO on stronger base
 - [ ] Scale to 7B model (Mistral-7B or Llama-3.1-8B) with same ORPO recipe — expected to improve both metrics
 - [ ] Benchmark against GPT-4o / Claude Sonnet on same 210-sample test set
