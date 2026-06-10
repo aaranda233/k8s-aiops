@@ -19,6 +19,8 @@ from src.diagnostics.hybrid_react_agent import HybridReActAgent
 from src.diagnostics.ollama_rca import DiagnosisResult, OllamaRCA
 from src.diagnostics.react_agent import ReActAgent
 from src.parser.log_parser import LogParser
+from src.remediation.auto_remediation import AutoRemediation
+from src.remediation.notifier import Notifier
 from src.tracking.mlflow_tracker import MLflowTracker, RetrainEvent
 
 console = Console()
@@ -70,6 +72,26 @@ class AIOPsPipeline:
                 )
         else:
             self.rca = None
+
+        # Auto-remediación (opcional)
+        self.remediation: AutoRemediation | None = None
+        if cfg.remediation.enabled:
+            notifier = None
+            if cfg.remediation.smtp_user and cfg.remediation.notify_email:
+                notifier = Notifier(
+                    smtp_host=cfg.remediation.smtp_host,
+                    smtp_port=cfg.remediation.smtp_port,
+                    smtp_user=cfg.remediation.smtp_user,
+                    smtp_pass=cfg.remediation.smtp_pass,
+                    from_addr=cfg.remediation.smtp_from or cfg.remediation.smtp_user,
+                    to_addr=cfg.remediation.notify_email,
+                    webhook_base_url=cfg.remediation.webhook_base_url,
+                )
+            self.remediation = AutoRemediation(
+                notifier=notifier,
+                max_auto_level=cfg.remediation.max_auto_level,
+                verify_wait=cfg.remediation.verify_wait_seconds,
+            )
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)
         self._scored_windows: list[ScoredWindow] = []
@@ -306,6 +328,11 @@ class AIOPsPipeline:
                     for s in result.react_trace
                 ]
             self._emit("rca", rca_event)
+
+            # Auto-remediación en hilo de fondo (no bloquea el pipeline)
+            if self.remediation:
+                self.remediation.handle_async(scored, result)
+
         except Exception as e:
             console.print(f"  [red]Error RCA: {e}[/]")
             self._emit("rca", {"error": str(e), "window_index": scored.window.index})

@@ -46,6 +46,24 @@ class DiagnosticsConfig:
 
 
 @dataclass
+class RemediationConfig:
+    enabled: bool = field(default_factory=lambda: os.getenv("REMEDIATION_ENABLED", "false").lower() == "true")
+    # Nivel máximo de acción automática: 1=restart/scale, 2=patch/config, 3=nunca auto
+    max_auto_level: int = field(default_factory=lambda: int(os.getenv("REMEDIATION_MAX_LEVEL", "1")))
+    # Segundos de espera tras el fix para verificar
+    verify_wait_seconds: int = 90
+    # SMTP para notificaciones
+    smtp_host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", "smtp.gmail.com"))
+    smtp_port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
+    smtp_user: str = field(default_factory=lambda: os.getenv("SMTP_USER", ""))
+    smtp_pass: str = field(default_factory=lambda: os.getenv("SMTP_PASS", ""))
+    smtp_from: str = field(default_factory=lambda: os.getenv("SMTP_FROM", ""))
+    notify_email: str = field(default_factory=lambda: os.getenv("NOTIFY_EMAIL", ""))
+    # URL base del webhook para links de aprobación en el email
+    webhook_base_url: str = field(default_factory=lambda: os.getenv("WEBHOOK_BASE_URL", "http://localhost:8000"))
+
+
+@dataclass
 class MLflowConfig:
     enabled: bool = field(default_factory=lambda: os.getenv("MLFLOW_ENABLED", "true").lower() != "false")
     tracking_uri: str = field(default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "http://192.168.2.204:30803"))
@@ -57,6 +75,7 @@ class PipelineConfig:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    remediation: RemediationConfig = field(default_factory=RemediationConfig)
     mlflow: MLflowConfig = field(default_factory=MLflowConfig)
     # Modo replay: procesar eventos historicos en vez de stream en vivo
     replay_mode: bool = False
