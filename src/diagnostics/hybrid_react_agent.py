@@ -12,8 +12,7 @@ Fase 2 — Experto (modelo fine-tuneado, k8s-rca-orpo):
 Resultado: mejor razonamiento (fase 1) + mejor formato/dominio K8s (fase 2).
 """
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -74,7 +73,6 @@ class HybridReActAgent:
 
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
-        t0 = time.time()
 
         sample = w.raw_logs[-self.max_logs:]
         logs_text = "\n".join(f"  {l}" for l in sample)

@@ -5,8 +5,7 @@ Ciclo: THOUGHT → ACTION → OBSERVATION → THOUGHT → ... → FINAL
 El LLM investiga el cluster paso a paso en lugar de hacer una sola llamada ciega.
 """
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -72,7 +71,6 @@ class ReActAgent:
     def diagnose(self, scored_window) -> DiagnosisResult:
         """Ejecuta el ciclo ReAct y devuelve un DiagnosisResult compatible con el pipeline."""
         w = scored_window.window
-        t0 = time.time()
 
         sample = w.raw_logs[-self.max_logs:]
         logs_text = "\n".join(f"  {l}" for l in sample)

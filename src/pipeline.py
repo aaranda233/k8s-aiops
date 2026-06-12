@@ -6,8 +6,8 @@ Modos:
   - live:    stream continuo via Watch API
 """
 
-import time
 import threading
+import time
 
 from rich.console import Console
 
@@ -291,7 +291,7 @@ class AIOPsPipeline:
             return
 
         if not self.rca.health_check():
-            console.print(f"  [red]Ollama no disponible[/]")
+            console.print("  [red]Ollama no disponible[/]")
             self._emit("rca", {"error": "Ollama no disponible", "window_index": scored.window.index})
             return
 

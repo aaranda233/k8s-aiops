@@ -8,7 +8,7 @@ bloquea cualquier acción automática y fuerza escalación al humano.
 import hashlib
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

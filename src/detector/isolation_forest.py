@@ -16,7 +16,7 @@ Por que funciona sin etiquetas:
 """
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from sklearn.decomposition import PCA

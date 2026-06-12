@@ -19,7 +19,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kubernetes import client, config as k8s_config, watch
+from kubernetes import client, watch
+from kubernetes import config as k8s_config
 from kubernetes.client.rest import ApiException
 
 

@@ -5,7 +5,6 @@ Abstrae tokens dinamicos y produce templates + cluster IDs.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from drain3 import TemplateMiner
 from drain3.masking import MaskingInstruction

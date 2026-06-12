@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from src.diagnostics.react_agent import TraceStep
+    pass
 
 _SYSTEM_PROMPT = """\
 You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
