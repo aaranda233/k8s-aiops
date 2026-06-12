@@ -1,0 +1,83 @@
+# ──────────────────────────────────────────────────────────────────
+# k8s-aiops — valores por defecto
+# ──────────────────────────────────────────────────────────────────
+
+image:
+  repository: ghcr.io/aaranda233/k8s-aiops
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# ─── Diagnóstico ─────────────────────────────────────────────────
+diagnostics:
+  ollamaHost: "http://ollama.aiops.svc.cluster.local:11434"
+  ollamaModel: "k8s-rca-orpo:latest"
+  reactMode: "hybrid"          # single_shot | react | hybrid
+  reactBaseModel: "qwen2.5:1.5b"
+  reactDryRun: true            # investigador planea pero no ejecuta kubectl
+
+# ─── Auto-remediación ────────────────────────────────────────────
+remediation:
+  enabled: false
+  maxAutoLevel: 1              # 1=reversible, 2=config (aprobación), 3=nunca auto
+
+# ─── Detección ───────────────────────────────────────────────────
+detector:
+  anomalyThreshold: "0.80"
+  bootstrapWindows: "10"
+  windowSize: "60"
+  # Namespaces a monitorizar (vacío = todos los permitidos por RBAC)
+  namespaces: ""
+
+# ─── MLflow ──────────────────────────────────────────────────────
+mlflow:
+  enabled: true
+  trackingUri: "http://mlflow.aiops.svc.cluster.local:5000"
+  experiment: "k8s-aiops"
+
+# ─── SMTP (notificaciones) — usa un Secret existente o inline ─────
+smtp:
+  # Si existingSecret está vacío, se crea un Secret con estos valores
+  existingSecret: ""
+  host: "smtp.gmail.com"
+  port: "587"
+  user: ""
+  password: ""
+  from: ""
+  notifyEmail: ""
+  webhookBaseUrl: "http://k8s-aiops.aiops.svc.cluster.local:8000"
+
+# ─── RBAC ────────────────────────────────────────────────────────
+rbac:
+  create: true
+  # Permitir verbos de escritura para remediación Level 1 (rollout/scale).
+  # Si false, el agente solo lee y propone (nunca actúa).
+  allowRemediation: false
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+# Sondas
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+  readiness:
+    path: /ready
+    initialDelaySeconds: 10
+    periodSeconds: 15
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

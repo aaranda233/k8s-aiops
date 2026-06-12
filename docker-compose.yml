@@ -1,0 +1,62 @@
+# ──────────────────────────────────────────────────────────────────
+# k8s-aiops — stack completo para desarrollo / demo local
+#   aiops   — pipeline + web UI (puerto 8000)
+#   ollama  — servidor de inferencia del SLM
+#   mlflow  — tracking de experimentos (puerto 5000)
+#
+# Uso:
+#   docker compose up -d
+#   docker compose exec ollama ollama pull qwen2.5:1.5b
+#   # cargar el modelo experto (k8s-rca-orpo) en ollama
+#   open http://localhost:8000
+# ──────────────────────────────────────────────────────────────────
+services:
+  aiops:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      REACT_MODE: ${REACT_MODE:-hybrid}
+      REACT_BASE_MODEL: ${REACT_BASE_MODEL:-qwen2.5:1.5b}
+      REACT_DRY_RUN: ${REACT_DRY_RUN:-true}
+      REMEDIATION_ENABLED: ${REMEDIATION_ENABLED:-false}
+      REMEDIATION_MAX_LEVEL: ${REMEDIATION_MAX_LEVEL:-1}
+      MLFLOW_ENABLED: "true"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PIPELINE_MODE: ${PIPELINE_MODE:-live}
+      ANOMALY_THRESHOLD: ${ANOMALY_THRESHOLD:-0.80}
+      # Monta tu kubeconfig para acceso al cluster (read-only recomendado)
+    volumes:
+      - ${KUBECONFIG:-~/.kube/config}:/home/aiops/.kube/config:ro
+    depends_on:
+      - ollama
+      - mlflow
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow
+    restart: unless-stopped
+
+volumes:
+  ollama-models:
+  mlflow-data:

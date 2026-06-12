@@ -1,0 +1,48 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "k8s-aiops.serviceAccountName" . }}
+  labels:
+    {{- include "k8s-aiops.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8s-aiops.fullname" . }}
+  labels:
+    {{- include "k8s-aiops.labels" . | nindent 4 }}
+rules:
+  # ─── Detección + investigación (solo lectura) ───────────────
+  - apiGroups: [""]
+    resources: ["events", "pods", "pods/log", "nodes", "services", "endpoints", "persistentvolumeclaims", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  {{- if .Values.rbac.allowRemediation }}
+  # ─── Remediación Level 1 (rollout restart / scale) ──────────
+  # Solo patch/update sobre deployments. NUNCA delete ni acceso a nodos.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "statefulsets", "statefulsets/scale"]
+    verbs: ["patch", "update"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8s-aiops.fullname" . }}
+  labels:
+    {{- include "k8s-aiops.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8s-aiops.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "k8s-aiops.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

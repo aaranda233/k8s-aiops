@@ -41,10 +41,16 @@ class K8sCollector:
             namespaces:    lista de namespaces a monitorizar. None = todos.
             use_incluster: True si el pipeline corre dentro del propio cluster.
         """
+        # Auto-detección: in-cluster (pod con ServiceAccount) o kubeconfig local.
+        # use_incluster=True fuerza in-cluster; por defecto se intenta primero
+        # in-cluster y se cae a kubeconfig si no hay token de ServiceAccount.
         if use_incluster:
             k8s_config.load_incluster_config()
         else:
-            k8s_config.load_kube_config()
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                k8s_config.load_kube_config()
 
         self._v1 = client.CoreV1Api()
         self.namespaces = namespaces

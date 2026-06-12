@@ -44,6 +44,29 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ------------------------------------------------------------------
+# Estado de la aplicación (para sondas de K8s)
+# ------------------------------------------------------------------
+
+_app_state = {"ready": False, "pipeline_thread": None}
+
+
+@app.get("/health")
+async def health():
+    """Liveness — el proceso responde. Usado por livenessProbe."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness — el pipeline está arrancado. Usado por readinessProbe."""
+    thread = _app_state["pipeline_thread"]
+    alive = thread is not None and thread.is_alive()
+    if _app_state["ready"] and alive:
+        return {"status": "ready"}
+    return JSONResponse({"status": "not_ready", "pipeline_alive": alive}, status_code=503)
+
+
+# ------------------------------------------------------------------
 # Pagina principal
 # ------------------------------------------------------------------
 
@@ -126,18 +149,25 @@ async def startup():
         replay_mode=(mode == "replay"),
     )
 
-    # Conectar el approval_store del web server con el notifier del pipeline
-    # (se hace después de crear el pipeline para que el notifier exista)
-    pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus)
-    if (pipeline_instance.remediation and
-            pipeline_instance.remediation.notifier):
-        pipeline_instance.remediation.notifier.register_approval_store(_approval_store)
+    def _run():
+        # La creación del pipeline (conexión al cluster) va dentro del hilo:
+        # si falla, el servidor HTTP sigue vivo y /ready reporta not_ready
+        # en vez de hacer crash-loop del pod.
+        try:
+            pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus)
+            if (pipeline_instance.remediation and
+                    pipeline_instance.remediation.notifier):
+                pipeline_instance.remediation.notifier.register_approval_store(_approval_store)
+            _app_state["ready"] = True
+            if mode == "replay":
+                pipeline_instance.run_replay()
+            else:
+                pipeline_instance.run_live()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Pipeline no pudo arrancar: %s", e)
+            _app_state["ready"] = False
 
-    t = threading.Thread(
-        target=lambda: (
-            pipeline_instance.run_replay() if mode == "replay"
-            else pipeline_instance.run_live()
-        ),
-        daemon=True,
-    )
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
+    _app_state["pipeline_thread"] = t

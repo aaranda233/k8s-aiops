@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-aiops.fullname" . }}
+  labels:
+    {{- include "k8s-aiops.labels" . | nindent 4 }}
+data:
+  OLLAMA_HOST: {{ .Values.diagnostics.ollamaHost | quote }}
+  OLLAMA_MODEL: {{ .Values.diagnostics.ollamaModel | quote }}
+  REACT_MODE: {{ .Values.diagnostics.reactMode | quote }}
+  REACT_BASE_MODEL: {{ .Values.diagnostics.reactBaseModel | quote }}
+  REACT_DRY_RUN: {{ .Values.diagnostics.reactDryRun | quote }}
+  REMEDIATION_ENABLED: {{ .Values.remediation.enabled | quote }}
+  REMEDIATION_MAX_LEVEL: {{ .Values.remediation.maxAutoLevel | quote }}
+  ANOMALY_THRESHOLD: {{ .Values.detector.anomalyThreshold | quote }}
+  BOOTSTRAP_WINDOWS: {{ .Values.detector.bootstrapWindows | quote }}
+  WINDOW_SIZE: {{ .Values.detector.windowSize | quote }}
+  NAMESPACES: {{ .Values.detector.namespaces | quote }}
+  MLFLOW_ENABLED: {{ .Values.mlflow.enabled | quote }}
+  MLFLOW_TRACKING_URI: {{ .Values.mlflow.trackingUri | quote }}
+  MLFLOW_EXPERIMENT: {{ .Values.mlflow.experiment | quote }}
+  WEBHOOK_BASE_URL: {{ .Values.smtp.webhookBaseUrl | quote }}

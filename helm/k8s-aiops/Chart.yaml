@@ -1,0 +1,15 @@
+apiVersion: v2
+name: k8s-aiops
+description: Detección autónoma de anomalías y RCA para Kubernetes con SLM local
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - aiops
+  - kubernetes
+  - anomaly-detection
+  - root-cause-analysis
+  - slm
+home: https://github.com/aaranda233/k8s-aiops
+maintainers:
+  - name: Antonio Aranda Hernández
