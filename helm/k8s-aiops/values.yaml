@@ -21,6 +21,10 @@ diagnostics:
 remediation:
   enabled: false
   maxAutoLevel: 1              # 1=reversible, 2=config (aprobación), 3=nunca auto
+  # Canal de notificación: teams | email | both | none
+  notifyChannel: "teams"
+  # Incoming Webhook de Teams (usa existingSecret para no exponerlo en values)
+  teamsWebhookUrl: ""
 
 # ─── Detección ───────────────────────────────────────────────────
 detector:

@@ -12,6 +12,7 @@ data:
   REACT_DRY_RUN: {{ .Values.diagnostics.reactDryRun | quote }}
   REMEDIATION_ENABLED: {{ .Values.remediation.enabled | quote }}
   REMEDIATION_MAX_LEVEL: {{ .Values.remediation.maxAutoLevel | quote }}
+  NOTIFY_CHANNEL: {{ .Values.remediation.notifyChannel | quote }}
   ANOMALY_THRESHOLD: {{ .Values.detector.anomalyThreshold | quote }}
   BOOTSTRAP_WINDOWS: {{ .Values.detector.bootstrapWindows | quote }}
   WINDOW_SIZE: {{ .Values.detector.windowSize | quote }}

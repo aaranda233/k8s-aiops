@@ -20,7 +20,7 @@ from src.diagnostics.ollama_rca import DiagnosisResult, OllamaRCA
 from src.diagnostics.react_agent import ReActAgent
 from src.parser.log_parser import LogParser
 from src.remediation.auto_remediation import AutoRemediation
-from src.remediation.notifier import Notifier
+from src.remediation.base_notifier import build_notifier
 from src.tracking.mlflow_tracker import MLflowTracker, RetrainEvent
 
 console = Console()
@@ -73,20 +73,10 @@ class AIOPsPipeline:
         else:
             self.rca = None
 
-        # Auto-remediación (opcional)
+        # Auto-remediación (opcional) — canal de notificación según config
         self.remediation: AutoRemediation | None = None
         if cfg.remediation.enabled:
-            notifier = None
-            if cfg.remediation.smtp_user and cfg.remediation.notify_email:
-                notifier = Notifier(
-                    smtp_host=cfg.remediation.smtp_host,
-                    smtp_port=cfg.remediation.smtp_port,
-                    smtp_user=cfg.remediation.smtp_user,
-                    smtp_pass=cfg.remediation.smtp_pass,
-                    from_addr=cfg.remediation.smtp_from or cfg.remediation.smtp_user,
-                    to_addr=cfg.remediation.notify_email,
-                    webhook_base_url=cfg.remediation.webhook_base_url,
-                )
+            notifier = build_notifier(cfg.remediation)
             self.remediation = AutoRemediation(
                 notifier=notifier,
                 max_auto_level=cfg.remediation.max_auto_level,

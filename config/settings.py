@@ -52,14 +52,18 @@ class RemediationConfig:
     max_auto_level: int = field(default_factory=lambda: int(os.getenv("REMEDIATION_MAX_LEVEL", "1")))
     # Segundos de espera tras el fix para verificar
     verify_wait_seconds: int = 90
-    # SMTP para notificaciones
+    # Canal de notificación: teams | email | both | none
+    notify_channel: str = field(default_factory=lambda: os.getenv("NOTIFY_CHANNEL", "teams"))
+    # Teams — Incoming Webhook del canal de ops
+    teams_webhook_url: str = field(default_factory=lambda: os.getenv("TEAMS_WEBHOOK_URL", ""))
+    # SMTP (canal email / fallback)
     smtp_host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", "smtp.gmail.com"))
     smtp_port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
     smtp_user: str = field(default_factory=lambda: os.getenv("SMTP_USER", ""))
     smtp_pass: str = field(default_factory=lambda: os.getenv("SMTP_PASS", ""))
     smtp_from: str = field(default_factory=lambda: os.getenv("SMTP_FROM", ""))
     notify_email: str = field(default_factory=lambda: os.getenv("NOTIFY_EMAIL", ""))
-    # URL base del webhook para links de aprobación en el email
+    # URL base pública para los links de aprobación en las notificaciones
     webhook_base_url: str = field(default_factory=lambda: os.getenv("WEBHOOK_BASE_URL", "http://localhost:8000"))
 
 

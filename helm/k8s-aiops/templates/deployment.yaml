@@ -30,7 +30,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "k8s-aiops.fullname" . }}
-            {{- if and .Values.remediation.enabled (or .Values.smtp.existingSecret .Values.smtp.user) }}
+            {{- if and .Values.remediation.enabled (or .Values.smtp.existingSecret .Values.smtp.user .Values.remediation.teamsWebhookUrl) }}
             - secretRef:
                 name: {{ include "k8s-aiops.smtpSecretName" . }}
             {{- end }}

@@ -1,28 +1,22 @@
 """
-Notificador de incidentes por email.
+Notificador de incidentes por email (SMTP).
 
-Envía emails con el contexto completo del incidente.
+Envía emails HTML con el contexto completo del incidente.
 Para Level 2 incluye links de aprobación/rechazo con token único.
+
+Es una de las implementaciones de BaseNotifier — ver también TeamsNotifier.
 """
 
-import secrets
 import smtplib
-import time
-from dataclasses import dataclass, field
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from src.remediation.base_notifier import BaseNotifier, PendingApproval
 
-@dataclass
-class PendingApproval:
-    token: str
-    incident_id: str
-    kubectl_cmd: str
-    created_at: float = field(default_factory=time.time)
-    response: str | None = None  # "approved" | "rejected"
+__all__ = ["EmailNotifier", "Notifier", "PendingApproval"]
 
 
-class Notifier:
+class EmailNotifier(BaseNotifier):
     def __init__(
         self,
         smtp_host: str,
@@ -33,20 +27,13 @@ class Notifier:
         to_addr: str,
         webhook_base_url: str = "http://localhost:8000",
     ):
+        super().__init__(webhook_base_url=webhook_base_url)
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
         self.smtp_user = smtp_user
         self.smtp_pass = smtp_pass
         self.from_addr = from_addr
         self.to_addr = to_addr
-        self.webhook_base_url = webhook_base_url.rstrip("/")
-
-        # Token store compartido con el web server
-        self._pending: dict[str, PendingApproval] = {}
-
-    def register_approval_store(self, store: dict) -> None:
-        """Conecta con el dict del web server para compartir tokens."""
-        self._pending = store
 
     def notify_level1_executed(
         self,
@@ -79,15 +66,23 @@ class Notifier:
         investigation_steps: list[str],
     ) -> str:
         """Envía email con botones de aprobación. Devuelve el token."""
-        token = secrets.token_urlsafe(16)
-        self._pending[token] = PendingApproval(
-            token=token,
-            incident_id=incident_id,
-            kubectl_cmd=kubectl_cmd,
+        token = self._make_token(incident_id, kubectl_cmd)
+        self._notify_level2_with_token(
+            token, incident_id, namespaces, root_cause, kubectl_cmd, risk_reason, investigation_steps
         )
+        return token
 
-        approve_url = f"{self.webhook_base_url}/remediation/approve/{token}"
-        reject_url = f"{self.webhook_base_url}/remediation/reject/{token}"
+    def _notify_level2_with_token(
+        self,
+        token: str,
+        incident_id: str,
+        namespaces: set[str],
+        root_cause: str,
+        kubectl_cmd: str,
+        risk_reason: str,
+        investigation_steps: list[str],
+    ) -> None:
+        approve_url, reject_url = self._approval_urls(token)
 
         subject = f"[K8s-AIOps] ⚠️ Aprobación requerida — {', '.join(namespaces)}"
         body = self._build_html(
@@ -103,7 +98,6 @@ class Notifier:
             reject_url=reject_url,
         )
         self._send(subject, body)
-        return token
 
     def notify_level3(
         self,
@@ -144,11 +138,6 @@ class Notifier:
         <p><small>Incident ID: {incident_id}</small></p>
         """
         self._send(subject, body)
-
-    def get_response(self, token: str) -> str | None:
-        """Consulta si el token fue aprobado/rechazado."""
-        entry = self._pending.get(token)
-        return entry.response if entry else None
 
     def _send(self, subject: str, html_body: str) -> None:
         msg = MIMEMultipart("alternative")
@@ -246,3 +235,7 @@ class Notifier:
     <hr style="margin-top:32px;border:none;border-top:1px solid #e5e2da">
     <p style="font-size:12px;color:#999">K8s-AIOps · {incident_id}</p>
 </body></html>"""
+
+
+# Alias de compatibilidad — Notifier era el nombre original (solo email)
+Notifier = EmailNotifier
