@@ -1,140 +1,148 @@
 # K8s-AIOps
 
-Pipeline AIOps para Kubernetes: detección de anomalías con Isolation Forest + diagnóstico de causa raíz con un SLM fine-tuneado sobre datos del cluster.
+Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isolation Forest → **diagnóstico** de causa raíz con un agente híbrido (SLM fine-tuneado + grammar) → **remediación** con human-in-the-loop. Todo corre en CPU, sin GPU en inferencia.
 
-**Modelo:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · **Dataset:** [aaranda233/k8s-rca-dataset](https://huggingface.co/datasets/aaranda233/k8s-rca-dataset) · **Informe:** [GitHub Pages](https://aaranda233.github.io/k8s-aiops/)
-
----
-
-## Documentación del proyecto
-
-| Documento | Descripción | Fecha |
-|-----------|-------------|-------|
-| [RESEARCH.md](./RESEARCH.md) | Paper principal — arquitectura completa del pipeline, motivación, abstract, resultados de inferencia CPU | May 2026 |
-| [RESEARCH_DETECTION.md](./RESEARCH_DETECTION.md) | Detalle técnico de las capas 1 y 2: Watch API, Drain3, ventanas temporales, Isolation Forest con reentrenamiento continuo | May 2026 |
-| [eval/EVAL_RESULTS.md](./eval/EVAL_RESULTS.md) | Resultados de evaluación cuantitativa: SFT vs baseline vanilla en 210 muestras ciegas — tabla comparativa con parse rate, ROUGE-L, keyword hit, latencia | Jun 2026 |
+**Modelos:** [k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo) — **Dataset:** [k8s-rca-dataset](https://huggingface.co/datasets/aaranda233/k8s-rca-dataset) — **Informe:** [GitHub Pages](https://aaranda233.github.io/k8s-aiops/)
 
 ---
 
-## Estructura del repositorio
+## Qué hace
+
+```
+┌─ Capa 1 ─────────┐   ┌─ Capa 2 ─────────┐   ┌─ Capa 3 ──────────────┐   ┌─ Capa 4 ──────────┐
+│ Watch API K8s    │ → │ Isolation Forest │ → │ Agente Híbrido ReAct  │ → │ Auto-remediación  │
+│ + Drain3 parsing │   │ (no supervisado) │   │ investiga + diagnostica│   │ human-in-the-loop │
+└──────────────────┘   └──────────────────┘   └───────────────────────┘   └───────────────────┘
+```
+
+1. **Detección** — eventos del cluster en ventanas de 60s, Isolation Forest con reentrenamiento continuo marca ventanas anómalas
+2. **Diagnóstico** — un modelo base (`qwen2.5:1.5b`) investiga con kubectl de solo lectura (THOUGHT/ACTION), luego un experto fine-tuneado (`k8s-rca-orpo`) produce `ROOT CAUSE` + `KUBECTL` con formato garantizado por GBNF grammar
+3. **Remediación** — clasifica el comando por riesgo (Level 0-3): Level 1 reversible se ejecuta solo + verifica, Level 2 requiere aprobación por email, Level 3 destructivo nunca se ejecuta. Circuit breaker previene bucles.
+
+---
+
+## Resultados clave (210 muestras ciegas, seed=99)
+
+| Métrica | Baseline | SFT v1 | ORPO+grammar | **Hybrid+grammar** |
+|---------|:---:|:---:|:---:|:---:|
+| **Parse%** (sigue formato) | 38.6% | 56.2% | **100.0%** | 98.6% |
+| **Keyword%** (acierta el fallo) | 92.4% | 60.0% | 78.1% | **92.9%** |
+| **NS-ok%** (namespace correcto) | 1.4% | 33.0% | **89.5%** | 73.3% |
+| Latencia media (CPU) | 1.00s | 0.86s | **0.71s** | 2.04s |
+
+> **Hallazgo principal:** el trade-off Parse%/Keyword% que aparece en los 9 experimentos de fine-tuning no es un límite del enfoque, sino consecuencia de resolver dos objetivos con un solo modelo pequeño. La separación de roles (investigador + experto) lo resuelve: el híbrido iguala el Keyword% del baseline (92.9%) manteniendo Parse% ~100%. Detalle en [RESEARCH.md](./RESEARCH.md) y [EXPERIMENTS.md](./EXPERIMENTS.md).
+
+---
+
+## Documentación
+
+| Documento | Descripción |
+|-----------|-------------|
+| [RESEARCH.md](./RESEARCH.md) | Paper principal — arquitectura, 10 experimentos, agente híbrido, auto-remediación |
+| [RESEARCH_DETECTION.md](./RESEARCH_DETECTION.md) | Detalle de capas 1-2: Watch API, Drain3, Isolation Forest |
+| [EXPERIMENTS.md](./EXPERIMENTS.md) | Registro científico de los 10 experimentos de alineación |
+| [eval/EVAL_RESULTS.md](./eval/EVAL_RESULTS.md) | Resultados cuantitativos completos por modelo y escenario |
+
+---
+
+## Estructura
 
 ```
 k8s-aiops/
-│
-├── src/                        # Pipeline principal
-│   ├── collector/              # Capa 1: Watch API Kubernetes
-│   ├── parser/                 # Capa 1: Drain3 log parsing
-│   ├── detector/               # Capa 2: Isolation Forest + ventanas
-│   ├── diagnostics/            # Capa 3: OllamaRCA (SLM)
-│   └── tracking/               # MLflow tracker
-│
-├── dataset/                    # Generación del dataset de entrenamiento
-│   ├── scenarios/              # YAMLs con los 14 escenarios de fallo
-│   ├── generator.py            # Genera variaciones sintéticas (seed=42)
-│   └── output/combined.jsonl  # 986 muestras en formato ChatML
-│
-├── finetune/                   # Fine-tuning QLoRA
-│   ├── train.py                # Entrenamiento con unsloth + SFTTrainer
-│   ├── Modelfile               # Configuración Ollama (Q4_K_M)
-│   └── log_finetune_to_mlflow.py  # Sube métricas retroactivas a MLflow
-│
-├── eval/                       # Harness de evaluación
-│   ├── metrics.py              # ROUGE-L, keyword oracle, parse rate
-│   ├── runner.py               # Inferencia multi-modelo sobre Ollama
-│   ├── run_eval.py             # Orquestador — genera tabla comparativa
-│   ├── test_set.jsonl          # 210 muestras ciegas (seed=99)
-│   ├── results/                # JSONs con resultados por ejecución
-│   └── EVAL_RESULTS.md         # Resultados y análisis (Jun 2026)
-│
-├── web/                        # Dashboard web tiempo real
-│   ├── server.py               # FastAPI + WebSocket
-│   └── static/index.html       # Dashboard (D3.js + Chart.js)
-│
-├── config/                     # Configuración del pipeline
-│   └── settings.py             # PipelineConfig, MLflowConfig, etc.
-│
-├── report/                     # Informe para tesis
-│   ├── index.html              # Informe técnico completo (tema claro)
-│   └── dashboard-demo.html     # Mock animado del dashboard
-│
-├── docs/                       # GitHub Pages (protegido con contraseña)
-│   ├── index.html              # Wrapper con SHA-256 (pw: k8s2026)
-│   └── dashboard-demo.html     # Demo embebida en el informe
-│
-├── main.py                     # Punto de entrada (--replay / --live)
-└── requirements.txt
+├── src/
+│   ├── collector/          # Capa 1: Watch API (auto-detect in-cluster/kubeconfig)
+│   ├── parser/             # Capa 1: Drain3
+│   ├── detector/           # Capa 2: Isolation Forest + ventanas
+│   ├── diagnostics/        # Capa 3: single_shot · react · hybrid + grammar + kubectl_toolbox
+│   ├── remediation/        # Capa 4: risk_scorer · circuit_breaker · executor · notifier
+│   └── tracking/           # MLflow
+├── tests/                  # 65 tests (pytest) — remediación y seguridad
+├── eval/                   # Harness + 210 muestras ciegas + resultados
+├── finetune/               # SFT · DPO · ORPO · KTO · SimPO + Modelfiles
+├── dataset/                # Generador + 14 escenarios YAML
+├── web/                    # FastAPI + WebSocket + /health + /ready
+├── helm/k8s-aiops/         # Chart con RBAC de permisos mínimos
+├── docs/ · report/         # Informe web (GitHub Pages)
+├── Dockerfile · docker-compose.yml
+├── .env.example
+└── main.py
 ```
 
 ---
 
-## Progreso del proyecto
+## Arranque rápido
 
-### Completado
-
-| Hito | Fecha |
-|------|-------|
-| Pipeline completo: collector → parser → detector → RCA | Abr 2026 |
-| Dataset sintético: 14 escenarios × 70 muestras = 986 samples | Abr 2026 |
-| Fine-tuning QLoRA sobre Qwen2.5-1.5B-Instruct (A30 24GB) | May 2026 |
-| Modelo en HuggingFace + GGUF Q4_K_M para CPU | May 2026 |
-| Validación inferencia CPU (Intel Xeon Gold 6526Y): ~0.83s/resp | May 2026 |
-| Dashboard web con WebSocket (D3.js scatter PCA + Chart.js) | May 2026 |
-| MLflow tracking integrado (experimentos: k8s-aiops, k8s-aiops-finetune) | May 2026 |
-| Dataset subido a HuggingFace Hub | May 2026 |
-| Informe técnico web publicado en GitHub Pages | May 2026 |
-| **Harness de evaluación: 210 muestras ciegas, SFT vs baseline** | Jun 2026 |
-
-### En curso / Próximos pasos
-
-| Paso | Prioridad | Objetivo |
-|------|-----------|----------|
-| Structured outputs (grammar sampling en Ollama) | Alta | Parse% → ~100% sin reentrenar |
-| Ablación Q4_K_M vs Q8_0 vs fp16 con el harness | Media | Tabla eficiencia para paper |
-| DPO fine-tuning con pares chosen/rejected | Media | Keyword% ≥ 80%, reducir alucinación |
-
----
-
-## Resultados clave (evaluación Jun 2026)
-
-| Métrica | SFT (nuestro) | Baseline vanilla |
-|---------|:---:|:---:|
-| Sigue el formato ROOT CAUSE/KUBECTL | **56.2%** | 38.6% |
-| Keywords del fallo correctas | 60.0% | **92.4%** |
-| ROUGE-L vs referencia | **56.7%** | 2.5% |
-| Namespace correcto en kubectl | **33.0%** | 1.4% |
-| Verbo kubectl correcto | **41.0%** | 1.9% |
-| Latencia media (CPU) | **0.83s** | 0.96s |
-
-El SFT mejora el formato y la estructura del kubectl pero pierde generalización (sobreajuste en 986 muestras). El baseline conoce más vocabulario técnico pero no estructura la respuesta. Próximo paso: structured outputs + DPO.
-
----
-
-## Arrancar el pipeline
+### Local (CLI)
 
 ```bash
-# Instalar dependencias
 pip install -r requirements.txt
+cp .env.example .env          # ajusta OLLAMA_HOST, OLLAMA_MODEL, etc.
 
-# Modo replay (eventos históricos del cluster)
-python main.py --replay
+python main.py replay         # procesa eventos históricos
+python main.py live           # stream en vivo (Watch API)
+```
 
-# Modo live (Watch API en tiempo real)
-python main.py --live
+### Stack completo con Docker
 
-# Dashboard web
-# http://localhost:8765 (arranca automáticamente con --live)
+```bash
+docker compose up -d
+docker compose exec ollama ollama pull qwen2.5:1.5b
+# UI en http://localhost:8000
+```
 
-# Evaluación del modelo
-python eval/run_eval.py --samples 15 --host http://<ollama-host>:11434
+### En el cluster (Helm)
+
+```bash
+# Modo seguro: solo lectura, sin remediación
+helm install aiops helm/k8s-aiops/ -n aiops --create-namespace
+
+# Con remediación Level 1 + permisos de escritura + email
+helm install aiops helm/k8s-aiops/ -n aiops --create-namespace \
+  --set remediation.enabled=true \
+  --set rbac.allowRemediation=true \
+  --set smtp.user=alerts@empresa.com \
+  --set smtp.password=APP_PASSWORD \
+  --set smtp.notifyEmail=sre@empresa.com
+```
+
+El RBAC es **read-only por defecto**. Los permisos de escritura (`patch`/`scale` sobre deployments) solo se conceden con `rbac.allowRemediation=true`; `delete`/`drain` nunca.
+
+### Evaluación
+
+```bash
+python eval/run_eval.py --models orpo,hybrid_orpo --host http://<ollama-host>:11434
+```
+
+### Tests
+
+```bash
+pytest tests/ -v        # 65 tests — riesgo, circuit breaker, executor, notifier
 ```
 
 ---
 
-## Hardware utilizado
+## Modos de diagnóstico (`REACT_MODE`)
+
+| Modo | Descripción | Cuándo usar |
+|------|-------------|-------------|
+| `single_shot` | Una llamada al fine-tuneado | Más rápido (0.7s), menor cobertura |
+| `react` | Loop ReAct con el fine-tuneado | Experimental (1.5B no sigue bien el formato ReAct) |
+| `hybrid` | Base investiga + experto diagnostica + grammar | **Recomendado** — mejor Keyword% |
+
+---
+
+## Hardware
 
 | Componente | Especificación |
 |-----------|----------------|
-| Entrenamiento | NVIDIA A30 24GB VRAM · unsloth + trl SFTTrainer |
-| Inferencia | Intel Xeon Gold 6526Y · Ollama · GGUF Q4_K_M |
-| Cluster | Kubernetes (microkube) · 192.168.2.204 |
-| MLflow | NodePort 30803 · http://192.168.2.204:30803 |
+| Entrenamiento | NVIDIA A30 24GB · unsloth + TRL |
+| Inferencia | Intel Xeon Gold 6526Y · Ollama · GGUF Q8_0 — **sin GPU** |
+| Cluster | Kubernetes |
+
+---
+
+## Estado del proyecto
+
+**Completado:** pipeline 4 capas · 10 experimentos de alineación · agente híbrido + grammar · auto-remediación con human-in-the-loop · 65 tests · CI/CD · Docker · Helm · health checks.
+
+**Próximo:** test de integración con chaos injection en cluster real + medición de MTTR · benchmark vs GPT-4o/Claude · escalar a modelo 7B.
