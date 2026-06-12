@@ -19,6 +19,23 @@ import json
 from pathlib import Path
 
 
+# Parámetros del script de entrenamiento DPO (Direct Preference Optimization):
+#
+# | Parámetro       | Tipo  | Defecto                          | Descripción / Propósito |
+# | :-------------- | :---: | :------------------------------- | :---------------------- |
+# | --sft-model     | str   | finetune/output/k8s-rca-slm      | Checkpoint SFT de origen del que partir |
+# | --dataset       | str   | dataset/output/dpo_dataset.jsonl | Archivo del dataset de preferencias DPO (JSONL) |
+# | --output        | str   | finetune/output/k8s-rca-dpo      | Carpeta de salida del modelo ajustado |
+# | --epochs        | int   | 2                                | Número de épocas de entrenamiento completo |
+# | --beta          | float | 0.05                             | Parámetro β de DPO (controla desviación del SFT original) |
+# | --batch-size    | int   | 1                                | Tamaño de lote por dispositivo (batch=1 para 24GB VRAM) |
+# | --grad-accum    | int   | 16                               | Pasos de acumulación (batch efectivo = batch_size * grad_accum) |
+# | --lr            | float | 5e-5                             | Learning Rate (más bajo que SFT para estabilidad) |
+# | --max-seq-len   | int   | 1024                             | Longitud de secuencia máxima de tokens |
+# | --lora-r        | int   | 16                               | Rango (rank) de adaptadores LoRA |
+# | --lora-alpha    | int   | 32                               | Parámetro de escala Alpha de LoRA |
+# | --no-gguf       | flag  | False (store_true)               | Evita la cuantización y exportación final a GGUF |
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--sft-model",  default="finetune/output/k8s-rca-slm",
