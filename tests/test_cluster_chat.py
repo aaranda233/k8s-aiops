@@ -153,6 +153,33 @@ def test_model_error_emits_error_event():
 
 
 @pytest.mark.unit
+def test_placeholder_command_is_rejected_not_executed():
+    """Un comando con <placeholder> no debe ejecutarse; se corrige al modelo."""
+    tool_calls = []
+    agent = ClusterChatAgent(max_steps=4)
+    responses = iter([
+        "THOUGHT: miro el servicio\nACTION: kubectl get svc -n <namespace>",  # placeholder
+        "THOUGHT: ahora con nombre real\nACTION: kubectl get pods -A",          # corregido
+        "THOUGHT: listo\nANSWER: ok",
+    ])
+    def call(msgs, model=None):
+        if model == agent.expert_model:
+            return "Diagnóstico final."
+        return next(responses)
+    agent._call = call
+    def tool(a):
+        tool_calls.append(a)
+        return "salida real"
+    agent._run_tool = tool
+    events = list(agent.chat_iter("¿qué pasa en producción?"))
+    # el comando con placeholder NO se ejecutó
+    assert "kubectl get svc -n <namespace>" not in tool_calls
+    # el comando corregido sí
+    assert "kubectl get pods -A" in tool_calls
+    assert events[-1]["text"] == "Diagnóstico final."
+
+
+@pytest.mark.unit
 def test_synthesis_uses_expert_model():
     """La conclusión final debe pedirse al modelo experto, no al investigador."""
     agent = ClusterChatAgent(max_steps=2, model="base", expert_model="experto")

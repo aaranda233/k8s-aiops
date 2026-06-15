@@ -12,11 +12,14 @@ describe/get/logs/top. Es imposible que el chat ejecute un comando destructivo.
 chat_iter() es un generador que emite eventos para streaming en vivo (SSE).
 """
 
+import re
 from collections.abc import Iterator
 
 import httpx
 
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
+
+_PLACEHOLDER = re.compile(r"<[^>]+>")
 
 _SYSTEM_PROMPT = """\
 You are a Kubernetes SRE assistant with READ-ONLY access to a live cluster.
@@ -25,23 +28,26 @@ Answer the user's question by investigating step by step.
 Each turn, output EXACTLY one of these two formats:
 
 Format A — investigate:
-THOUGHT: <what you want to check and why>
-ACTION: kubectl <read-only command: describe | get | logs | top>
+THOUGHT: what you want to check and why
+ACTION: kubectl get pods -A
 
 Format B — answer (when you have enough evidence, or after a few steps):
-THOUGHT: <summary of findings>
-ANSWER: <clear, concise answer to the user's question in Spanish>
+THOUGHT: summary of findings
+ANSWER: clear, concise answer to the user's question in Spanish
 
-Rules:
-- Only read-only kubectl (describe, get, logs, top). Never delete/apply/patch.
-- ALWAYS start broad: run `kubectl get pods -n <namespace>` FIRST to see the real
-  resource names before describing or fetching logs.
-- NEVER invent or guess resource names. Use ONLY exact names that appeared in a
-  previous observation or in the user's question (e.g. if asked about "sqldelete",
-  use exactly "sqldelete", not a guessed "sqldelete-xxxxx").
-- For a failing pod, check `describe` then `logs` to find the root cause.
+CRITICAL rules:
+- The ACTION must be a REAL, ready-to-run command. NEVER write placeholders in
+  angle brackets like <namespace>, <pod> or <resource>. Use literal real names.
+- You do NOT know the namespaces or names in advance. ALWAYS discover them first:
+    step 1: kubectl get namespaces        (to see real namespace names)
+    step 2: kubectl get pods -A           (or -n <real-ns> once you know it)
+    step 3: kubectl describe / logs of a specific real pod
+- If the user mentions a place like "producción" that is not a literal namespace,
+  first list namespaces and pick the relevant real ones (e.g. default, llm-app...).
+- Only read-only kubectl: get, describe, logs, top. Never delete/apply/patch.
+- Use ONLY exact names seen in a previous OBSERVATION or in the user's question.
 - Be efficient: stop and ANSWER once you have the cause.
-- Output ONLY the format above, nothing else."""
+- Output ONLY one THOUGHT and one ACTION (or ANSWER) per turn, nothing else."""
 
 # El experto fine-tuneado sintetiza la conclusión a partir de la evidencia
 _SYNTH_SYSTEM = """\
@@ -106,6 +112,18 @@ class ClusterChatAgent:
                 # El EXPERTO sintetiza la conclusión a partir de la evidencia.
                 yield from self._final_answer(question, transcript)
                 return
+
+            # Guard: el modelo a veces copia placeholders del prompt (<namespace>...).
+            # No ejecutamos eso; le devolvemos una corrección para que use nombres reales.
+            if _PLACEHOLDER.search(action):
+                yield {"type": "action", "step": step, "command": action}
+                corr = ("Ese comando tiene un placeholder entre < >. No es válido. "
+                        "Descubre nombres reales primero: ejecuta  kubectl get namespaces  "
+                        "y luego  kubectl get pods -A  — sin placeholders.")
+                yield {"type": "observation", "step": step, "text": corr}
+                messages.append({"role": "assistant", "content": response})
+                messages.append({"role": "user", "content": f"OBSERVATION:\n{corr}"})
+                continue
 
             seen_actions.add(action)
             yield {"type": "action", "step": step, "command": action}
