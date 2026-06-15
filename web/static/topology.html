@@ -3,272 +3,324 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>K8s-AIOps — Topología del cluster</title>
+<title>K8s-AIOps · Topología</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <style>
   :root {
-    --bg:#0f1117; --surface:#181b24; --surface2:#1f2330; --border:#2a2f3d; --text:#e6e8ee; --muted:#9aa3b2;
-    --ingress:#a78bfa; --service:#38bdf8; --pod:#34d399; --node:#fbbf24;
-    --ok:#22c55e; --warn:#eab308; --error:#ef4444; --mono:'SF Mono',Menlo,monospace;
+    --bg:#0a0d13; --bg2:#0e121b; --panel:#141a26; --panel2:#1a212f; --rail:#0c1018;
+    --border:#222a3a; --border-soft:#1a2130; --text:#e8ebf2; --muted:#8b94a7; --muted2:#5c6577;
+    --accent:#4f8ff7; --teal:#2dd4bf;
+    --ok:#3fb950; --warn:#d29922; --error:#f85149;
+    --node:#e3b341; --service:#58a6ff; --ingress:#bc8cff; --pod:#3fb950;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 12px 32px -8px rgba(0,0,0,.6);
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
-  header { padding:14px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; }
-  header h1 { font-size:17px; font-weight:700; }
-  header .sub { color:var(--muted); font-size:13px; }
-  .nav { margin-left:auto; display:flex; gap:16px; font-size:14px; }
-  .nav a { color:var(--muted); text-decoration:none; }
-  .nav a:hover, .nav a.active { color:var(--text); }
-  .bar { padding:8px 24px; border-bottom:1px solid var(--border); display:flex; gap:16px; align-items:center; font-size:13px; flex-wrap:wrap; }
-  .stat { color:var(--muted); }
-  .stat b { color:var(--text); font-size:15px; }
-  .toggle { display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
-  .toggle button { background:var(--surface); color:var(--muted); border:none; padding:5px 14px; font-size:13px; font-family:inherit; cursor:pointer; }
-  .toggle button.active { background:var(--service); color:#03212e; font-weight:600; }
+  body { font-family:'Inter',system-ui,sans-serif; background:
+      radial-gradient(1200px 600px at 75% -10%, rgba(79,143,247,.05), transparent),
+      var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden;
+      -webkit-font-smoothing:antialiased; }
+  svg.icon { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+  header { padding:0 22px; height:56px; border-bottom:1px solid var(--border-soft);
+      display:flex; align-items:center; gap:13px; background:rgba(10,13,19,.7); backdrop-filter:blur(8px); }
+  .logo { display:flex; align-items:center; justify-content:center; width:30px; height:30px;
+      border-radius:8px; background:linear-gradient(135deg,#1e3a6e,#0f1d38); border:1px solid #2a467e; color:#7fb0ff; }
+  .brand { font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .brand span { color:var(--muted2); font-weight:500; }
+  .nav { margin-left:auto; display:flex; gap:4px; }
+  .nav a { color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:500; padding:7px 12px; border-radius:7px; transition:.15s; }
+  .nav a:hover { color:var(--text); background:var(--panel); }
+  .nav a.active { color:var(--text); background:var(--panel2); }
+
+  .bar { padding:11px 22px; border-bottom:1px solid var(--border-soft); display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  .seg { display:flex; background:var(--rail); border:1px solid var(--border); border-radius:9px; padding:3px; gap:2px; }
+  .seg button { display:flex; align-items:center; gap:7px; background:transparent; color:var(--muted);
+      border:none; padding:6px 13px; font-size:13px; font-weight:500; font-family:inherit; cursor:pointer; border-radius:6px; transition:.15s; }
+  .seg button:hover { color:var(--text); }
+  .seg button.active { background:linear-gradient(180deg,#21314f,#1a2740); color:#cfe0ff; box-shadow:var(--shadow); }
+  .stats { display:flex; gap:16px; }
+  .stat { display:flex; align-items:baseline; gap:5px; font-size:13px; color:var(--muted); }
+  .stat b { color:var(--text); font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .stat.bad b { color:var(--error); }
+  select { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:8px;
+      padding:7px 11px; font-size:13px; font-family:inherit; outline:none; cursor:pointer; }
+  select:focus { border-color:var(--accent); }
   .legend { display:flex; gap:14px; margin-left:auto; align-items:center; }
-  .legend span { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; }
-  .dot { width:10px; height:10px; border-radius:50%; }
-  select { background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:13px; }
+  .legend span { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
+  .led-s { width:9px; height:9px; border-radius:50%; }
+
   #stage { flex:1; position:relative; overflow:hidden; }
-  /* --- vista grafo --- */
-  svg { width:100%; height:100%; display:block; cursor:grab; }
-  svg:active { cursor:grabbing; }
-  .link { stroke:#3a4150; stroke-opacity:0.5; }
-  .link.routes { stroke:var(--ingress); stroke-opacity:0.6; }
-  .node circle { stroke:#0f1117; stroke-width:1.5px; cursor:pointer; }
-  .node text { font-size:9px; fill:var(--muted); pointer-events:none; }
-  .node.err circle { stroke:var(--error); stroke-width:2.5px; }
-  /* --- vista cuadro eléctrico --- */
-  #panel { position:absolute; inset:0; overflow-y:auto; padding:18px 24px; display:none; }
-  .mains { display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
-  .main-mod { background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--node); border-radius:8px; padding:10px 16px; min-width:170px; }
-  .main-mod.err { border-left-color:var(--error); }
-  .main-mod .t { font-size:13px; font-weight:600; }
-  .main-mod .s { font-size:12px; color:var(--muted); }
-  .panels { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
-  .board { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
-  .board.has-fault { border-color:var(--error); box-shadow:0 0 0 1px rgba(239,68,68,.3); }
-  .board-head { padding:10px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; background:var(--surface2); }
-  .board-head .ns { font-weight:600; font-size:14px; }
-  .board-head .fault { margin-left:auto; font-size:11px; background:rgba(239,68,68,.15); color:var(--error); padding:2px 8px; border-radius:10px; font-weight:600; }
-  .board-head .okbadge { margin-left:auto; font-size:11px; color:var(--ok); }
-  .breakers { display:grid; grid-template-columns:repeat(auto-fill, 26px); gap:5px; padding:12px 14px; }
-  .breaker { width:26px; height:26px; border-radius:4px; cursor:pointer; position:relative; border:1px solid rgba(0,0,0,.3); transition:transform .1s; }
-  .breaker:hover { transform:scale(1.25); z-index:2; }
-  .breaker.ok { background:var(--ok); } .breaker.warn { background:var(--warn); }
-  .breaker.error { background:var(--error); } .breaker.unknown { background:#555; }
-  .board-foot { padding:8px 14px; border-top:1px solid var(--border); font-size:11px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; }
-  .board-foot .chip { display:flex; align-items:center; gap:4px; }
-  #detail { position:absolute; top:14px; right:14px; width:280px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; font-size:13px; display:none; z-index:5; }
-  #detail h3 { font-size:14px; margin-bottom:8px; word-break:break-all; }
-  #detail .row { color:var(--muted); margin:3px 0; }
-  #detail .row b { color:var(--text); }
-  #detail .close { float:right; cursor:pointer; color:var(--muted); }
-  .loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+
+  /* ---- grafo ---- */
+  svg.graph { width:100%; height:100%; display:block; cursor:grab; }
+  svg.graph:active { cursor:grabbing; }
+  .link { stroke:#2a3346; stroke-opacity:.6; }
+  .link.routes { stroke:var(--ingress); stroke-opacity:.5; }
+  .gnode circle { stroke:var(--bg); stroke-width:1.5px; cursor:pointer; transition:filter .15s; }
+  .gnode:hover circle { filter:brightness(1.3); }
+  .gnode text { font-size:9px; fill:var(--muted); pointer-events:none; font-family:var(--mono); }
+  .gnode.err circle { stroke:var(--error); stroke-width:2.5px; }
+
+  /* ---- cuadro eléctrico ---- */
+  #panel { position:absolute; inset:0; overflow-y:auto; padding:22px; display:none; }
+  #panel::-webkit-scrollbar { width:10px; } #panel::-webkit-scrollbar-thumb { background:var(--border); border-radius:5px; }
+  .mains { display:flex; gap:12px; margin-bottom:22px; flex-wrap:wrap; }
+  .main-mod { display:flex; align-items:center; gap:12px; background:linear-gradient(180deg,var(--panel2),var(--panel));
+      border:1px solid var(--border); border-radius:11px; padding:13px 17px; min-width:200px; cursor:pointer;
+      box-shadow:var(--shadow); transition:.15s; position:relative; overflow:hidden; }
+  .main-mod::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--node); }
+  .main-mod.err::before { background:var(--error); }
+  .main-mod:hover { transform:translateY(-1px); box-shadow:var(--shadow-lg); border-color:#2e3a52; }
+  .main-mod .mico { color:var(--node); } .main-mod.err .mico { color:var(--error); }
+  .main-mod .t { font-size:14px; font-weight:600; letter-spacing:-.01em; }
+  .main-mod .s { font-size:11.5px; color:var(--muted); font-family:var(--mono); margin-top:1px; }
+
+  .section-label { font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted2);
+      font-weight:600; margin:0 0 12px 2px; }
+  .panels { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px; }
+  .board { background:linear-gradient(180deg,rgba(255,255,255,.015),transparent), var(--panel);
+      border:1px solid var(--border-soft); border-radius:13px; overflow:hidden; box-shadow:var(--shadow); transition:.18s; }
+  .board:hover { border-color:var(--border); box-shadow:var(--shadow-lg); }
+  .board.has-fault { border-color:rgba(248,81,73,.4); }
+  .board-head { padding:12px 15px; display:flex; align-items:center; gap:9px; border-bottom:1px solid var(--border-soft); }
+  .board-head .ns { font-weight:600; font-size:14px; letter-spacing:-.01em; }
+  .board-head .badge { margin-left:auto; font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px;
+      display:flex; align-items:center; gap:5px; }
+  .badge.fault { background:rgba(248,81,73,.13); color:var(--error); }
+  .badge.ok { background:rgba(63,185,80,.12); color:var(--ok); }
+  /* carril DIN con breakers */
+  .rail { padding:14px 15px 10px; background:
+      repeating-linear-gradient(180deg, transparent 0 16px, rgba(0,0,0,.18) 16px 17px), var(--rail);
+      border-top:1px solid #070a0f; border-bottom:1px solid #070a0f; }
+  .breakers { display:grid; grid-template-columns:repeat(auto-fill, 24px); gap:7px; }
+  .breaker { width:24px; height:38px; border-radius:4px; cursor:pointer; position:relative;
+      background:linear-gradient(180deg,#313a4e 0%,#222a39 55%,#1a212d 100%);
+      border:1px solid #0c0f16; box-shadow:inset 0 1px 0 rgba(255,255,255,.07), var(--shadow);
+      transition:transform .1s; }
+  .breaker:hover { transform:translateY(-2px) scale(1.06); z-index:3; }
+  .breaker .led { position:absolute; top:4px; left:50%; transform:translateX(-50%);
+      width:7px; height:7px; border-radius:50%; }
+  .breaker .sw { position:absolute; bottom:5px; left:50%; transform:translateX(-50%);
+      width:11px; height:13px; border-radius:2px; background:linear-gradient(180deg,#3b4considered,#2a3344);
+      background:linear-gradient(180deg,#404b63,#2a3243); box-shadow:inset 0 1px 0 rgba(255,255,255,.1); }
+  .breaker.ok    .led { background:var(--ok);    box-shadow:0 0 6px rgba(63,185,80,.7); }
+  .breaker.warn  .led { background:var(--warn);  box-shadow:0 0 6px rgba(210,153,34,.7); }
+  .breaker.error .led { background:var(--error); box-shadow:0 0 7px rgba(248,81,73,.9); }
+  .breaker.unknown .led { background:#5c6577; }
+  .breaker.error { border-color:#5a2222; box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 0 9px rgba(248,81,73,.35); }
+  .breaker.error .sw { background:linear-gradient(180deg,#6b3030,#4a2020); transform:translateX(-50%) translateY(2px); }
+  .board-foot { padding:10px 15px; display:flex; gap:7px; flex-wrap:wrap; }
+  .chip { display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--muted);
+      background:var(--panel2); border:1px solid var(--border-soft); padding:3px 9px; border-radius:7px; font-family:var(--mono); }
+  .chip svg { width:12px; height:12px; }
+
+  #detail { position:absolute; top:16px; right:16px; width:300px; background:var(--panel);
+      border:1px solid var(--border); border-radius:13px; padding:0; font-size:13px; display:none; z-index:6; box-shadow:var(--shadow-lg); overflow:hidden; }
+  #detail .dh { padding:14px 16px; border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:9px;
+      background:linear-gradient(180deg,var(--panel2),transparent); }
+  #detail .dh h3 { font-size:14px; font-weight:600; word-break:break-all; letter-spacing:-.01em; }
+  #detail .db { padding:13px 16px; }
+  #detail .row { display:flex; justify-content:space-between; gap:12px; color:var(--muted); margin:6px 0; }
+  #detail .row b { color:var(--text); font-weight:500; font-family:var(--mono); font-size:12px; text-align:right; word-break:break-all; }
+  #detail .close { margin-left:auto; cursor:pointer; color:var(--muted2); display:flex; }
+  #detail .close:hover { color:var(--text); }
+  #detail .ask { display:block; margin-top:10px; padding:8px 12px; background:linear-gradient(180deg,#21314f,#1a2740);
+      border:1px solid #2a467e; border-radius:8px; color:#cfe0ff; text-decoration:none; font-size:12.5px; font-weight:500; text-align:center; }
+  .loading { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--muted); }
+  .spinner { width:30px; height:30px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 <header>
-  <h1>🛡️ K8s-AIOps</h1><span class="sub">Topología del cluster · cuadro eléctrico</span>
-  <div class="nav">
+  <div class="logo">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+  </div>
+  <div class="brand">K8s-AIOps <span>· Topología</span></div>
+  <nav class="nav">
     <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
     <a href="/chat">Chat</a><a href="/topology" class="active">Topología</a>
-  </div>
+  </nav>
 </header>
+
 <div class="bar">
-  <div class="toggle">
-    <button id="t-panel" class="active" onclick="setView('panel')">⊞ Cuadro</button>
-    <button id="t-graph" onclick="setView('graph')">⊹ Grafo</button>
+  <div class="seg">
+    <button id="t-panel" class="active" onclick="setView('panel')">
+      <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Cuadro
+    </button>
+    <button id="t-graph" onclick="setView('graph')">
+      <svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7 7.5 10.5 16M17 7.5 13.5 16"/></svg>
+      Grafo
+    </button>
   </div>
-  <span class="stat"><b id="s-node">0</b> nodos</span>
-  <span class="stat"><b id="s-svc">0</b> servicios</span>
-  <span class="stat"><b id="s-ing">0</b> ingress</span>
-  <span class="stat"><b id="s-pod">0</b> pods</span>
-  <span class="stat"><b id="s-err" style="color:var(--error)">0</b> con fallo</span>
-  <select id="ns-filter"><option value="">todos los namespaces</option></select>
+  <div class="stats">
+    <span class="stat"><b id="s-node">0</b>nodos</span>
+    <span class="stat"><b id="s-svc">0</b>servicios</span>
+    <span class="stat"><b id="s-ing">0</b>ingress</span>
+    <span class="stat"><b id="s-pod">0</b>pods</span>
+    <span class="stat bad"><b id="s-err">0</b>con fallo</span>
+  </div>
+  <select id="ns-filter"><option value="">Todos los namespaces</option></select>
   <div class="legend">
-    <span><span class="dot" style="background:var(--ok)"></span>ok</span>
-    <span><span class="dot" style="background:var(--warn)"></span>warn</span>
-    <span><span class="dot" style="background:var(--error)"></span>fallo</span>
+    <span><i class="led-s" style="background:var(--ok)"></i>activo</span>
+    <span><i class="led-s" style="background:var(--warn)"></i>aviso</span>
+    <span><i class="led-s" style="background:var(--error)"></i>fallo</span>
   </div>
 </div>
+
 <div id="stage">
-  <div class="loading" id="loading">Cargando topología del cluster…</div>
+  <div class="loading" id="loading"><div class="spinner"></div><span>Leyendo la topología del cluster…</span></div>
   <div id="panel"></div>
   <div id="detail"></div>
 </div>
 
 <script>
-const TYPE_COLOR = { ingress:"#a78bfa", service:"#38bdf8", pod:"#34d399", node:"#fbbf24" };
+const TYPE_COLOR = { ingress:"#bc8cff", service:"#58a6ff", pod:"#3fb950", node:"#e3b341" };
 const TYPE_SIZE  = { ingress:9, service:7, pod:5, node:14 };
 let allData = null, sim = null, view = "panel", nsFilter = "";
 
-function colorFor(n){
-  if (n.health === "error") return "#ef4444";
-  if (n.health === "warn")  return "#eab308";
-  return TYPE_COLOR[n.type] || "#888";
-}
-function esc(s){ return (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function setText(id, v){ const el=document.getElementById(id); if(el) el.textContent=v; }
+const ICON = {
+  node:'<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>',
+  service:'<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
+  ingress:'<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>',
+  pod:'<svg class="icon" viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/></svg>',
+};
+function colorFor(n){ return n.health==="error"?"#f85149":n.health==="warn"?"#d29922":(TYPE_COLOR[n.type]||"#888"); }
+function esc(s){ return (s||"").replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function setText(id,v){ const el=document.getElementById(id); if(el) el.textContent=v; }
 
 function setView(v){
-  view = v;
+  view=v;
   document.getElementById("t-panel").classList.toggle("active", v==="panel");
   document.getElementById("t-graph").classList.toggle("active", v==="graph");
   if (allData) render();
 }
-
 function filtered(){
-  if (!nsFilter) return allData;
-  const keep = new Set(allData.nodes.filter(n=>n.namespace===nsFilter).map(n=>n.id));
+  if(!nsFilter) return allData;
+  const keep=new Set(allData.nodes.filter(n=>n.namespace===nsFilter).map(n=>n.id));
   allData.links.forEach(l=>{ if(keep.has(l.source)) keep.add(l.target); if(keep.has(l.target)) keep.add(l.source); });
-  return { nodes: allData.nodes.filter(n=>keep.has(n.id)), links: allData.links, stats: allData.stats };
+  return { nodes:allData.nodes.filter(n=>keep.has(n.id)), links:allData.links, stats:allData.stats };
 }
-
 function render(){
-  const data = filtered();
-  const svg = document.querySelector("#stage svg");
-  const panel = document.getElementById("panel");
-  if (view === "graph"){
-    panel.style.display = "none";
-    renderGraph(data);
-  } else {
-    if (svg) svg.remove();
-    panel.style.display = "block";
-    renderPanel(data);
-  }
+  const data=filtered();
+  const svg=document.querySelector("#stage svg.graph"), panel=document.getElementById("panel");
+  if(view==="graph"){ panel.style.display="none"; renderGraph(data); }
+  else { if(svg) svg.remove(); panel.style.display="block"; renderPanel(data); }
 }
 
-/* ---------- VISTA CUADRO ELÉCTRICO ---------- */
+/* ---- cuadro eléctrico ---- */
 function renderPanel(data){
-  const panel = document.getElementById("panel");
-  // nodos k8s (mains)
-  const knodes = data.nodes.filter(n=>n.type==="node");
-  const mains = knodes.map(n=>`
+  const panel=document.getElementById("panel");
+  const knodes=data.nodes.filter(n=>n.type==="node");
+  const mains=knodes.map(n=>`
     <div class="main-mod ${n.health==="error"?"err":""}" onclick='showDetail(${JSON.stringify(n)})'>
-      <div class="t">🔌 ${esc(n.label)}</div>
-      <div class="s">${esc(n.status)}</div>
+      <span class="mico">${ICON.node}</span>
+      <div><div class="t">${esc(n.label)}</div><div class="s">${esc(n.status)}</div></div>
     </div>`).join("");
 
-  // agrupar por namespace
-  const groups = {};
+  const groups={};
   data.nodes.forEach(n=>{
-    if (!n.namespace) return;
-    const g = groups[n.namespace] = groups[n.namespace] || {pods:[], svc:0, ing:0};
-    if (n.type==="pod") g.pods.push(n);
-    else if (n.type==="service") g.svc++;
-    else if (n.type==="ingress") g.ing++;
+    if(!n.namespace) return;
+    const g=groups[n.namespace]=groups[n.namespace]||{pods:[],svc:0,ing:0};
+    if(n.type==="pod") g.pods.push(n); else if(n.type==="service") g.svc++; else if(n.type==="ingress") g.ing++;
   });
-
-  // ordenar: namespaces con fallos primero, luego por nº de pods
-  const order = Object.keys(groups).sort((a,b)=>{
-    const fa = groups[a].pods.filter(p=>p.health==="error").length;
-    const fb = groups[b].pods.filter(p=>p.health==="error").length;
-    if (fb!==fa) return fb-fa;
-    return groups[b].pods.length - groups[a].pods.length;
+  const order=Object.keys(groups).sort((a,b)=>{
+    const fa=groups[a].pods.filter(p=>p.health==="error").length, fb=groups[b].pods.filter(p=>p.health==="error").length;
+    return fb!==fa ? fb-fa : groups[b].pods.length-groups[a].pods.length;
   });
-
-  const boards = order.map(ns=>{
-    const g = groups[ns];
-    const faults = g.pods.filter(p=>p.health==="error").length;
-    const breakers = g.pods.map(p=>
-      `<div class="breaker ${p.health}" title="${esc(p.label)} · ${esc(p.status)}" onclick='showDetail(${JSON.stringify(p)})'></div>`
+  const boards=order.map(ns=>{
+    const g=groups[ns], faults=g.pods.filter(p=>p.health==="error").length;
+    const breakers=g.pods.map(p=>
+      `<div class="breaker ${p.health}" title="${esc(p.label)} · ${esc(p.status)}" onclick='showDetail(${JSON.stringify(p)})'><i class="led"></i><i class="sw"></i></div>`
     ).join("");
+    const badge = faults
+      ? `<span class="badge fault">${faults} fallo${faults>1?"s":""}</span>`
+      : `<span class="badge ok"><i class="led-s" style="background:var(--ok)"></i>OK</span>`;
     return `
     <div class="board ${faults?"has-fault":""}">
-      <div class="board-head">
-        <span class="ns">${esc(ns)}</span>
-        ${faults ? `<span class="fault">${faults} ⚠</span>` : `<span class="okbadge">● ok</span>`}
-      </div>
-      <div class="breakers">${breakers || '<span style="color:var(--muted);font-size:12px">sin pods</span>'}</div>
+      <div class="board-head"><span class="ns">${esc(ns)}</span>${badge}</div>
+      <div class="rail"><div class="breakers">${breakers || '<span style="color:var(--muted2);font-size:12px">sin pods</span>'}</div></div>
       <div class="board-foot">
-        <span class="chip">${g.pods.length} pods</span>
-        <span class="chip">${g.svc} svc</span>
-        ${g.ing ? `<span class="chip">${g.ing} ingress</span>` : ""}
+        <span class="chip">${ICON.pod}${g.pods.length}</span>
+        <span class="chip">${ICON.service}${g.svc}</span>
+        ${g.ing?`<span class="chip">${ICON.ingress}${g.ing}</span>`:""}
       </div>
     </div>`;
   }).join("");
 
   panel.innerHTML = `
-    ${mains ? `<div class="mains">${mains}</div>` : ""}
+    ${mains?`<div class="section-label">Nodos del cluster</div><div class="mains">${mains}</div>`:""}
+    <div class="section-label">Namespaces · ${order.length}</div>
     <div class="panels">${boards}</div>`;
 }
 
-/* ---------- VISTA GRAFO (D3 force) ---------- */
+/* ---- grafo ---- */
 function renderGraph(data){
-  const g = document.getElementById("stage");
-  d3.select("#stage svg").remove();
-  const W = g.clientWidth, H = g.clientHeight;
-  const svg = d3.select("#stage").insert("svg", "#panel");
-  const zoomG = svg.append("g");
-  svg.call(d3.zoom().scaleExtent([0.15, 4]).on("zoom", e => zoomG.attr("transform", e.transform)));
-
-  const nodes = data.nodes.map(d=>({...d}));
-  const ids = new Set(nodes.map(n=>n.id));
-  const links = data.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(d=>({...d}));
-
-  sim = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d=>d.id).distance(d=>d.kind==="routes"?70:40))
-    .force("charge", d3.forceManyBody().strength(-60))
-    .force("center", d3.forceCenter(W/2, H/2))
-    .force("collide", d3.forceCollide().radius(d=>(TYPE_SIZE[d.type]||5)+3));
-
-  const link = zoomG.append("g").selectAll("line").data(links).join("line")
-    .attr("class", d=>"link "+d.kind).attr("stroke-width", d=>d.kind==="routes"?1.5:1);
-  const node = zoomG.append("g").selectAll("g").data(nodes).join("g")
-    .attr("class", d=>"node"+(d.health==="error"?" err":""))
+  const g=document.getElementById("stage"); d3.select("#stage svg.graph").remove();
+  const W=g.clientWidth,H=g.clientHeight;
+  const svg=d3.select("#stage").insert("svg","#panel").attr("class","graph");
+  const zoomG=svg.append("g");
+  svg.call(d3.zoom().scaleExtent([.15,4]).on("zoom",e=>zoomG.attr("transform",e.transform)));
+  const nodes=data.nodes.map(d=>({...d})), ids=new Set(nodes.map(n=>n.id));
+  const links=data.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(d=>({...d}));
+  sim=d3.forceSimulation(nodes)
+    .force("link",d3.forceLink(links).id(d=>d.id).distance(d=>d.kind==="routes"?70:40))
+    .force("charge",d3.forceManyBody().strength(-60))
+    .force("center",d3.forceCenter(W/2,H/2))
+    .force("collide",d3.forceCollide().radius(d=>(TYPE_SIZE[d.type]||5)+3));
+  const link=zoomG.append("g").selectAll("line").data(links).join("line")
+    .attr("class",d=>"link "+d.kind).attr("stroke-width",d=>d.kind==="routes"?1.5:1);
+  const node=zoomG.append("g").selectAll("g").data(nodes).join("g")
+    .attr("class",d=>"gnode"+(d.health==="error"?" err":""))
     .call(d3.drag()
-      .on("start",(e,d)=>{ if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on("start",(e,d)=>{ if(!e.active) sim.alphaTarget(.3).restart(); d.fx=d.x; d.fy=d.y; })
       .on("drag",(e,d)=>{ d.fx=e.x; d.fy=e.y; })
       .on("end",(e,d)=>{ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
-  node.append("circle").attr("r", d=>TYPE_SIZE[d.type]||5).attr("fill", colorFor)
-    .on("click",(e,d)=>showDetail(d));
-  node.append("text").attr("x", d=>(TYPE_SIZE[d.type]||5)+3).attr("y", 3)
-    .text(d=> d.type==="pod" ? "" : d.label);
-  sim.on("tick", ()=>{
+  node.append("circle").attr("r",d=>TYPE_SIZE[d.type]||5).attr("fill",colorFor).on("click",(e,d)=>showDetail(d));
+  node.append("text").attr("x",d=>(TYPE_SIZE[d.type]||5)+3).attr("y",3).text(d=>d.type==="pod"?"":d.label);
+  sim.on("tick",()=>{
     link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
-    node.attr("transform", d=>`translate(${d.x},${d.y})`);
+    node.attr("transform",d=>`translate(${d.x},${d.y})`);
   });
 }
 
 function showDetail(d){
-  const el = document.getElementById("detail");
-  el.style.display = "block";
-  el.innerHTML = `<span class="close" onclick="document.getElementById('detail').style.display='none'">✕</span>
-    <h3>${esc(d.label)}</h3>
-    <div class="row">Tipo: <b>${d.type}</b></div>
-    ${d.namespace?`<div class="row">Namespace: <b>${esc(d.namespace)}</b></div>`:""}
-    <div class="row">Estado: <b>${esc(d.status)}</b></div>
-    <div class="row">Salud: <b style="color:${colorFor(d)}">${d.health}</b></div>
-    ${d.type==="pod"?`<div class="row" style="margin-top:8px"><a href="/chat" style="color:#38bdf8">Preguntar al chat sobre este pod →</a></div>`:""}`;
+  const el=document.getElementById("detail"); el.style.display="block";
+  el.innerHTML=`
+    <div class="dh">${ICON[d.type]||ICON.pod}<h3>${esc(d.label)}</h3>
+      <span class="close" onclick="document.getElementById('detail').style.display='none'">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span></div>
+    <div class="db">
+      <div class="row"><span>Tipo</span><b>${d.type}</b></div>
+      ${d.namespace?`<div class="row"><span>Namespace</span><b>${esc(d.namespace)}</b></div>`:""}
+      <div class="row"><span>Estado</span><b>${esc(d.status)}</b></div>
+      <div class="row"><span>Salud</span><b style="color:${colorFor(d)}">${d.health}</b></div>
+      ${d.type==="pod"?`<a class="ask" href="/chat">Preguntar al chat sobre este pod →</a>`:""}
+    </div>`;
 }
 
 async function load(){
-  try {
-    const r = await fetch("/api/topology");
-    allData = await r.json();
-  } catch(e){
-    document.getElementById("loading").textContent = "Error cargando la topología: " + e; return;
-  }
-  document.getElementById("loading").style.display = "none";
-  if (allData.error){
-    const l=document.getElementById("loading"); l.style.display="flex"; l.textContent="Error: "+allData.error; return;
-  }
-  const st = allData.stats || {};
-  setText("s-node", st.nodes||0); setText("s-svc", st.services||0);
-  setText("s-ing", st.ingresses||0); setText("s-pod", st.pods||0); setText("s-err", st.unhealthy||0);
-  const sel = document.getElementById("ns-filter");
-  if (sel.options.length <= 1){
+  try { allData=await (await fetch("/api/topology")).json(); }
+  catch(e){ document.getElementById("loading").innerHTML="<span>Error cargando la topología</span>"; return; }
+  const ld=document.getElementById("loading");
+  if(allData.error){ ld.innerHTML="<span>Error: "+esc(allData.error)+"</span>"; return; }
+  ld.style.display="none";
+  const st=allData.stats||{};
+  setText("s-node",st.nodes||0); setText("s-svc",st.services||0); setText("s-ing",st.ingresses||0);
+  setText("s-pod",st.pods||0); setText("s-err",st.unhealthy||0);
+  const sel=document.getElementById("ns-filter");
+  if(sel.options.length<=1){
     [...new Set((allData.nodes||[]).map(n=>n.namespace).filter(Boolean))].sort()
       .forEach(ns=>{ const o=document.createElement("option"); o.value=ns; o.textContent=ns; sel.appendChild(o); });
   }
   render();
 }
-
-document.getElementById("ns-filter").addEventListener("change", e=>{ nsFilter = e.target.value; if(allData) render(); });
-
-load();
-setInterval(load, 20000);
+document.getElementById("ns-filter").addEventListener("change",e=>{ nsFilter=e.target.value; if(allData) render(); });
+load(); setInterval(load, 20000);
 </script>
 </body>
 </html>
