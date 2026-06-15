@@ -34,9 +34,22 @@ ANSWER: <clear, concise answer to the user's question in Spanish>
 
 Rules:
 - Only read-only kubectl (describe, get, logs, top). Never delete/apply/patch.
-- Use exact resource names and namespaces seen in previous observations.
-- Be efficient: stop and ANSWER as soon as you can answer the question.
+- ALWAYS start broad: run `kubectl get pods -n <namespace>` FIRST to see the real
+  resource names before describing or fetching logs.
+- NEVER invent or guess resource names. Use ONLY exact names that appeared in a
+  previous observation or in the user's question (e.g. if asked about "sqldelete",
+  use exactly "sqldelete", not a guessed "sqldelete-xxxxx").
+- For a failing pod, check `describe` then `logs` to find the root cause.
+- Be efficient: stop and ANSWER once you have the cause.
 - Output ONLY the format above, nothing else."""
+
+# El experto fine-tuneado sintetiza la conclusión a partir de la evidencia
+_SYNTH_SYSTEM = """\
+You are an expert Site Reliability Engineer specialized in Kubernetes.
+You receive an operator's question and the evidence collected from the live
+cluster by a read-only investigation. Produce a clear, concrete answer in
+Spanish. If a failure is present in the evidence, state the specific root
+cause and the concrete fix. Be direct — do not invent data not in the evidence."""
 
 
 class ClusterChatAgent:
@@ -44,18 +57,20 @@ class ClusterChatAgent:
         self,
         host: str = "http://localhost:11434",
         model: str = "qwen2.5:1.5b",
+        expert_model: str = "k8s-rca-orpo:latest",
         timeout: float = 60.0,
         max_steps: int = 5,
         dry_run: bool = False,
     ):
         self.host = host.rstrip("/")
-        self.model = model
+        self.model = model              # investigador (base, sigue bien el ReAct)
+        self.expert_model = expert_model  # experto fine-tuneado (sintetiza la conclusión)
         self.timeout = timeout
         self.max_steps = max_steps
         self.dry_run = dry_run  # True = no ejecuta kubectl real (para demo/test)
 
     def chat_iter(self, question: str) -> Iterator[dict]:
-        """Generador que emite eventos del ciclo ReAct para streaming.
+        """Generador ReAct híbrido: el base investiga, el experto concluye.
 
         Eventos: {"type": "thought"|"action"|"observation"|"answer"|"error", ...}
         """
@@ -64,6 +79,7 @@ class ClusterChatAgent:
             {"role": "user", "content": question},
         ]
         seen_actions: set[str] = set()
+        transcript: list[tuple[str, str, str]] = []  # (thought, action, observation)
 
         for step in range(1, self.max_steps + 1):
             try:
@@ -77,13 +93,18 @@ class ClusterChatAgent:
             if thought:
                 yield {"type": "thought", "step": step, "text": thought}
 
-            if answer:
-                yield {"type": "answer", "text": answer}
-                return
-
-            if not action or action in seen_actions:
-                # Sin acción nueva → forzar respuesta final
-                yield {"type": "answer", "text": thought or "No pude completar la investigación."}
+            if answer or not action or action in seen_actions:
+                # Invariante: hay que investigar al menos una vez antes de concluir.
+                # Si el base intenta responder sin evidencia, lo empujamos a investigar.
+                if not transcript and step < self.max_steps:
+                    messages.append({
+                        "role": "user",
+                        "content": "Primero investiga con al menos un comando kubectl read-only "
+                                   "(get/describe/logs) antes de responder.",
+                    })
+                    continue
+                # El EXPERTO sintetiza la conclusión a partir de la evidencia.
+                yield from self._final_answer(question, transcript)
                 return
 
             seen_actions.add(action)
@@ -91,6 +112,7 @@ class ClusterChatAgent:
 
             observation = self._run_tool(action)
             yield {"type": "observation", "step": step, "text": observation}
+            transcript.append((thought, action, observation))
 
             messages.append({"role": "assistant", "content": response})
             messages.append({
@@ -98,30 +120,39 @@ class ClusterChatAgent:
                 "content": f"OBSERVATION:\n{observation}\n\nContinue or give ANSWER.",
             })
 
-        # Agotados los pasos → pedir respuesta final
-        messages.append({"role": "user", "content": "Investigation limit reached. Give your ANSWER now."})
+        # Agotados los pasos → el experto sintetiza con la evidencia acumulada
+        yield from self._final_answer(question, transcript)
+
+    def _final_answer(self, question: str, transcript: list[tuple[str, str, str]]) -> Iterator[dict]:
+        """El modelo experto (fine-tuneado) concluye a partir de la evidencia."""
+        yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
         try:
-            final = self._call(messages)
-            _, _, answer = _parse(final)
-            yield {"type": "answer", "text": answer or "No pude llegar a una conclusión con la información disponible."}
+            answer = self._synthesize(question, transcript)
         except Exception as e:
-            yield {"type": "error", "text": f"Error en la respuesta final: {e}"}
+            yield {"type": "error", "text": f"Error en la síntesis: {e}"}
+            return
+        yield {"type": "answer", "text": answer}
 
-    def chat(self, question: str) -> dict:
-        """Versión no-streaming: recopila todos los eventos y devuelve el resultado."""
-        steps, answer = [], ""
-        for ev in self.chat_iter(question):
-            if ev["type"] == "answer":
-                answer = ev["text"]
-            elif ev["type"] == "error":
-                answer = ev["text"]
-            else:
-                steps.append(ev)
-        return {"steps": steps, "answer": answer}
+    def _synthesize(self, question: str, transcript: list[tuple[str, str, str]]) -> str:
+        evidence = "\n\n".join(
+            f"$ {action}\n{observation[:600]}"
+            for _thought, action, observation in transcript
+        ) or "(sin comandos ejecutados)"
 
-    def _call(self, messages: list[dict]) -> str:
+        messages = [
+            {"role": "system", "content": _SYNTH_SYSTEM},
+            {"role": "user", "content": (
+                f"Pregunta del operador: {question}\n\n"
+                f"Evidencia recogida del cluster (kubectl read-only):\n{evidence}\n\n"
+                f"Responde a la pregunta de forma clara en español. Si hay un fallo, "
+                f"explica la causa raíz concreta y cómo solucionarlo."
+            )},
+        ]
+        return self._call(messages, model=self.expert_model)
+
+    def _call(self, messages: list[dict], model: str | None = None) -> str:
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": 0.1, "num_predict": 400},
@@ -130,6 +161,16 @@ class ClusterChatAgent:
             resp = client.post(f"{self.host}/api/chat", json=payload)
             resp.raise_for_status()
         return resp.json()["message"]["content"].strip()
+
+    def chat(self, question: str) -> dict:
+        """Versión no-streaming: recopila todos los eventos y devuelve el resultado."""
+        steps, answer = [], ""
+        for ev in self.chat_iter(question):
+            if ev["type"] in ("answer", "error"):
+                answer = ev["text"]
+            else:
+                steps.append(ev)
+        return {"steps": steps, "answer": answer}
 
     def _run_tool(self, action: str) -> str:
         if self.dry_run:
@@ -152,6 +193,8 @@ class ClusterChatAgent:
 def _parse(text: str) -> tuple[str, str | None, str | None]:
     """Devuelve (thought, action, answer). action/answer son None si no aparecen.
 
+    Tolerante con el modelo de 1.5B: si no emite la línea 'ACTION:' con el
+    formato exacto, extrae igualmente cualquier comando 'kubectl ...' del texto.
     ANSWER puede ser multilínea: se captura todo lo que sigue a 'ANSWER:'.
     """
     thought = ""
@@ -164,12 +207,33 @@ def _parse(text: str) -> tuple[str, str | None, str | None]:
         if stripped.startswith("THOUGHT:"):
             thought = stripped.removeprefix("THOUGHT:").strip()
         elif stripped.startswith("ACTION:"):
-            action = stripped.removeprefix("ACTION:").strip()
+            action = _clean_cmd(stripped.removeprefix("ACTION:").strip())
         elif stripped.startswith("ANSWER:"):
-            # Capturar el resto del texto (puede ser multilínea)
             first = stripped.removeprefix("ANSWER:").strip()
             rest = lines[idx + 1:]
             answer = "\n".join([first, *rest]).strip()
             break
 
+    # Fallback tolerante: ni ACTION explícita ni ANSWER → buscar un 'kubectl ...'
+    # en cualquier parte del texto (el modelo a veces lo escribe en prosa o en ```).
+    if action is None and answer is None:
+        for line in lines:
+            cleaned = _clean_cmd(line)
+            if cleaned.startswith("kubectl "):
+                action = cleaned
+                break
+
     return thought, action, answer
+
+
+def _clean_cmd(s: str) -> str:
+    """Limpia un comando: quita backticks, viñetas y prefijos de prosa."""
+    s = s.strip().strip("`").strip()
+    for prefix in ("- ", "* ", "$ ", "ACTION:"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+    # Si hay texto antes de 'kubectl', recortar desde ahí
+    idx = s.find("kubectl ")
+    if idx > 0 and idx <= 40:  # 'kubectl' aparece tras algo de prosa corta
+        s = s[idx:]
+    return s.strip()

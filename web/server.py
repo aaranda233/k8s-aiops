@@ -30,7 +30,8 @@ incident_store = IncidentStore()
 # Agente de chat read-only (investigación on-demand del cluster)
 chat_agent = ClusterChatAgent(
     host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-    model=os.getenv("REACT_BASE_MODEL", "qwen2.5:1.5b"),
+    model=os.getenv("REACT_BASE_MODEL", "qwen2.5:1.5b"),       # investigador
+    expert_model=os.getenv("OLLAMA_MODEL", "k8s-rca-orpo:latest"),  # sintetiza la conclusión
     max_steps=int(os.getenv("CHAT_MAX_STEPS", "5")),
     dry_run=os.getenv("CHAT_DRY_RUN", "false").lower() == "true",
 )
