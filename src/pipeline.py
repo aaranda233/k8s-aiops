@@ -84,6 +84,7 @@ class AIOPsPipeline:
                 max_auto_level=cfg.remediation.max_auto_level,
                 verify_wait=cfg.remediation.verify_wait_seconds,
                 incident_store=self._incident_store,
+                shadow_mode=cfg.remediation.shadow_mode,
             )
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)

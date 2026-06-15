@@ -149,6 +149,30 @@ def test_successful_fix_resets_circuit_breaker(scored_window, diagnosis, monkeyp
 
 
 @pytest.mark.unit
+def test_shadow_mode_level1_routes_to_approval(scored_window, diagnosis, monkeypatch):
+    """En modo sombra, un Level 1 NO se auto-ejecuta: se enruta a aprobación humana."""
+    diagnosis.kubectl_command = "kubectl rollout restart deployment/x -n producción"
+    rem = AutoRemediation(notifier=MagicMock(), max_auto_level=1,
+                          incident_store=IncidentStore(), shadow_mode=True)
+    # No ejecutamos el bucle real de polling; verificamos el enrutamiento
+    routed = {}
+    monkeypatch.setattr(rem, "_handle_level2",
+                        lambda inc, fp: routed.update(id=inc.id) or
+                        RemediationResultStub(inc.id))
+    exec_spy = MagicMock(side_effect=AssertionError("Modo sombra NO debe auto-ejecutar"))
+    monkeypatch.setattr(ar, "execute_with_dryrun", exec_spy)
+
+    rem._handle(scored_window, diagnosis)
+    assert "id" in routed              # un Level 1 acabó en la vía de aprobación
+    exec_spy.assert_not_called()       # nada se ejecutó automáticamente
+
+
+class RemediationResultStub:
+    def __init__(self, incident_id):
+        self.incident_id = incident_id; self.action_taken = "pending"; self.risk_level = 1
+
+
+@pytest.mark.unit
 def test_incident_registered_in_store(scored_window, diagnosis, monkeypatch):
     diagnosis.kubectl_command = "kubectl get pods -n producción"
     rem = _rem(MagicMock())

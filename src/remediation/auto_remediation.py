@@ -78,9 +78,13 @@ class AutoRemediation:
         verify_wait: int = _VERIFY_WAIT_SECONDS,
         approval_timeout: int = _APPROVAL_TIMEOUT_SECONDS,
         incident_store: IncidentStore | None = None,
+        shadow_mode: bool = False,
     ):
         self.notifier = notifier
         self.max_auto_level = max_auto_level
+        # Modo sombra: NADA se ejecuta automáticamente; todo (incluido Level 1)
+        # pasa por aprobación humana en la consola. Para validar en producción.
+        self.shadow_mode = shadow_mode
         self.verify_wait = verify_wait
         self.approval_timeout = approval_timeout
         self.incidents = incident_store or IncidentStore()
@@ -152,6 +156,11 @@ class AutoRemediation:
             console.print("  [dim]Level 0 — solo lectura, sin acción adicional[/]")
             self.incidents.update(incident_id, status=STATUS_RESOLVED)
             return RemediationResult(incident_id, fp, 0, "skipped", kubectl_cmd, None, None)
+
+        # Modo sombra: nada se auto-ejecuta; todo va a aprobación humana en la consola.
+        if self.shadow_mode and risk.level in (1, 2):
+            console.print("  [magenta]Modo sombra — esperando aprobación en la consola (no auto-ejecuta)[/]")
+            return self._handle_level2(incident, fp)
 
         if risk.level == 1 and self.max_auto_level >= 1:
             return self._execute_level1(incident, fp)

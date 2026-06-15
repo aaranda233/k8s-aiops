@@ -64,6 +64,9 @@ class RemediationConfig:
     enabled: bool = field(default_factory=lambda: os.getenv("REMEDIATION_ENABLED", "false").lower() == "true")
     # Nivel máximo de acción automática: 1=restart/scale, 2=patch/config, 3=nunca auto
     max_auto_level: int = field(default_factory=lambda: int(os.getenv("REMEDIATION_MAX_LEVEL", "1")))
+    # Modo sombra: genera incidentes y propone fixes pero NO auto-ejecuta nada;
+    # todo (incluido Level 1) pasa por aprobación humana en la consola.
+    shadow_mode: bool = field(default_factory=lambda: os.getenv("REMEDIATION_SHADOW", "false").lower() == "true")
     # Segundos de espera tras el fix para verificar
     verify_wait_seconds: int = 90
     # Canal de notificación: teams | email | both | none

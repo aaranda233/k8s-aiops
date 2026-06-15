@@ -245,6 +245,10 @@ async def startup():
     namespaces_env = os.getenv("NAMESPACES", "")
     namespaces = namespaces_env.split(",") if namespaces_env else None
 
+    # Diagnóstico (RCA) configurable por env — necesario para que la remediación
+    # (y el modo sombra) generen incidentes a partir de las anomalías detectadas.
+    diag_enabled = os.getenv("DIAGNOSTICS_ENABLED", "false").lower() == "true"
+
     cfg = PipelineConfig(
         collector=CollectorConfig(
             namespaces=namespaces,
@@ -252,7 +256,7 @@ async def startup():
             bootstrap_windows=bootstrap,
         ),
         detector=DetectorConfig(anomaly_threshold=threshold),
-        diagnostics=DiagnosticsConfig(enabled=False),  # LLM se activa manualmente
+        diagnostics=DiagnosticsConfig(enabled=diag_enabled),
         remediation=RemediationConfig(),
         replay_mode=(mode == "replay"),
     )
