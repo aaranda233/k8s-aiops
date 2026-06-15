@@ -18,7 +18,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import CollectorConfig, DetectorConfig, DiagnosticsConfig, PipelineConfig, RemediationConfig
 from src.pipeline import AIOPsPipeline
-from web.event_bus import EventBus, bus
+from src.remediation.incident_store import IncidentStore
+from web.event_bus import bus
+
+# Registro de incidentes compartido entre el pipeline (remediación) y la consola
+incident_store = IncidentStore()
 
 app = FastAPI(title="k8s-aiops")
 
@@ -77,37 +81,47 @@ async def index():
 
 
 # ------------------------------------------------------------------
-# Webhooks de aprobación/rechazo para auto-remediación Level 2
-# Dict compartido con el Notifier — se rellena en startup()
+# Consola de incidencias — la decisión humana ocurre aquí
 # ------------------------------------------------------------------
 
-_approval_store: dict = {}
+@app.get("/incidents", response_class=HTMLResponse)
+async def incidents_page():
+    html_path = Path(__file__).parent / "static" / "incidents.html"
+    return HTMLResponse(html_path.read_text())
 
 
-@app.get("/remediation/approve/{token}")
-async def approve_remediation(token: str):
-    if token not in _approval_store:
-        return JSONResponse({"error": "Token inválido o expirado"}, status_code=404)
-    _approval_store[token].response = "approved"
-    return HTMLResponse("""
-        <html><body style="font-family:system-ui;text-align:center;padding:60px">
-        <h2 style="color:#16a34a">✅ Acción aprobada</h2>
-        <p>El agente ejecutará el comando en los próximos segundos.</p>
-        </body></html>
-    """)
+@app.get("/incidents/{incident_id}", response_class=HTMLResponse)
+async def incident_detail_page(incident_id: str):
+    # La misma SPA resuelve el detalle por id en el cliente
+    html_path = Path(__file__).parent / "static" / "incidents.html"
+    return HTMLResponse(html_path.read_text())
 
 
-@app.get("/remediation/reject/{token}")
-async def reject_remediation(token: str):
-    if token not in _approval_store:
-        return JSONResponse({"error": "Token inválido o expirado"}, status_code=404)
-    _approval_store[token].response = "rejected"
-    return HTMLResponse("""
-        <html><body style="font-family:system-ui;text-align:center;padding:60px">
-        <h2 style="color:#dc2626">❌ Acción rechazada</h2>
-        <p>El agente no ejecutará el comando. El incidente queda registrado.</p>
-        </body></html>
-    """)
+@app.get("/api/incidents")
+async def api_list_incidents():
+    return {"incidents": [i.to_dict() for i in incident_store.list()]}
+
+
+@app.get("/api/incidents/{incident_id}")
+async def api_get_incident(incident_id: str):
+    inc = incident_store.get(incident_id)
+    if inc is None:
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    return inc.to_dict()
+
+
+@app.post("/api/incidents/{incident_id}/approve")
+async def api_approve(incident_id: str):
+    if not incident_store.set_response(incident_id, "approved"):
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    return {"status": "approved", "id": incident_id}
+
+
+@app.post("/api/incidents/{incident_id}/reject")
+async def api_reject(incident_id: str):
+    if not incident_store.set_response(incident_id, "rejected"):
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    return {"status": "rejected", "id": incident_id}
 
 
 # ------------------------------------------------------------------
@@ -154,10 +168,8 @@ async def startup():
         # si falla, el servidor HTTP sigue vivo y /ready reporta not_ready
         # en vez de hacer crash-loop del pod.
         try:
-            pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus)
-            if (pipeline_instance.remediation and
-                    pipeline_instance.remediation.notifier):
-                pipeline_instance.remediation.notifier.register_approval_store(_approval_store)
+            # El incident_store es el mismo que usan los endpoints /api/incidents
+            pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus, incident_store=incident_store)
             _app_state["ready"] = True
             if mode == "replay":
                 pipeline_instance.run_replay()

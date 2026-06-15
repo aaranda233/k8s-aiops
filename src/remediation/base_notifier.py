@@ -1,103 +1,66 @@
 """
-Base común de notificadores de remediación.
+Base común de notificadores — capa de AVISO (push).
 
-Define la interfaz que usa el orquestador (AutoRemediation) y la lógica
-compartida de tokens de aprobación. Las implementaciones concretas
-(EmailNotifier, TeamsNotifier) renderizan y entregan el mensaje.
+Tras el nuevo diseño, las notificaciones solo avisan: "ha pasado algo,
+entra a la consola". La decisión humana (aprobar/rechazar/editar/chat)
+ocurre en la consola web, no en el canal de notificación. Esto centraliza
+el control y la autenticación en un único sitio.
 
-Los botones de aprobación apuntan a los endpoints del web server
-(/remediation/approve/{token} y /reject/{token}), comunes a todos los canales.
+Cada aviso incluye un deep-link a /incidents/{id} de la consola.
 """
 
-import secrets
-import time
-from dataclasses import dataclass, field
+import logging
 
+logger = logging.getLogger(__name__)
 
-@dataclass
-class PendingApproval:
-    token: str
-    incident_id: str
-    kubectl_cmd: str
-    created_at: float = field(default_factory=time.time)
-    response: str | None = None  # "approved" | "rejected"
+# Tipos de aviso
+KIND_APPROVAL = "approval_needed"     # Level 2 — requiere decisión en la consola
+KIND_EXECUTED = "executed"            # Level 1 — ejecutado automáticamente
+KIND_RESOLVED = "resolved"            # verificado OK
+KIND_FAILED = "failed"                # ejecución/verificación falló
+KIND_MANUAL = "manual_required"       # Level 3 — acción manual
+KIND_CIRCUIT = "circuit_breaker"      # bucle detectado
+
+_KIND_TITLE = {
+    KIND_APPROVAL: "⚠️ Aprobación requerida",
+    KIND_EXECUTED: "🔧 Acción ejecutada",
+    KIND_RESOLVED: "✅ Incidente resuelto",
+    KIND_FAILED: "❌ Remediación fallida",
+    KIND_MANUAL: "🚨 Acción manual requerida",
+    KIND_CIRCUIT: "🔴 Circuit breaker activado",
+}
 
 
 class BaseNotifier:
-    """Lógica compartida de tokens. Las subclases implementan notify_*."""
+    """Capa de aviso. Las subclases implementan notify()."""
 
     def __init__(self, webhook_base_url: str = "http://localhost:8000"):
         self.webhook_base_url = webhook_base_url.rstrip("/")
-        self._pending: dict[str, PendingApproval] = {}
 
-    def register_approval_store(self, store: dict) -> None:
-        """Conecta con el dict del web server para compartir tokens."""
-        self._pending = store
+    def console_link(self, incident_id: str) -> str:
+        return f"{self.webhook_base_url}/incidents/{incident_id}"
 
-    def get_response(self, token: str) -> str | None:
-        entry = self._pending.get(token)
-        return entry.response if entry else None
+    def title(self, kind: str) -> str:
+        return _KIND_TITLE.get(kind, "Incidente")
 
-    def _make_token(self, incident_id: str, kubectl_cmd: str) -> str:
-        token = secrets.token_urlsafe(16)
-        self._pending[token] = PendingApproval(
-            token=token, incident_id=incident_id, kubectl_cmd=kubectl_cmd,
-        )
-        return token
-
-    def _approval_urls(self, token: str) -> tuple[str, str]:
-        return (
-            f"{self.webhook_base_url}/remediation/approve/{token}",
-            f"{self.webhook_base_url}/remediation/reject/{token}",
-        )
-
-    # Interfaz que el orquestador espera — implementada por las subclases
-    def notify_level1_executed(self, incident_id, namespaces, root_cause, kubectl_cmd, execution_output, investigation_steps) -> None:
-        raise NotImplementedError
-
-    def notify_level2_pending(self, incident_id, namespaces, root_cause, kubectl_cmd, risk_reason, investigation_steps) -> str:
-        raise NotImplementedError
-
-    def notify_level3(self, incident_id, namespaces, root_cause, kubectl_cmd, investigation_steps) -> None:
-        raise NotImplementedError
-
-    def notify_circuit_breaker(self, incident_id, namespaces, attempts, root_cause) -> None:
+    def notify(self, incident, kind: str) -> None:
+        """incident: objeto con .id, .namespaces, .root_cause, .kubectl_cmd, etc."""
         raise NotImplementedError
 
 
 class CompositeNotifier(BaseNotifier):
-    """Reenvía a varios canales (ej. Teams + email). El token lo crea el primero."""
+    """Reenvía el aviso a varios canales (ej. Teams + email)."""
 
     def __init__(self, notifiers: list[BaseNotifier]):
         super().__init__()
         self._notifiers = notifiers
 
-    def register_approval_store(self, store: dict) -> None:
-        self._pending = store
+    def notify(self, incident, kind: str) -> None:
         for n in self._notifiers:
-            n.register_approval_store(store)
-
-    def notify_level1_executed(self, *args) -> None:
-        for n in self._notifiers:
-            n.notify_level1_executed(*args)
-
-    def notify_level2_pending(self, incident_id, namespaces, root_cause, kubectl_cmd, risk_reason, investigation_steps) -> str:
-        # Un único token compartido; el primer canal lo crea, el resto lo reutiliza
-        token = self._make_token(incident_id, kubectl_cmd)
-        for n in self._notifiers:
-            n._pending = self._pending
-            n._notify_level2_with_token(
-                token, incident_id, namespaces, root_cause, kubectl_cmd, risk_reason, investigation_steps
-            )
-        return token
-
-    def notify_level3(self, *args) -> None:
-        for n in self._notifiers:
-            n.notify_level3(*args)
-
-    def notify_circuit_breaker(self, *args) -> None:
-        for n in self._notifiers:
-            n.notify_circuit_breaker(*args)
+            try:
+                n.notify(incident, kind)
+            except Exception as e:
+                logger.error("Notificador %s falló: %s", type(n).__name__, e)
 
 
 def build_notifier(cfg) -> BaseNotifier | None:

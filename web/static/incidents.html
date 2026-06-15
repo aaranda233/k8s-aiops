@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps — Consola de Incidencias</title>
+<style>
+  :root {
+    --bg:#0f1117; --surface:#181b24; --surface2:#1f2330; --border:#2a2f3d;
+    --text:#e6e8ee; --muted:#9aa3b2; --blue:#3b82f6; --green:#22c55e;
+    --yellow:#eab308; --orange:#f97316; --red:#ef4444; --mono:'SF Mono',Menlo,monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
+  header { padding:18px 28px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:18px; font-weight:700; }
+  header .sub { color:var(--muted); font-size:13px; }
+  header .live { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .nav { padding:10px 28px; border-bottom:1px solid var(--border); display:flex; gap:18px; font-size:14px; }
+  .nav a { color:var(--muted); text-decoration:none; }
+  .nav a:hover { color:var(--text); }
+  main { max-width:1100px; margin:0 auto; padding:24px 28px; }
+  .empty { text-align:center; color:var(--muted); padding:80px 20px; }
+  .stats { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
+  .stat { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 18px; min-width:110px; }
+  .stat .n { font-size:24px; font-weight:700; }
+  .stat .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin-bottom:14px; transition:border-color .15s; }
+  .card.highlight { border-color:var(--blue); box-shadow:0 0 0 1px var(--blue); }
+  .card.pending { border-left:3px solid var(--yellow); }
+  .card-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .card-head .id { font-family:var(--mono); font-size:13px; color:var(--muted); }
+  .card-head .ns { font-weight:600; }
+  .badge { font-size:12px; font-weight:600; padding:2px 10px; border-radius:20px; }
+  .b-pending { background:rgba(234,179,8,.15); color:var(--yellow); }
+  .b-approved,.b-executed { background:rgba(59,130,246,.15); color:var(--blue); }
+  .b-resolved { background:rgba(34,197,94,.15); color:var(--green); }
+  .b-rejected,.b-failed,.b-timeout { background:rgba(239,68,68,.15); color:var(--red); }
+  .b-escalated,.b-blocked { background:rgba(249,115,22,.15); color:var(--orange); }
+  .risk { font-size:12px; padding:2px 8px; border-radius:6px; font-weight:600; }
+  .r0{background:rgba(34,197,94,.12);color:var(--green)} .r1{background:rgba(59,130,246,.12);color:var(--blue)}
+  .r2{background:rgba(234,179,8,.12);color:var(--yellow)} .r3{background:rgba(239,68,68,.12);color:var(--red)}
+  .score { margin-left:auto; font-family:var(--mono); font-size:13px; color:var(--muted); }
+  .section { margin-top:14px; }
+  .section .label { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:5px; }
+  .rc { background:var(--surface2); border-radius:8px; padding:10px 12px; font-size:14px; }
+  .cmd { font-family:var(--mono); font-size:13px; background:#0b0d12; color:#9ae6b4; padding:10px 12px; border-radius:8px; overflow-x:auto; }
+  .invest { list-style:none; font-size:13px; color:var(--muted); }
+  .invest li { padding:3px 0 3px 16px; position:relative; font-family:var(--mono); }
+  .invest li::before { content:'›'; position:absolute; left:0; color:var(--blue); }
+  .actions { margin-top:16px; display:flex; gap:10px; }
+  button { font-family:inherit; font-size:14px; font-weight:600; padding:9px 20px; border:none; border-radius:8px; cursor:pointer; transition:opacity .15s; }
+  button:hover { opacity:.88; }
+  .approve { background:var(--green); color:#03260f; }
+  .reject { background:var(--red); color:#2a0606; }
+  .done { font-size:13px; color:var(--muted); margin-top:14px; font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ K8s-AIOps</h1>
+  <span class="sub">Consola de Incidencias</span>
+  <span class="live"><span class="dot"></span> en vivo</span>
+</header>
+<div class="nav">
+  <a href="/">← Dashboard (algoritmo)</a>
+  <a href="/incidents" style="color:var(--text)">Incidencias</a>
+</div>
+
+<main>
+  <div class="stats" id="stats"></div>
+  <div id="list"><div class="empty">Cargando incidencias…</div></div>
+</main>
+
+<script>
+const STATUS_LABEL = {
+  pending_approval:"Pendiente", approved:"Aprobado", rejected:"Rechazado",
+  executed:"Ejecutado", resolved:"Resuelto", failed:"Fallido",
+  escalated:"Escalado", blocked:"Bloqueado", timeout:"Sin respuesta",
+};
+const STATUS_CLASS = {
+  pending_approval:"b-pending", approved:"b-approved", executed:"b-executed",
+  resolved:"b-resolved", rejected:"b-rejected", failed:"b-failed",
+  timeout:"b-timeout", escalated:"b-escalated", blocked:"b-blocked",
+};
+const RISK_LABEL = {0:"lectura",1:"reversible",2:"configuración",3:"destructivo"};
+
+// id del deep-link (/incidents/INC-XXXX)
+const pathId = location.pathname.match(/\/incidents\/(.+)$/)?.[1];
+
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function approve(id){ await act(id,"approve"); }
+async function reject(id){ await act(id,"reject"); }
+async function act(id, verb){
+  const btns = document.querySelectorAll(`[data-inc="${id}"] button`);
+  btns.forEach(b=>b.disabled=true);
+  try {
+    await fetch(`/api/incidents/${id}/${verb}`, {method:"POST"});
+    await load();
+  } catch(e){ btns.forEach(b=>b.disabled=false); }
+}
+
+function renderStats(items){
+  const pending = items.filter(i=>i.status==="pending_approval").length;
+  const resolved = items.filter(i=>i.status==="resolved").length;
+  const failed = items.filter(i=>["failed","timeout"].includes(i.status)).length;
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><div class="n">${items.length}</div><div class="l">Total</div></div>
+    <div class="stat"><div class="n" style="color:var(--yellow)">${pending}</div><div class="l">Pendientes</div></div>
+    <div class="stat"><div class="n" style="color:var(--green)">${resolved}</div><div class="l">Resueltos</div></div>
+    <div class="stat"><div class="n" style="color:var(--red)">${failed}</div><div class="l">Fallidos</div></div>`;
+}
+
+function card(i){
+  const pending = i.status==="pending_approval";
+  const invest = (i.investigation||[]).map(s=>`<li>${esc(s)}</li>`).join("");
+  const actions = pending ? `
+    <div class="actions">
+      <button class="approve" onclick="approve('${i.id}')">✅ Aprobar y ejecutar</button>
+      <button class="reject" onclick="reject('${i.id}')">❌ Rechazar</button>
+    </div>` : (i.response ? `<div class="done">Decisión: ${i.response==="approved"?"aprobado":"rechazado"} por el operador.</div>` : "");
+  const exec = i.execution_output ? `
+    <div class="section"><div class="label">Resultado</div>
+      <div class="cmd" style="color:#cbd5e1">${esc(i.execution_output).slice(0,400)}</div></div>` : "";
+  return `
+  <div class="card ${pending?'pending':''} ${i.id===pathId?'highlight':''}" data-inc="${i.id}">
+    <div class="card-head">
+      <span class="ns">${esc(i.namespaces.join(", "))}</span>
+      <span class="badge ${STATUS_CLASS[i.status]||''}">${STATUS_LABEL[i.status]||i.status}</span>
+      <span class="risk r${i.risk_level}">Level ${i.risk_level} · ${RISK_LABEL[i.risk_level]||''}</span>
+      <span class="id">${i.id}</span>
+      <span class="score">score ${i.score.toFixed(3)}</span>
+    </div>
+    ${invest ? `<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}
+    <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
+    <div class="section"><div class="label">Acción propuesta</div><div class="cmd">${esc(i.kubectl_cmd)}</div></div>
+    ${exec}
+    ${actions}
+  </div>`;
+}
+
+async function load(){
+  try {
+    const r = await fetch("/api/incidents");
+    const data = await r.json();
+    const items = data.incidents || [];
+    renderStats(items);
+    const list = document.getElementById("list");
+    if (!items.length){ list.innerHTML = `<div class="empty">Sin incidencias todavía. El sistema avisará por Teams cuando detecte una anomalía.</div>`; return; }
+    list.innerHTML = items.map(card).join("");
+  } catch(e){
+    document.getElementById("list").innerHTML = `<div class="empty">Error al cargar incidencias.</div>`;
+  }
+}
+
+load();
+setInterval(load, 3000);  // refresco en vivo cada 3s
+</script>
+</body>
+</html>

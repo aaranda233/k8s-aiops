@@ -27,9 +27,10 @@ console = Console()
 
 
 class AIOPsPipeline:
-    def __init__(self, cfg: PipelineConfig, event_bus=None):
+    def __init__(self, cfg: PipelineConfig, event_bus=None, incident_store=None):
         self.cfg = cfg
         self._bus = event_bus  # opcional — None cuando se usa sin web
+        self._incident_store = incident_store  # compartido con la consola web
 
         self.parser = LogParser()
         self.window_builder = WindowBuilder(cfg.collector.window_size_seconds)
@@ -81,6 +82,7 @@ class AIOPsPipeline:
                 notifier=notifier,
                 max_auto_level=cfg.remediation.max_auto_level,
                 verify_wait=cfg.remediation.verify_wait_seconds,
+                incident_store=self._incident_store,
             )
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)

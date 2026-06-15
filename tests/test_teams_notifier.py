@@ -1,52 +1,40 @@
-"""Tests del notificador de Teams (sin POST real al webhook)."""
+"""Tests del notificador de Teams (solo-aviso, sin POST real)."""
 
+import time
 from unittest.mock import patch
 
 import pytest
 
-from src.remediation.base_notifier import CompositeNotifier, build_notifier
+from src.remediation.base_notifier import KIND_APPROVAL, KIND_RESOLVED, CompositeNotifier, build_notifier
+from src.remediation.incident_store import Incident
 from src.remediation.teams_notifier import TeamsNotifier
+
+
+def _incident():
+    return Incident(
+        id="INC-1", created_at=time.time(), namespaces=["prod"], score=0.94,
+        root_cause="Disco lleno en node-1", kubectl_cmd="kubectl drain node-1",
+        risk_level=3, risk_label="destructivo", investigation=["THOUGHT: revisar disco"],
+    )
 
 
 def _teams():
     return TeamsNotifier(webhook_url="https://outlook.office.com/webhook/test",
-                         webhook_base_url="http://localhost:8000")
+                         webhook_base_url="http://console:8000")
 
 
 @pytest.mark.unit
-def test_level2_creates_token_and_posts():
-    n = _teams()
-    with patch.object(n, "_post") as mock_post:
-        token = n.notify_level2_pending(
-            "INC-1", {"prod"}, "OOMKilled", "kubectl patch deployment x",
-            "config change", ["THOUGHT: revisar nodo"],
-        )
-    assert token in n._pending
-    mock_post.assert_called_once()
-    card = mock_post.call_args.args[0]
-    assert card["type"] == "AdaptiveCard"
-
-
-@pytest.mark.unit
-def test_level2_card_has_approve_reject_actions():
+def test_card_has_console_link_only():
     n = _teams()
     captured = {}
     with patch.object(n, "_post", side_effect=lambda c: captured.update(card=c)):
-        token = n.notify_level2_pending("INC-1", {"prod"}, "rc", "kubectl patch x", "r", [])
+        n.notify(_incident(), KIND_APPROVAL)
     actions = captured["card"]["actions"]
-    urls = [a["url"] for a in actions]
-    assert f"http://localhost:8000/remediation/approve/{token}" in urls
-    assert f"http://localhost:8000/remediation/reject/{token}" in urls
-
-
-@pytest.mark.unit
-def test_level1_card_no_actions():
-    n = _teams()
-    captured = {}
-    with patch.object(n, "_post", side_effect=lambda c: captured.update(card=c)):
-        n.notify_level1_executed("INC-1", {"prod"}, "rc", "kubectl rollout restart x", "restarted", [])
-    # Level 1 ya ejecutado → sin botones de aprobación
-    assert "actions" not in captured["card"]
+    # Solo el botón "Ver en consola" — sin APROBAR/RECHAZAR en Teams
+    assert len(actions) == 1
+    assert actions[0]["url"] == "http://console:8000/incidents/INC-1"
+    titles = [a["title"].lower() for a in actions]
+    assert all("aprobar" not in t and "rechazar" not in t for t in titles)
 
 
 @pytest.mark.unit
@@ -54,31 +42,68 @@ def test_card_contains_diagnosis_and_command():
     n = _teams()
     captured = {}
     with patch.object(n, "_post", side_effect=lambda c: captured.update(card=c)):
-        n.notify_level3("INC-9", {"prod"}, "Disco lleno en node-1", "kubectl drain node-1", [])
+        n.notify(_incident(), KIND_RESOLVED)
     body_text = str(captured["card"]["body"])
     assert "Disco lleno en node-1" in body_text
     assert "kubectl drain node-1" in body_text
 
 
 @pytest.mark.unit
-def test_post_failure_does_not_raise():
-    """Un fallo de Teams nunca debe romper el pipeline."""
-    import src.remediation.teams_notifier as tn
+def test_card_is_adaptive():
     n = _teams()
-    with patch.object(tn.httpx, "Client", side_effect=Exception("network down")):
-        n.notify_circuit_breaker("INC-1", {"prod"}, 3, "OOMKilled")  # no debe lanzar
+    captured = {}
+    with patch.object(n, "_post", side_effect=lambda c: captured.update(card=c)):
+        n.notify(_incident(), KIND_RESOLVED)
+    assert captured["card"]["type"] == "AdaptiveCard"
 
 
 @pytest.mark.unit
-def test_composite_shares_single_token():
-    """En modo 'both', ambos canales comparten el mismo token."""
-    n1 = _teams()
-    n2 = _teams()
+def test_post_failure_does_not_raise():
+    import src.remediation.teams_notifier as tn
+    n = _teams()
+    with patch.object(tn.httpx, "Client", side_effect=Exception("network down")):
+        n.notify(_incident(), KIND_RESOLVED)  # no debe lanzar
+
+
+@pytest.mark.unit
+def test_composite_fans_out_to_all_channels():
+    n1, n2 = _teams(), _teams()
     composite = CompositeNotifier([n1, n2])
-    with patch.object(n1, "_post"), patch.object(n2, "_post"):
-        token = composite.notify_level2_pending(
-            "INC-1", {"prod"}, "rc", "kubectl patch x", "r", [],
-        )
-    # El token existe en el store compartido y es el mismo para ambos
-    assert token in composite._pending
-    assert composite.get_response(token) is None
+    calls = []
+    with patch.object(n1, "_post", side_effect=lambda c: calls.append("n1")), \
+         patch.object(n2, "_post", side_effect=lambda c: calls.append("n2")):
+        composite.notify(_incident(), KIND_APPROVAL)
+    assert calls == ["n1", "n2"]
+
+
+@pytest.mark.unit
+def test_composite_continues_if_one_channel_fails():
+    n1, n2 = _teams(), _teams()
+    composite = CompositeNotifier([n1, n2])
+    calls = []
+    with patch.object(n1, "_post", side_effect=Exception("teams down")), \
+         patch.object(n2, "_post", side_effect=lambda c: calls.append("n2")):
+        composite.notify(_incident(), KIND_APPROVAL)  # no debe lanzar
+    assert calls == ["n2"]  # el segundo canal recibe el aviso pese al fallo del primero
+
+
+@pytest.mark.unit
+def test_build_notifier_channels():
+    from config.settings import RemediationConfig
+
+    teams = RemediationConfig()
+    teams.notify_channel = "teams"
+    teams.teams_webhook_url = "https://x"
+    assert type(build_notifier(teams)).__name__ == "TeamsNotifier"
+
+    both = RemediationConfig()
+    both.notify_channel = "both"
+    both.teams_webhook_url = "https://x"
+    both.smtp_user = "u@x"
+    both.notify_email = "s@x"
+    assert type(build_notifier(both)).__name__ == "CompositeNotifier"
+
+    none = RemediationConfig()
+    none.notify_channel = "teams"
+    none.teams_webhook_url = ""
+    assert build_notifier(none) is None

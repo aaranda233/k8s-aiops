@@ -2,14 +2,18 @@
 Orquestador de auto-remediación.
 
 Flujo completo:
-  1. Circuit breaker — ¿demasiados intentos para esta anomalía?
-  2. Risk scoring — clasifica el kubectl propuesto (0-3)
-  3. Level 0 → nada (solo lectura, ya ejecutado en investigación)
-     Level 1 → ejecutar automáticamente + verificar + notificar
-     Level 2 → email con aprobación, esperar, ejecutar si aprobado
-     Level 3 → email de alerta, no ejecutar
-  4. Verificación post-fix — ¿desapareció la anomalía?
-  5. Registro en MLflow
+  1. Crear incidente en el IncidentStore (fuente de verdad de la consola)
+  2. Circuit breaker — ¿demasiados intentos para esta anomalía?
+  3. Risk scoring — clasifica el kubectl propuesto (0-3)
+  4. Level 0 → resuelto (solo lectura)
+     Level 1 → ejecutar automáticamente + verificar
+     Level 2 → avisar y esperar decisión humana en la consola web
+     Level 3 → avisar, no ejecutar (acción manual)
+  5. Verificación post-fix — ¿desapareció la anomalía?
+
+Las notificaciones (Teams/email) solo AVISAN con un link a /incidents/{id};
+la decisión humana (aprobar/rechazar) ocurre en la consola web, que fija
+incident.response — sobre el que este orquestador hace polling.
 
 Se ejecuta en hilo de fondo para no bloquear el pipeline principal.
 """
@@ -22,9 +26,30 @@ from dataclasses import dataclass
 from rich.console import Console
 
 from src.diagnostics.ollama_rca import DiagnosisResult
+from src.remediation.base_notifier import (
+    KIND_APPROVAL,
+    KIND_CIRCUIT,
+    KIND_EXECUTED,
+    KIND_FAILED,
+    KIND_MANUAL,
+    KIND_RESOLVED,
+    BaseNotifier,
+)
 from src.remediation.circuit_breaker import CircuitBreaker
 from src.remediation.executor import ExecutionResult, execute_with_dryrun
-from src.remediation.notifier import Notifier
+from src.remediation.incident_store import (
+    STATUS_APPROVED,
+    STATUS_BLOCKED,
+    STATUS_ESCALATED,
+    STATUS_EXECUTED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_REJECTED,
+    STATUS_RESOLVED,
+    STATUS_TIMEOUT,
+    Incident,
+    IncidentStore,
+)
 from src.remediation.risk_scorer import score as risk_score
 
 console = Console()
@@ -48,16 +73,25 @@ class RemediationResult:
 class AutoRemediation:
     def __init__(
         self,
-        notifier: Notifier | None,
+        notifier: BaseNotifier | None,
         max_auto_level: int = 1,
         verify_wait: int = _VERIFY_WAIT_SECONDS,
         approval_timeout: int = _APPROVAL_TIMEOUT_SECONDS,
+        incident_store: IncidentStore | None = None,
     ):
         self.notifier = notifier
         self.max_auto_level = max_auto_level
         self.verify_wait = verify_wait
         self.approval_timeout = approval_timeout
+        self.incidents = incident_store or IncidentStore()
         self._circuit = CircuitBreaker()
+
+    def _notify(self, incident: Incident, kind: str) -> None:
+        if self.notifier:
+            try:
+                self.notifier.notify(incident, kind)
+            except Exception as e:
+                console.print(f"  [dim]notificación falló: {e}[/]")
 
     def handle_async(self, scored_window, diagnosis: DiagnosisResult) -> None:
         """Lanza el loop de remediación en un hilo de fondo."""
@@ -83,126 +117,127 @@ class AutoRemediation:
             if step.action:
                 investigation_steps.append(f"ACTION: {step.action}")
 
+        risk = risk_score(kubectl_cmd)
         fp = self._circuit.fingerprint(namespaces, root_cause)
 
+        # Crear el incidente — única fuente de verdad para la consola
+        incident = Incident(
+            id=incident_id,
+            created_at=time.time(),
+            namespaces=sorted(namespaces),
+            score=scored_window.score,
+            root_cause=root_cause,
+            kubectl_cmd=kubectl_cmd,
+            risk_level=risk.level,
+            risk_label=risk.label,
+            investigation=investigation_steps,
+            status=STATUS_PENDING,
+        )
+        self.incidents.add(incident)
+
         console.print(f"\n  [bold yellow][REMEDIATION][/] {incident_id} — {', '.join(namespaces)}")
+        console.print(f"  Risk: Level {risk.level} ({risk.label}) — {risk.reason}")
+        console.print(f"  kubectl: [cyan]{kubectl_cmd}[/]")
 
         # 1. Circuit breaker
         blocked, attempts = self._circuit.is_blocked(fp)
         if blocked:
             console.print(f"  [red]Circuit breaker activo ({attempts} intentos)[/]")
-            if self.notifier:
-                self.notifier.notify_circuit_breaker(incident_id, namespaces, attempts, root_cause)
+            self.incidents.update(incident_id, status=STATUS_BLOCKED)
+            self._notify(incident, KIND_CIRCUIT)
             return RemediationResult(incident_id, fp, -1, "blocked", kubectl_cmd, None, None)
 
-        # 2. Risk scoring
-        risk = risk_score(kubectl_cmd)
-        console.print(f"  Risk: Level {risk.level} ({risk.label}) — {risk.reason}")
-        console.print(f"  kubectl: [cyan]{kubectl_cmd}[/]")
-
-        # 3. Acción según nivel de riesgo
+        # 2. Enrutar según nivel de riesgo
         if risk.level == 0:
             console.print("  [dim]Level 0 — solo lectura, sin acción adicional[/]")
+            self.incidents.update(incident_id, status=STATUS_RESOLVED)
             return RemediationResult(incident_id, fp, 0, "skipped", kubectl_cmd, None, None)
 
         if risk.level == 1 and self.max_auto_level >= 1:
-            return self._execute_level1(
-                incident_id, fp, namespaces, root_cause, kubectl_cmd, investigation_steps
-            )
+            return self._execute_level1(incident, fp)
 
         if risk.level == 2 and self.max_auto_level >= 2:
-            return self._handle_level2(
-                incident_id, fp, namespaces, root_cause, kubectl_cmd, risk.reason, investigation_steps
-            )
+            return self._handle_level2(incident, fp)
 
-        # Level 3 o nivel por encima del máximo configurado
-        console.print(f"  [red]Level {risk.level} — escalando al humano[/]")
-        if self.notifier:
-            if risk.level == 3:
-                self.notifier.notify_level3(incident_id, namespaces, root_cause, kubectl_cmd, investigation_steps)
-            elif risk.level == 2:
-                self.notifier.notify_level2_pending(
-                    incident_id, namespaces, root_cause, kubectl_cmd, risk.reason, investigation_steps
-                )
+        # Level 3, o Level 2 sin auto-nivel suficiente → escalar a la consola
+        console.print(f"  [red]Level {risk.level} — escalando a la consola[/]")
+        if risk.level == 2:
+            self.incidents.update(incident_id, status=STATUS_PENDING)
+            self._notify(incident, KIND_APPROVAL)
+        else:
+            self.incidents.update(incident_id, status=STATUS_ESCALATED)
+            self._notify(incident, KIND_MANUAL)
         return RemediationResult(incident_id, fp, risk.level, "skipped", kubectl_cmd, None, None)
 
-    def _execute_level1(
-        self,
-        incident_id: str,
-        fp: str,
-        namespaces: set[str],
-        root_cause: str,
-        kubectl_cmd: str,
-        investigation_steps: list[str],
-    ) -> RemediationResult:
+    def _execute_level1(self, incident: Incident, fp: str) -> RemediationResult:
+        incident_id, kubectl_cmd = incident.id, incident.kubectl_cmd
+        namespaces = set(incident.namespaces)
         console.print("  [green]Level 1 — ejecutando automáticamente...[/]")
         result = execute_with_dryrun(kubectl_cmd)
 
         if not result.success:
             console.print(f"  [red]Ejecución fallida: {result.error}[/]")
             self._circuit.record(fp, kubectl_cmd, success=False)
-            if self.notifier:
-                self.notifier.notify_level3(
-                    incident_id, namespaces,
-                    f"EJECUCIÓN FALLIDA: {root_cause}",
-                    kubectl_cmd, investigation_steps
-                )
+            self.incidents.update(
+                incident_id, status=STATUS_FAILED,
+                execution_output=result.error or result.dry_run_output, verified=False,
+            )
+            self._notify(self.incidents.get(incident_id), KIND_FAILED)
             return RemediationResult(incident_id, fp, 1, "executed", kubectl_cmd, result, False)
 
         console.print(f"  [green]Ejecutado OK. Verificando en {self.verify_wait}s...[/]")
         self._circuit.record(fp, kubectl_cmd, success=True)
-
-        if self.notifier:
-            self.notifier.notify_level1_executed(
-                incident_id, namespaces, root_cause, kubectl_cmd,
-                result.real_output, investigation_steps
-            )
+        self.incidents.update(incident_id, status=STATUS_EXECUTED, execution_output=result.real_output)
+        self._notify(self.incidents.get(incident_id), KIND_EXECUTED)
 
         verified = self._verify(kubectl_cmd, namespaces)
         if verified:
             console.print("  [bold green]✓ Anomalía resuelta[/]")
             self._circuit.reset(fp)
+            self.incidents.update(incident_id, status=STATUS_RESOLVED, verified=True)
+            self._notify(self.incidents.get(incident_id), KIND_RESOLVED)
         else:
             console.print("  [yellow]⚠ Anomalía persiste tras el fix[/]")
+            self.incidents.update(incident_id, status=STATUS_FAILED, verified=False)
+            self._notify(self.incidents.get(incident_id), KIND_FAILED)
 
         return RemediationResult(incident_id, fp, 1, "executed", kubectl_cmd, result, verified)
 
-    def _handle_level2(
-        self,
-        incident_id: str,
-        fp: str,
-        namespaces: set[str],
-        root_cause: str,
-        kubectl_cmd: str,
-        risk_reason: str,
-        investigation_steps: list[str],
-    ) -> RemediationResult:
-        console.print("  [yellow]Level 2 — esperando aprobación por email...[/]")
+    def _handle_level2(self, incident: Incident, fp: str) -> RemediationResult:
+        incident_id, kubectl_cmd = incident.id, incident.kubectl_cmd
+        namespaces = set(incident.namespaces)
+        console.print("  [yellow]Level 2 — esperando decisión humana en la consola...[/]")
 
-        if not self.notifier:
-            console.print("  [dim]Sin notifier configurado — acción omitida[/]")
-            return RemediationResult(incident_id, fp, 2, "skipped", kubectl_cmd, None, None)
+        self.incidents.update(incident_id, status=STATUS_PENDING)
+        self._notify(incident, KIND_APPROVAL)
 
-        token = self.notifier.notify_level2_pending(
-            incident_id, namespaces, root_cause, kubectl_cmd, risk_reason, investigation_steps
-        )
-
-        # Polling con timeout
+        # Polling sobre el incident store: la consola web fija incident.response
         deadline = time.time() + self.approval_timeout
         while time.time() < deadline:
-            response = self.notifier.get_response(token)
+            current = self.incidents.get(incident_id)
+            response = current.response if current else None
             if response == "approved":
                 console.print("  [green]Aprobado — ejecutando...[/]")
+                self.incidents.update(incident_id, status=STATUS_APPROVED)
                 result = execute_with_dryrun(kubectl_cmd)
                 self._circuit.record(fp, kubectl_cmd, success=result.success)
                 verified = self._verify(kubectl_cmd, namespaces) if result.success else False
+                self.incidents.update(
+                    incident_id,
+                    status=STATUS_RESOLVED if verified else STATUS_FAILED,
+                    execution_output=result.real_output if result.success else (result.error or ""),
+                    verified=verified,
+                )
+                self._notify(self.incidents.get(incident_id), KIND_RESOLVED if verified else KIND_FAILED)
                 return RemediationResult(incident_id, fp, 2, "approved", kubectl_cmd, result, verified)
             if response == "rejected":
                 console.print("  [yellow]Rechazado por el operador[/]")
+                self.incidents.update(incident_id, status=STATUS_REJECTED)
                 return RemediationResult(incident_id, fp, 2, "rejected", kubectl_cmd, None, None)
             time.sleep(_APPROVAL_POLL_INTERVAL)
 
-        console.print("  [dim]Timeout de aprobación (30min)[/]")
+        console.print("  [dim]Timeout de decisión (30min)[/]")
+        self.incidents.update(incident_id, status=STATUS_TIMEOUT)
         return RemediationResult(incident_id, fp, 2, "timeout", kubectl_cmd, None, None)
 
     def _verify(self, kubectl_cmd: str, namespaces: set[str]) -> bool:
