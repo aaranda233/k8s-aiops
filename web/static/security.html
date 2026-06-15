@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps · Seguridad</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0a0d13; --panel:#141a26; --panel2:#1a212f; --rail:#0c1018;
+    --border:#222a3a; --border-soft:#1a2130; --text:#e8ebf2; --muted:#8b94a7; --muted2:#5c6577;
+    --accent:#4f8ff7; --ok:#3fb950; --critical:#f85149; --high:#f0883e; --medium:#d29922; --low:#58a6ff;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 12px 32px -8px rgba(0,0,0,.6);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,sans-serif; background:
+      radial-gradient(1200px 600px at 75% -10%, rgba(248,81,73,.05), transparent), var(--bg);
+      color:var(--text); min-height:100vh; -webkit-font-smoothing:antialiased; }
+  svg.icon { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+  header { padding:0 22px; height:56px; border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:13px;
+      background:rgba(10,13,19,.7); backdrop-filter:blur(8px); position:sticky; top:0; z-index:10; }
+  .logo { display:flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px;
+      background:linear-gradient(135deg,#1e3a6e,#0f1d38); border:1px solid #2a467e; color:#7fb0ff; }
+  .brand { font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .brand span { color:var(--muted2); font-weight:500; }
+  .nav { margin-left:18px; display:flex; gap:4px; }
+  .nav a { color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:500; padding:7px 12px; border-radius:7px; transition:.15s; }
+  .nav a:hover { color:var(--text); background:var(--panel); }
+  .nav a.active { color:var(--text); background:var(--panel2); }
+  .live { margin-left:auto; display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muted); }
+
+  main { max-width:1080px; margin:0 auto; padding:24px 22px; }
+  .scores { display:flex; gap:14px; margin-bottom:24px; flex-wrap:wrap; }
+  .score { flex:1; min-width:120px; border-radius:12px; padding:15px 18px; box-shadow:var(--shadow);
+      background:linear-gradient(180deg,rgba(255,255,255,.015),transparent), var(--panel); border:1px solid var(--border-soft); }
+  .score .n { font-size:30px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .score .l { font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin-top:3px; }
+  .score.critical { border-left:3px solid var(--critical); } .score.critical .n { color:var(--critical); }
+  .score.high { border-left:3px solid var(--high); } .score.high .n { color:var(--high); }
+  .score.medium { border-left:3px solid var(--medium); } .score.medium .n { color:var(--medium); }
+  .score.low { border-left:3px solid var(--low); } .score.low .n { color:var(--low); }
+
+  .filters { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; align-items:center; }
+  .filters .lbl { font-size:12px; color:var(--muted2); text-transform:uppercase; letter-spacing:.08em; margin-right:4px; }
+  .pill { font-size:12.5px; padding:6px 13px; border-radius:20px; border:1px solid var(--border); background:var(--panel);
+      color:var(--muted); cursor:pointer; transition:.15s; }
+  .pill:hover { color:var(--text); }
+  .pill.active { background:var(--panel2); color:var(--text); border-color:var(--accent); }
+
+  .finding { background:linear-gradient(180deg,rgba(255,255,255,.012),transparent), var(--panel);
+      border:1px solid var(--border-soft); border-radius:12px; padding:15px 18px; margin-bottom:11px; box-shadow:var(--shadow);
+      display:flex; gap:14px; transition:.15s; }
+  .finding:hover { border-color:var(--border); }
+  .sev-bar { width:4px; border-radius:3px; flex:none; }
+  .sev-critical .sev-bar { background:var(--critical); } .sev-high .sev-bar { background:var(--high); }
+  .sev-medium .sev-bar { background:var(--medium); } .sev-low .sev-bar { background:var(--low); }
+  .f-body { flex:1; min-width:0; }
+  .f-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .f-title { font-weight:600; font-size:14.5px; letter-spacing:-.01em; }
+  .sev-badge { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; padding:3px 9px; border-radius:20px; }
+  .sev-critical .sev-badge { background:rgba(248,81,73,.15); color:var(--critical); }
+  .sev-high .sev-badge { background:rgba(240,136,62,.15); color:var(--high); }
+  .sev-medium .sev-badge { background:rgba(210,153,34,.15); color:var(--medium); }
+  .sev-low .sev-badge { background:rgba(88,166,255,.15); color:var(--low); }
+  .cat { font-size:11.5px; color:var(--muted2); background:var(--panel2); padding:2px 9px; border-radius:6px; }
+  .res { margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+  .f-detail { color:var(--muted); font-size:13px; margin-top:7px; line-height:1.5; }
+  .f-rec { margin-top:9px; font-size:13px; display:flex; gap:8px; align-items:flex-start; color:#a7d2a0; }
+  .f-rec svg { color:var(--ok); margin-top:2px; }
+  .empty { text-align:center; color:var(--muted); padding:90px 20px; display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .empty svg { width:42px; height:42px; color:var(--ok); stroke-width:1.4; }
+  .spinner { width:26px; height:26px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><svg class="icon" viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+  <div class="brand">K8s-AIOps <span>· Seguridad</span></div>
+  <nav class="nav">
+    <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
+    <a href="/chat">Chat</a><a href="/topology">Topología</a><a href="/security" class="active">Seguridad</a>
+  </nav>
+  <span class="live">escaneo read-only</span>
+</header>
+
+<main>
+  <div class="scores" id="scores"></div>
+  <div class="filters" id="filters" style="display:none">
+    <span class="lbl">Severidad</span>
+    <span class="pill active" data-sev="">Todas</span>
+    <span class="pill" data-sev="critical">Críticas</span>
+    <span class="pill" data-sev="high">Altas</span>
+    <span class="pill" data-sev="medium">Medias</span>
+    <span class="pill" data-sev="low">Bajas</span>
+  </div>
+  <div id="list"><div class="empty"><div class="spinner"></div>Escaneando la postura de seguridad…</div></div>
+</main>
+
+<script>
+const SEV_LABEL={critical:"Crítica",high:"Alta",medium:"Media",low:"Baja"};
+const ICHECK='<svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>';
+let allFindings=[], sevFilter="";
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function renderScores(sm){
+  document.getElementById("scores").innerHTML=`
+    <div class="score critical"><div class="n">${sm.critical||0}</div><div class="l">Críticas</div></div>
+    <div class="score high"><div class="n">${sm.high||0}</div><div class="l">Altas</div></div>
+    <div class="score medium"><div class="n">${sm.medium||0}</div><div class="l">Medias</div></div>
+    <div class="score low"><div class="n">${sm.low||0}</div><div class="l">Bajas</div></div>`;
+}
+function findingCard(f){
+  return `<div class="finding sev-${f.severity}">
+    <div class="sev-bar"></div>
+    <div class="f-body">
+      <div class="f-head">
+        <span class="sev-badge">${SEV_LABEL[f.severity]||f.severity}</span>
+        <span class="f-title">${esc(f.title)}</span>
+        <span class="cat">${esc(f.category)}</span>
+        <span class="res">${esc(f.resource)}</span>
+      </div>
+      <div class="f-detail">${esc(f.detail)}</div>
+      <div class="f-rec">${ICHECK}<span>${esc(f.recommendation)}</span></div>
+    </div></div>`;
+}
+function renderList(){
+  const list=document.getElementById("list");
+  const items=sevFilter?allFindings.filter(f=>f.severity===sevFilter):allFindings;
+  if(!allFindings.length){
+    list.innerHTML=`<div class="empty">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>Sin hallazgos de seguridad. La postura del cluster es correcta.</span></div>`;
+    return;
+  }
+  list.innerHTML=items.map(findingCard).join("") || `<div class="empty"><span>Sin hallazgos de esa severidad.</span></div>`;
+}
+document.getElementById("filters").addEventListener("click",e=>{
+  const p=e.target.closest(".pill"); if(!p) return;
+  document.querySelectorAll(".pill").forEach(x=>x.classList.remove("active"));
+  p.classList.add("active"); sevFilter=p.dataset.sev; renderList();
+});
+async function load(){
+  try {
+    const data=await (await fetch("/api/security")).json();
+    allFindings=data.findings||[];
+    renderScores(data.summary||{});
+    document.getElementById("filters").style.display=allFindings.length?"flex":"none";
+    renderList();
+  } catch(e){ document.getElementById("list").innerHTML=`<div class="empty">Error al escanear.</div>`; }
+}
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>

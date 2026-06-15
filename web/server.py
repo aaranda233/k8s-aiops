@@ -23,6 +23,7 @@ from src.collector.topology_collector import TopologyCollector
 from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
 from src.remediation.incident_store import IncidentStore
+from src.security.scanner import SecurityScanner
 from web.event_bus import bus
 
 # Registro de incidentes compartido entre el pipeline (remediación) y la consola
@@ -192,6 +193,29 @@ async def api_topology():
         return _topology["collector"].build_graph()
     except Exception as e:
         return JSONResponse({"error": str(e), "nodes": [], "links": [], "stats": {}}, status_code=200)
+
+
+# ------------------------------------------------------------------
+# Seguridad — escaneo de postura read-only
+# ------------------------------------------------------------------
+
+_security: dict = {"scanner": None}
+
+
+@app.get("/security", response_class=HTMLResponse)
+async def security_page():
+    html_path = Path(__file__).parent / "static" / "security.html"
+    return HTMLResponse(html_path.read_text())
+
+
+@app.get("/api/security")
+async def api_security():
+    try:
+        if _security["scanner"] is None:
+            _security["scanner"] = SecurityScanner()
+        return _security["scanner"].scan()
+    except Exception as e:
+        return JSONResponse({"error": str(e), "findings": [], "summary": {}}, status_code=200)
 
 
 # ------------------------------------------------------------------
