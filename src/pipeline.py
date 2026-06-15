@@ -88,9 +88,10 @@ class AIOPsPipeline:
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)
 
-        # Colector de logs de aplicación (opt-in) — fuente adicional a los eventos
+        # Colector de logs de aplicación (opt-in) — fuente adicional a los eventos.
+        # namespaces vacío = todo el cluster.
         self.log_collector: LogCollector | None = None
-        if cfg.logs.enabled and cfg.logs.namespaces:
+        if cfg.logs.enabled:
             self.log_collector = LogCollector(
                 namespaces=cfg.logs.namespaces,
                 poll_interval=cfg.logs.poll_interval,
@@ -205,7 +206,8 @@ class AIOPsPipeline:
             for entry in self.log_collector.stream_log_entries():
                 self._ingest(entry)
 
-        console.print(f"[dim]Colector de logs activo en: {', '.join(self.log_collector.namespaces)}[/]")
+        scope = "todo el cluster" if self.log_collector.all_namespaces else ", ".join(self.log_collector.namespaces)
+        console.print(f"[dim]Colector de logs activo en: {scope}[/]")
         t = threading.Thread(target=_log_loop, daemon=True)
         t.start()
 

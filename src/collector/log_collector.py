@@ -32,16 +32,17 @@ _LEVELS = ("ERROR", "FATAL", "CRITICAL", "WARN", "WARNING", "INFO", "DEBUG")
 class LogCollector:
     def __init__(
         self,
-        namespaces: list[str],
+        namespaces: list[str] | None = None,
         poll_interval: float = 30.0,
         tail_lines: int = 50,
         since_seconds: int = 35,
-        max_pods: int = 50,
+        max_pods: int = 300,
         use_incluster: bool = False,
     ):
-        if not namespaces:
-            raise ValueError("LogCollector requiere namespaces explícitos (seguridad)")
-        self.namespaces = namespaces
+        # namespaces vacío/None = TODO el cluster (list_pod_for_all_namespaces).
+        # Lista explícita = solo esos namespaces.
+        self.namespaces = namespaces or []
+        self.all_namespaces = not self.namespaces
         self.poll_interval = poll_interval
         self.tail_lines = tail_lines
         self.since_seconds = since_seconds
@@ -73,6 +74,15 @@ class LogCollector:
 
     def _list_target_pods(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
+        if self.all_namespaces:
+            # Todo el cluster en una sola llamada (read-only)
+            try:
+                pods = self._v1.list_pod_for_all_namespaces(limit=self.max_pods)
+                for p in pods.items:
+                    result.append((p.metadata.namespace, p.metadata.name))
+            except ApiException:
+                pass
+            return result
         for ns in self.namespaces:
             try:
                 pods = self._v1.list_namespaced_pod(ns, limit=self.max_pods)
@@ -120,7 +130,10 @@ class LogCollector:
 
     def health_check(self) -> bool:
         try:
-            self._v1.list_namespaced_pod(self.namespaces[0], limit=1)
+            if self.all_namespaces:
+                self._v1.list_pod_for_all_namespaces(limit=1)
+            else:
+                self._v1.list_namespaced_pod(self.namespaces[0], limit=1)
             return True
         except Exception:
             return False

@@ -27,12 +27,30 @@ def test_detect_level(line, expected):
 
 
 @pytest.mark.unit
-def test_requires_namespaces():
-    """Seguridad: nunca todo el cluster — namespaces obligatorios."""
+def test_empty_namespaces_means_all_cluster():
+    """Vacío = todo el cluster (list_pod_for_all_namespaces)."""
     with patch("src.collector.log_collector.k8s_config"), \
          patch("src.collector.log_collector.client"):
-        with pytest.raises(ValueError):
-            LogCollector(namespaces=[])
+        c = LogCollector(namespaces=[])
+        c._v1 = MagicMock()
+        assert c.all_namespaces is True
+        pods = MagicMock()
+        p = MagicMock()
+        p.metadata.namespace = "kube-system"
+        p.metadata.name = "coredns-1"
+        pods.items = [p]
+        c._v1.list_pod_for_all_namespaces.return_value = pods
+        targets = c._list_target_pods()
+        assert targets == [("kube-system", "coredns-1")]
+        c._v1.list_pod_for_all_namespaces.assert_called_once()
+
+
+@pytest.mark.unit
+def test_explicit_namespaces_scopes_to_them():
+    with patch("src.collector.log_collector.k8s_config"), \
+         patch("src.collector.log_collector.client"):
+        c = LogCollector(namespaces=["prod"])
+        assert c.all_namespaces is False
 
 
 def _collector():
