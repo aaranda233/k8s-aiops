@@ -13,6 +13,7 @@ from rich.console import Console
 
 from config.settings import PipelineConfig
 from src.collector.k8s_collector import K8sCollector
+from src.collector.log_collector import LogCollector
 from src.detector.isolation_forest import AnomalyDetector, ScoredWindow
 from src.detector.window import WindowBuilder
 from src.diagnostics.hybrid_react_agent import HybridReActAgent
@@ -86,6 +87,21 @@ class AIOPsPipeline:
             )
 
         self.collector = K8sCollector(namespaces=cfg.collector.namespaces)
+
+        # Colector de logs de aplicación (opt-in) — fuente adicional a los eventos
+        self.log_collector: LogCollector | None = None
+        if cfg.logs.enabled and cfg.logs.namespaces:
+            self.log_collector = LogCollector(
+                namespaces=cfg.logs.namespaces,
+                poll_interval=cfg.logs.poll_interval,
+                tail_lines=cfg.logs.tail_lines,
+                since_seconds=cfg.logs.since_seconds,
+                max_pods=cfg.logs.max_pods,
+            )
+
+        # Lock para serializar la ingesta desde múltiples fuentes/hilos
+        # (watch de eventos + timer de flush + colector de logs)
+        self._ingest_lock = threading.Lock()
         self._scored_windows: list[ScoredWindow] = []
         self._diagnoses: list[DiagnosisResult] = []
 
@@ -149,6 +165,9 @@ class AIOPsPipeline:
             #    aunque no lleguen eventos nuevos
             self._start_window_flush_timer()
 
+            # 2b. Colector de logs de aplicación (opt-in, hilo de fondo)
+            self._start_log_collector()
+
             # 3. Watch API para eventos nuevos
             try:
                 for entry in self.collector.stream_events():
@@ -167,13 +186,27 @@ class AIOPsPipeline:
         def _flush_loop():
             while True:
                 time.sleep(self.cfg.collector.window_size_seconds)
-                window = self.window_builder.flush()
-                if window and window.log_count > 0:
-                    self._evaluate_window(window)
+                with self._ingest_lock:
+                    window = self.window_builder.flush()
+                    if window and window.log_count > 0:
+                        self._evaluate_window(window)
                 # Emitir heartbeat para mantener viva la conexion WS
                 self._emit("heartbeat", {"ts": time.time()})
 
         t = threading.Thread(target=_flush_loop, daemon=True)
+        t.start()
+
+    def _start_log_collector(self) -> None:
+        """Hilo de fondo que ingesta logs de aplicación (si está habilitado)."""
+        if self.log_collector is None:
+            return
+
+        def _log_loop():
+            for entry in self.log_collector.stream_log_entries():
+                self._ingest(entry)
+
+        console.print(f"[dim]Colector de logs activo en: {', '.join(self.log_collector.namespaces)}[/]")
+        t = threading.Thread(target=_log_loop, daemon=True)
         t.start()
 
     # ------------------------------------------------------------------
@@ -181,27 +214,30 @@ class AIOPsPipeline:
     # ------------------------------------------------------------------
 
     def _ingest(self, entry) -> None:
-        parsed = self.parser.parse(
-            raw=entry.raw,
-            namespace=entry.namespace,
-            timestamp=entry.timestamp,
-        )
+        # Serializa la ingesta: varias fuentes (eventos + logs + flush) escriben
+        # en el window_builder/detector, que no son thread-safe por sí mismos.
+        with self._ingest_lock:
+            parsed = self.parser.parse(
+                raw=entry.raw,
+                namespace=entry.namespace,
+                timestamp=entry.timestamp,
+            )
 
-        # Emitir evento de log parseado a la web
-        self._emit("log_parsed", {
-            "ts": entry.timestamp,
-            "namespace": entry.namespace,
-            "reason": entry.reason,
-            "source": entry.source,
-            "raw": entry.raw[:120],
-            "template": parsed.template[:120],
-            "cluster_id": parsed.cluster_id,
-            "template_count": self.parser.cluster_count,
-        })
+            # Emitir evento de log parseado a la web
+            self._emit("log_parsed", {
+                "ts": entry.timestamp,
+                "namespace": entry.namespace,
+                "reason": entry.reason,
+                "source": entry.source,
+                "raw": entry.raw[:120],
+                "template": parsed.template[:120],
+                "cluster_id": parsed.cluster_id,
+                "template_count": self.parser.cluster_count,
+            })
 
-        closed_window = self.window_builder.feed(parsed, entry.timestamp)
-        if closed_window is not None and closed_window.log_count > 0:
-            self._evaluate_window(closed_window)
+            closed_window = self.window_builder.feed(parsed, entry.timestamp)
+            if closed_window is not None and closed_window.log_count > 0:
+                self._evaluate_window(closed_window)
 
     def _evaluate_window(self, window) -> None:
         if not self.detector.is_ready:

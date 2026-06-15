@@ -19,6 +19,20 @@ class CollectorConfig:
 
 
 @dataclass
+class LogConfig:
+    # Detección sobre logs de aplicación (además de eventos K8s). Opt-in.
+    enabled: bool = field(default_factory=lambda: os.getenv("LOG_COLLECTION_ENABLED", "false").lower() == "true")
+    # Namespaces a leer (coma-separados). OBLIGATORIO si enabled — nunca todo el cluster.
+    namespaces: list[str] = field(default_factory=lambda: [
+        ns for ns in os.getenv("LOG_NAMESPACES", "").split(",") if ns.strip()
+    ])
+    poll_interval: float = field(default_factory=lambda: float(os.getenv("LOG_POLL_INTERVAL", "30")))
+    tail_lines: int = field(default_factory=lambda: int(os.getenv("LOG_TAIL_LINES", "50")))
+    since_seconds: int = field(default_factory=lambda: int(os.getenv("LOG_SINCE_SECONDS", "35")))
+    max_pods: int = field(default_factory=lambda: int(os.getenv("LOG_MAX_PODS", "50")))
+
+
+@dataclass
 class DetectorConfig:
     # Score minimo para disparar alerta (0-1)
     anomaly_threshold: float = 0.80
@@ -77,6 +91,7 @@ class MLflowConfig:
 @dataclass
 class PipelineConfig:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
+    logs: LogConfig = field(default_factory=LogConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     remediation: RemediationConfig = field(default_factory=RemediationConfig)
