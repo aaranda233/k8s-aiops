@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps — Chat con el cluster</title>
+<style>
+  :root {
+    --bg:#0f1117; --surface:#181b24; --surface2:#1f2330; --border:#2a2f3d;
+    --text:#e6e8ee; --muted:#9aa3b2; --blue:#3b82f6; --green:#22c55e;
+    --yellow:#eab308; --purple:#a78bfa; --red:#ef4444; --mono:'SF Mono',Menlo,monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); line-height:1.55; height:100vh; display:flex; flex-direction:column; }
+  header { padding:18px 28px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:18px; font-weight:700; }
+  header .sub { color:var(--muted); font-size:13px; }
+  header .ro { margin-left:auto; font-size:12px; color:var(--green); border:1px solid rgba(34,197,94,.3); padding:3px 10px; border-radius:20px; }
+  .nav { padding:10px 28px; border-bottom:1px solid var(--border); display:flex; gap:18px; font-size:14px; }
+  .nav a { color:var(--muted); text-decoration:none; }
+  .nav a:hover { color:var(--text); }
+  .chat { flex:1; overflow-y:auto; padding:24px 28px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  .msg { margin-bottom:18px; }
+  .user { display:flex; justify-content:flex-end; }
+  .user .bubble { background:var(--blue); color:#fff; padding:10px 16px; border-radius:14px 14px 2px 14px; max-width:75%; }
+  .agent { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .step { margin:8px 0; padding-left:24px; position:relative; font-size:14px; }
+  .step .ic { position:absolute; left:0; top:1px; }
+  .thought { color:var(--muted); }
+  .action .cmd { font-family:var(--mono); font-size:13px; background:#0b0d12; color:#9ae6b4; padding:8px 12px; border-radius:8px; margin-top:4px; overflow-x:auto; }
+  .obs { font-family:var(--mono); font-size:12px; color:var(--muted); background:var(--surface2); padding:8px 12px; border-radius:8px; margin-top:4px; max-height:160px; overflow:auto; white-space:pre-wrap; }
+  .answer { border-left:3px solid var(--green); padding:12px 16px; background:rgba(34,197,94,.06); border-radius:0 8px 8px 0; margin-top:12px; white-space:pre-wrap; }
+  .err { color:var(--red); }
+  .thinking { color:var(--purple); font-size:13px; font-style:italic; }
+  .examples { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .chip { font-size:13px; background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 12px; border-radius:18px; cursor:pointer; }
+  .chip:hover { color:var(--text); border-color:var(--blue); }
+  footer { border-top:1px solid var(--border); padding:16px 28px; }
+  .inputbar { max-width:860px; margin:0 auto; display:flex; gap:10px; }
+  input { flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text); padding:12px 16px; border-radius:10px; font-size:15px; font-family:inherit; outline:none; }
+  input:focus { border-color:var(--blue); }
+  button { background:var(--blue); color:#fff; border:none; padding:12px 22px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ K8s-AIOps</h1>
+  <span class="sub">Chat con el cluster</span>
+  <span class="ro">🔒 solo lectura</span>
+</header>
+<div class="nav">
+  <a href="/">Dashboard</a>
+  <a href="/incidents">Incidencias</a>
+  <a href="/chat" style="color:var(--text)">Chat</a>
+</div>
+
+<div class="chat" id="chat">
+  <div class="wrap">
+    <div class="agent">
+      <p>👋 Pregúntame sobre el estado del cluster. Investigo en vivo con <code>kubectl</code> de solo lectura.</p>
+      <div class="examples">
+        <span class="chip" onclick="ask(this.textContent)">¿Qué pasa en producción?</span>
+        <span class="chip" onclick="ask(this.textContent)">¿Hay pods en CrashLoopBackOff?</span>
+        <span class="chip" onclick="ask(this.textContent)">¿Por qué se reinicia el pod api-gateway?</span>
+        <span class="chip" onclick="ask(this.textContent)">¿Cómo está el uso de memoria de los nodos?</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="inputbar">
+    <input id="q" placeholder="¿Qué quieres saber del cluster?" autofocus
+           onkeydown="if(event.key==='Enter'&&!this.disabled) send()">
+    <button id="btn" onclick="send()">Preguntar</button>
+  </div>
+</footer>
+
+<script>
+const chat = document.getElementById("chat");
+const input = document.getElementById("q");
+const btn = document.getElementById("btn");
+let streaming = false;
+
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function scroll(){ chat.scrollTop = chat.scrollHeight; }
+function wrap(){ return chat.querySelector(".wrap"); }
+
+function ask(text){ input.value = text; send(); }
+
+function addUser(text){
+  const d = document.createElement("div");
+  d.className = "msg user";
+  d.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  wrap().appendChild(d); scroll();
+}
+
+function newAgentMsg(){
+  const d = document.createElement("div");
+  d.className = "msg agent";
+  d.innerHTML = `<div class="thinking">🔎 Investigando…</div>`;
+  wrap().appendChild(d); scroll();
+  return d;
+}
+
+function send(){
+  const q = input.value.trim();
+  if (!q || streaming) return;
+  addUser(q);
+  input.value = "";
+  streaming = true; btn.disabled = true; input.disabled = true;
+
+  const box = newAgentMsg();
+  const steps = document.createElement("div");
+  box.appendChild(steps);
+
+  const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(q)}`);
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    const thinking = box.querySelector(".thinking");
+    if (ev.type === "thought") {
+      add(steps, `<div class="step thought"><span class="ic">💭</span>${esc(ev.text)}</div>`);
+    } else if (ev.type === "action") {
+      add(steps, `<div class="step action"><span class="ic">⚡</span>Ejecuto:<div class="cmd">${esc(ev.command)}</div></div>`);
+    } else if (ev.type === "observation") {
+      add(steps, `<div class="step"><span class="ic">👁️</span><div class="obs">${esc(ev.text)}</div></div>`);
+    } else if (ev.type === "answer") {
+      if (thinking) thinking.remove();
+      add(steps, `<div class="answer">${esc(ev.text)}</div>`);
+    } else if (ev.type === "error") {
+      if (thinking) thinking.remove();
+      add(steps, `<div class="step err"><span class="ic">❌</span>${esc(ev.text)}</div>`);
+    } else if (ev.type === "done") {
+      const t = box.querySelector(".thinking"); if (t) t.remove();
+      es.close(); streaming = false; btn.disabled = false; input.disabled = false; input.focus();
+    }
+    scroll();
+  };
+  es.onerror = () => {
+    const t = box.querySelector(".thinking"); if (t) t.remove();
+    es.close(); streaming = false; btn.disabled = false; input.disabled = false;
+  };
+}
+
+function add(parent, html){
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  parent.appendChild(tmp.firstChild);
+}
+</script>
+</body>
+</html>

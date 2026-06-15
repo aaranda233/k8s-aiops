@@ -6,23 +6,34 @@ a todos los clientes conectados via WebSocket.
 """
 
 import asyncio
+import json
+import os
 import sys
 import threading
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import CollectorConfig, DetectorConfig, DiagnosticsConfig, PipelineConfig, RemediationConfig
+from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
 from src.remediation.incident_store import IncidentStore
 from web.event_bus import bus
 
 # Registro de incidentes compartido entre el pipeline (remediación) y la consola
 incident_store = IncidentStore()
+
+# Agente de chat read-only (investigación on-demand del cluster)
+chat_agent = ClusterChatAgent(
+    host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+    model=os.getenv("REACT_BASE_MODEL", "qwen2.5:1.5b"),
+    max_steps=int(os.getenv("CHAT_MAX_STEPS", "5")),
+    dry_run=os.getenv("CHAT_DRY_RUN", "false").lower() == "true",
+)
 
 app = FastAPI(title="k8s-aiops")
 
@@ -122,6 +133,40 @@ async def api_reject(incident_id: str):
     if not incident_store.set_response(incident_id, "rejected"):
         return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
     return {"status": "rejected", "id": incident_id}
+
+
+# ------------------------------------------------------------------
+# Chat con el cluster — investigación ReAct read-only en vivo (SSE)
+# ------------------------------------------------------------------
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page():
+    html_path = Path(__file__).parent / "static" / "chat.html"
+    return HTMLResponse(html_path.read_text())
+
+
+@app.get("/api/chat/stream")
+async def chat_stream(q: str):
+    """Server-Sent Events: emite los pasos del agente conforme investiga."""
+    def event_gen():
+        if not q.strip():
+            yield _sse({"type": "error", "text": "Pregunta vacía"})
+            return
+        try:
+            for event in chat_agent.chat_iter(q):
+                yield _sse(event)
+        except Exception as e:
+            yield _sse({"type": "error", "text": str(e)})
+        yield _sse({"type": "done"})
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",  # desactiva buffering en nginx/ingress
+    })
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ------------------------------------------------------------------
