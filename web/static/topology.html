@@ -205,11 +205,30 @@ function filtered(){
   allData.links.forEach(l=>{ if(keep.has(l.source)) keep.add(l.target); if(keep.has(l.target)) keep.add(l.source); });
   return { nodes:allData.nodes.filter(n=>keep.has(n.id)), links:allData.links, stats:allData.stats };
 }
+let graphSig=null, graphNodeSel=null;
 function render(){
   const data=filtered();
   const svg=document.querySelector("#stage svg.graph"), panel=document.getElementById("panel");
-  if(view==="graph"){ panel.style.display="none"; renderGraph(data); }
-  else { if(svg) svg.remove(); panel.style.display="block"; renderPanel(data); }
+  if(view==="graph"){
+    panel.style.display="none";
+    const sig=data.nodes.map(n=>n.id).sort().join("|");
+    if(svg && sig===graphSig){
+      updateGraphColors(data);   // misma estructura → solo refrescar salud (sin saltos)
+    } else {
+      graphSig=sig; renderGraph(data);
+    }
+  } else {
+    if(svg) svg.remove(); graphSig=null; graphNodeSel=null;
+    panel.style.display="block"; renderPanel(data);
+  }
+}
+function updateGraphColors(data){
+  if(!graphNodeSel) return;
+  const h={}; data.nodes.forEach(n=>h[n.id]=n.health);
+  graphNodeSel.each(function(d){ if(h[d.id]!==undefined) d.health=h[d.id]; });
+  graphNodeSel.classed("err", d=>d.health==="error");
+  graphNodeSel.select("circle.body").attr("fill", colorFor);
+  graphNodeSel.select("circle.halo").style("opacity", d=>d.health==="error"?1:0);
 }
 
 /* ---- cuadro eléctrico ---- */
@@ -259,29 +278,60 @@ function renderPanel(data){
 }
 
 /* ---- grafo ---- */
+const RADIUS={ ingress:11, service:8, pod:5.5, node:18 };
 function renderGraph(data){
   const g=document.getElementById("stage"); d3.select("#stage svg.graph").remove();
   const W=g.clientWidth,H=g.clientHeight;
   const svg=d3.select("#stage").insert("svg","#panel").attr("class","graph");
+  // glow para nodos en fallo
+  const defs=svg.append("defs");
+  const glow=defs.append("filter").attr("id","glow").attr("x","-60%").attr("y","-60%").attr("width","220%").attr("height","220%");
+  glow.append("feGaussianBlur").attr("stdDeviation","3.5").attr("result","b");
+  const fm=glow.append("feMerge"); fm.append("feMergeNode").attr("in","b"); fm.append("feMergeNode").attr("in","SourceGraphic");
   const zoomG=svg.append("g");
-  svg.call(d3.zoom().scaleExtent([.15,4]).on("zoom",e=>zoomG.attr("transform",e.transform)));
+  svg.call(d3.zoom().scaleExtent([.1,4]).on("zoom",e=>zoomG.attr("transform",e.transform)));
+
   const nodes=data.nodes.map(d=>({...d})), ids=new Set(nodes.map(n=>n.id));
   const links=data.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(d=>({...d}));
+  // mapa de adyacencia para el hover
+  const adj={}; links.forEach(l=>{ (adj[l.source]=adj[l.source]||new Set()).add(l.target); (adj[l.target]=adj[l.target]||new Set()).add(l.source); });
+
   sim=d3.forceSimulation(nodes)
-    .force("link",d3.forceLink(links).id(d=>d.id).distance(d=>d.kind==="routes"?70:40))
-    .force("charge",d3.forceManyBody().strength(-60))
+    .force("link",d3.forceLink(links).id(d=>d.id).distance(d=>d.kind==="routes"?95:55).strength(.5))
+    .force("charge",d3.forceManyBody().strength(-140).distanceMax(400))
     .force("center",d3.forceCenter(W/2,H/2))
-    .force("collide",d3.forceCollide().radius(d=>(TYPE_SIZE[d.type]||5)+3));
+    .force("x",d3.forceX(W/2).strength(.04)).force("y",d3.forceY(H/2).strength(.04))
+    .force("collide",d3.forceCollide().radius(d=>(RADIUS[d.type]||6)+5))
+    .alphaDecay(.028);  // se asienta suave y para (sin microcortes perpetuos)
+
   const link=zoomG.append("g").selectAll("line").data(links).join("line")
-    .attr("class",d=>"link "+d.kind).attr("stroke-width",d=>d.kind==="routes"?1.5:1);
-  const node=zoomG.append("g").selectAll("g").data(nodes).join("g")
+    .attr("class",d=>"link "+d.kind).attr("stroke-width",d=>d.kind==="routes"?1.6:1.1);
+
+  graphNodeSel=zoomG.append("g").selectAll("g").data(nodes).join("g")
     .attr("class",d=>"gnode"+(d.health==="error"?" err":""))
     .call(d3.drag()
-      .on("start",(e,d)=>{ if(!e.active) sim.alphaTarget(.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on("start",(e,d)=>{ if(!e.active) sim.alphaTarget(.2).restart(); d.fx=d.x; d.fy=d.y; })
       .on("drag",(e,d)=>{ d.fx=e.x; d.fy=e.y; })
       .on("end",(e,d)=>{ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
-  node.append("circle").attr("r",d=>TYPE_SIZE[d.type]||5).attr("fill",colorFor).on("click",(e,d)=>showDetail(d));
-  node.append("text").attr("x",d=>(TYPE_SIZE[d.type]||5)+3).attr("y",3).text(d=>d.type==="pod"?"":d.label);
+  const node=graphNodeSel;
+
+  // halo (solo visible en fallo)
+  node.append("circle").attr("class","halo").attr("r",d=>(RADIUS[d.type]||6)+5)
+    .attr("fill","#f85149").style("opacity",d=>d.health==="error"?1:0).style("filter","url(#glow)").style("pointer-events","none");
+  // cuerpo
+  node.append("circle").attr("class","body").attr("r",d=>RADIUS[d.type]||6).attr("fill",colorFor)
+    .on("click",(e,d)=>{ e.stopPropagation(); showDetail(d); });
+  // etiqueta (no en pods, hay demasiados)
+  node.append("text").attr("x",d=>(RADIUS[d.type]||6)+4).attr("y",3.5)
+    .text(d=>d.type==="pod"?"":d.label);
+
+  // hover: resaltar nodo + vecinos, atenuar el resto
+  node.on("mouseenter",(e,d)=>{
+    const near=adj[d.id]||new Set();
+    node.style("opacity",o=> (o.id===d.id||near.has(o.id))?1:.12);
+    link.style("opacity",l=> (l.source.id===d.id||l.target.id===d.id)?.9:.04);
+  }).on("mouseleave",()=>{ node.style("opacity",1); link.style("opacity",null); });
+
   sim.on("tick",()=>{
     link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
     node.attr("transform",d=>`translate(${d.x},${d.y})`);

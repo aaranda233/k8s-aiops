@@ -22,7 +22,11 @@ header{
   height:56px;background:var(--bg2);border-bottom:1px solid var(--border);
   display:flex;align-items:center;padding:0 20px;gap:0;flex-shrink:0;
 }
-.logo{font-size:15px;font-weight:bold;color:var(--blue);margin-right:28px;letter-spacing:.5px;}
+.logo{font-size:15px;font-weight:bold;color:var(--blue);margin-right:22px;letter-spacing:.5px;}
+.topnav{display:flex;gap:3px;margin-right:24px;}
+.topnav a{color:var(--dim);text-decoration:none;font-size:12px;padding:6px 11px;border-radius:6px;transition:.15s;letter-spacing:.3px;}
+.topnav a:hover{color:var(--text);background:var(--bg3);}
+.topnav a.active{color:var(--text);background:var(--bg3);}
 
 /* Pipeline flow en el header */
 .pipe-flow{display:flex;align-items:center;gap:0;flex:1;}
@@ -182,6 +186,12 @@ header{
 <!-- ══ HEADER ══ -->
 <header>
   <div class="logo">⬡ k8s-aiops</div>
+  <nav class="topnav">
+    <a href="/" class="active">Dashboard</a>
+    <a href="/incidents">Incidencias</a>
+    <a href="/chat">Chat</a>
+    <a href="/topology">Topología</a>
+  </nav>
 
   <div class="pipe-flow">
     <div class="pipe-box layer1">
