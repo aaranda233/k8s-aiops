@@ -82,18 +82,32 @@ function colorFor(n){
   return TYPE_COLOR[n.type] || "#888";
 }
 
+function setText(id, v){ const el = document.getElementById(id); if (el) el.textContent = v; }
+
 async function load(){
-  const r = await fetch("/api/topology");
-  allData = await r.json();
+  try {
+    const r = await fetch("/api/topology");
+    allData = await r.json();
+  } catch(e){
+    document.getElementById("loading").textContent = "Error cargando la topología: " + e;
+    return;
+  }
   document.getElementById("loading").style.display = "none";
+  if (allData.error){
+    const l = document.getElementById("loading");
+    l.style.display = "flex"; l.textContent = "Error: " + allData.error;
+    return;
+  }
   const st = allData.stats || {};
-  s_node.textContent = st.nodes||0; s_svc.textContent = st.services||0;
-  s_ing.textContent = st.ingresses||0; s_pod.textContent = st.pods||0;
-  s_err.textContent = st.unhealthy||0;
-  // poblar filtro de namespaces
-  const nss = [...new Set(allData.nodes.map(n=>n.namespace).filter(Boolean))].sort();
+  setText("s-node", st.nodes||0); setText("s-svc", st.services||0);
+  setText("s-ing", st.ingresses||0); setText("s-pod", st.pods||0);
+  setText("s-err", st.unhealthy||0);
+  // poblar filtro de namespaces (solo una vez)
   const sel = document.getElementById("ns-filter");
-  nss.forEach(ns=>{ const o=document.createElement("option"); o.value=ns; o.textContent=ns; sel.appendChild(o); });
+  if (sel.options.length <= 1){
+    const nss = [...new Set((allData.nodes||[]).map(n=>n.namespace).filter(Boolean))].sort();
+    nss.forEach(ns=>{ const o=document.createElement("option"); o.value=ns; o.textContent=ns; sel.appendChild(o); });
+  }
   render(allData);
 }
 
