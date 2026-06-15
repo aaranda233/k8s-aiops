@@ -12,6 +12,8 @@ This work presents an end-to-end AIOps pipeline for Kubernetes environments that
 
 The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. The final system — a Hybrid ReAct Agent combining a vanilla `qwen2.5:1.5b` investigator with a fine-tuned ORPO expert under GBNF grammar — resolves the trade-off simultaneously: **Keyword%=92.9%** (matching the unspecialized baseline) with **Parse%=98.6%** (guaranteed by grammar), all running on CPU without GPU infrastructure at inference time.
 
+Beyond detection and diagnosis, the system extends to a full **operational console** built entirely on read-only access to the Kubernetes API (no observability infrastructure required): dual detection sources (control-plane events + application logs), auto-remediation with human-in-the-loop approval via ChatOps (Microsoft Teams), a conversational read-only investigation agent ("chat with the cluster"), a live topology view, and a rule-based security posture scanner. The same investigation pipeline that diagnoses operational anomalies thus also audits security posture — all without GPU at inference time and without deploying agents into the cluster.
+
 ---
 
 ## 1. Motivation
@@ -546,7 +548,7 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 
 ---
 
-## 12. Auto-Remediation with Human-in-the-Loop
+## 13. Auto-Remediation with Human-in-the-Loop
 
 ### 12.1 Motivation
 
@@ -684,7 +686,47 @@ Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis A
 
 ---
 
-## 13. Artifacts
+## 14. Operational Console and Extended Capabilities
+
+Beyond the detection→diagnosis→remediation core, the system grew into a full operational console. Every capability below uses **only read-only Kubernetes API access** (native Python client for data gathering; the `kubectl` CLI, whitelisted to read-only verbs, for the chat and remediation layers). No Loki, Prometheus, or agents are deployed — the system stays portable and infrastructure-free.
+
+### 14.1 Dual Detection Source — Events + Application Logs
+
+Detection originally consumed only Kubernetes **Events** (control-plane signals: `Pulled`, `BackOff`, `OOMKilling`). Events are sparse — a healthy cluster emits very few. A second source was added: **application logs** (`LogCollector`, `read_namespaced_pod_log`), feeding the same Drain3 + Isolation Forest pipeline. This captures app-level signal (errors, stack traces, failed init) that never surfaces as a K8s event.
+
+Design constraints (safety-first): read-only, bounded by `since_seconds`/`tail_lines`/`max_pods`, polling (not N persistent streams), opt-in, cluster-wide or scoped to namespaces. On the production cluster, enabling logs raised per-window signal from 1-2 events to 600+ lines across 34 namespaces. Known limitation: `tail_lines` under-samples very high-volume pods — mitigated by tuning, or by swapping the source for a Loki-backed collector (the layer-1 source is pluggable; deliberately not adopted, as it adds infrastructure for capabilities the real-time use case does not require).
+
+### 14.2 Web Console — Five Views
+
+A FastAPI + WebSocket console exposes the system through five navigable views:
+
+| View | Purpose |
+|------|---------|
+| **Dashboard** | Watch the algorithm live: Drain3 templates, Isolation Forest PCA, scored windows |
+| **Incidencias** | Operations inbox: incidents with diagnosis + proposed kubectl, approve/reject |
+| **Chat** | Conversational read-only investigation of the cluster |
+| **Topología** | Live cluster map (graph + electrical-panel views) coloured by health |
+| **Seguridad** | Security posture findings by severity |
+
+The console is the human-in-the-loop control point: notifications (Teams) only alert and deep-link here; the actual decision (approve/reject/investigate) happens in the authenticated console, not in anonymous notification links.
+
+### 14.3 Conversational Investigation — "Chat with the Cluster"
+
+The `ClusterChatAgent` exposes the hybrid ReAct engine as a chat. The operator asks in natural language ("¿por qué falla el pod X?"); the base model investigates live (THOUGHT → read-only `kubectl` ACTION → OBSERVATION, streamed via SSE), then the fine-tuned ORPO expert synthesizes the final diagnosis from the gathered evidence. Safety is structural: every action passes through the read-only `kubectl_toolbox` (only `describe`/`get`/`logs`/`top`; write verbs rejected before execution). Robustness guards: the agent must investigate before concluding, rejects placeholder commands (`<namespace>`), and discovers real resource names before describing them.
+
+### 14.4 Cluster Topology — the "Electrical Panel"
+
+`TopologyCollector` builds a graph from 5 read-only list calls (node, pod, service, endpoints, ingress) with relationships Ingress→Service→Pod→Node and per-node health. The view offers two renderings: a layered flow graph (connectivity) and an "electrical panel" where each namespace is a board and each pod a breaker coloured by health — faults light up red at a glance.
+
+### 14.5 Security Posture Scanner
+
+`SecurityScanner` extends the read-only investigation from operational anomalies to **security risk**. It applies ~10 deterministic, rule-based checks over the API: privileged containers, runAsRoot, hostNetwork/PID/IPC, hostPath volumes, dangerous capabilities, mutable image tags, hardcoded secrets in env, missing resource limits, cluster-admin bindings to non-system subjects, and namespaces without NetworkPolicy. Findings carry severity (critical/high/medium/low) and a concrete recommendation.
+
+Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection must be deterministic, auditable, and free of LLM hallucination. The LLM's role is complementary and *post*-detection — contextualizing and prioritizing findings (distinguishing a legitimately-privileged CNI pod from a suspicious application pod), reachable by asking the chat about a specific finding. On the production cluster the scanner surfaced 353 findings (31 critical) in under a second, with no infrastructure installed.
+
+---
+
+## 15. Artifacts
 
 | Artifact | Location |
 |----------|----------|
@@ -697,20 +739,33 @@ Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis A
 | GGUF Q8_0 — ORPO ⭐ | [HF Hub — k8s-rca-orpo-gguf](https://huggingface.co/aaranda233/k8s-rca-orpo-gguf) (private until publication) |
 | Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
 | Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
-| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, auto_remediation |
+| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, auto_remediation, incident_store |
 | Notification (pluggable) | `src/remediation/` — base_notifier, teams_notifier (Teams), notifier (email) |
+| Log detection source | `src/collector/log_collector.py` (read-only application logs) |
+| Topology | `src/collector/topology_collector.py` |
+| Cluster chat | `src/diagnostics/cluster_chat.py` |
+| Security scanner | `src/security/scanner.py` |
+| Web console (5 views) | `web/server.py` · `web/static/{index,incidents,chat,topology,security}.html` |
 | Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
 
 ---
 
-## 14. Pending / Future Work
+## 16. Pending / Future Work
 
 - [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
 - [x] Grammar-constrained decoding — GBNF grammar via Ollama `/api/generate`
 - [x] Hybrid ReAct Agent — role separation resolves Parse%/Keyword% trade-off
-- [x] Auto-remediation with human-in-the-loop — Level 1 autonomous, Level 2 email approval, circuit breaker
+- [x] Auto-remediation with human-in-the-loop — Level 1 autonomous, Level 2 approval, circuit breaker
+- [x] Pluggable ChatOps notification — Microsoft Teams (primary) + email (fallback)
+- [x] Web operational console — Dashboard, Incidencias, Chat, Topología, Seguridad
+- [x] Dual detection source — control-plane events + application logs (read-only)
+- [x] Conversational read-only investigation agent ("chat with the cluster")
+- [x] Live cluster topology (graph + electrical-panel views)
+- [x] Rule-based security posture scanner (10 checks, read-only)
 - [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
+- [ ] Shadow-mode remediation on production cluster (generate incidents, all actions gated on approval)
+- [ ] LLM-assisted prioritization of security findings (rules detect, model contextualizes)
 - [ ] Fine-tune on larger dataset (5k+ samples with structural diversity) — prerequisite for DPO on stronger base
 - [ ] Scale to 7B model (Mistral-7B or Llama-3.1-8B) with same ORPO recipe — expected to improve both metrics
 - [ ] Benchmark against GPT-4o / Claude Sonnet on same 210-sample test set

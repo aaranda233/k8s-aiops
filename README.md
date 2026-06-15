@@ -15,9 +15,21 @@ Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isola
 └──────────────────┘   └──────────────────┘   └───────────────────────┘   └───────────────────┘
 ```
 
-1. **Detección** — eventos del cluster en ventanas de 60s, Isolation Forest con reentrenamiento continuo marca ventanas anómalas
+1. **Detección** — eventos del cluster **+ logs de aplicación** en ventanas de 60s; Isolation Forest con reentrenamiento continuo marca ventanas anómalas
 2. **Diagnóstico** — un modelo base (`qwen2.5:1.5b`) investiga con kubectl de solo lectura (THOUGHT/ACTION), luego un experto fine-tuneado (`k8s-rca-orpo`) produce `ROOT CAUSE` + `KUBECTL` con formato garantizado por GBNF grammar
-3. **Remediación** — clasifica el comando por riesgo (Level 0-3): Level 1 reversible se ejecuta solo + verifica, Level 2 requiere aprobación por email, Level 3 destructivo nunca se ejecuta. Circuit breaker previene bucles.
+3. **Remediación** — clasifica el comando por riesgo (Level 0-3): Level 1 reversible se ejecuta solo + verifica, Level 2 requiere aprobación, Level 3 destructivo nunca se ejecuta. Circuit breaker previene bucles.
+
+### Consola operativa (5 vistas, todo read-only sobre la API)
+
+| Vista | Qué hace |
+|-------|----------|
+| **Dashboard** | El algoritmo en vivo: templates Drain3, scatter PCA, ventanas puntuadas |
+| **Incidencias** | Bandeja de acciones: diagnóstico + kubectl propuesto, aprobar/rechazar |
+| **Chat** | Investigación conversacional del cluster (ReAct read-only, streaming) |
+| **Topología** | Mapa del cluster en vivo (grafo + cuadro eléctrico) coloreado por salud |
+| **Seguridad** | Escáner de postura: ~10 checks por severidad |
+
+Notificación pluggable: **Microsoft Teams** (principal) + email (fallback). Teams avisa y enlaza a la consola; la decisión humana ocurre en la web.
 
 ---
 
@@ -50,17 +62,18 @@ Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isola
 ```
 k8s-aiops/
 ├── src/
-│   ├── collector/          # Capa 1: Watch API (auto-detect in-cluster/kubeconfig)
+│   ├── collector/          # Capa 1: eventos (Watch API) + logs de app (read-only) + topología
 │   ├── parser/             # Capa 1: Drain3
 │   ├── detector/           # Capa 2: Isolation Forest + ventanas
-│   ├── diagnostics/        # Capa 3: single_shot · react · hybrid + grammar + kubectl_toolbox
-│   ├── remediation/        # Capa 4: risk_scorer · circuit_breaker · executor · notifier
+│   ├── diagnostics/        # Capa 3: single_shot · react · hybrid + grammar + chat + toolbox
+│   ├── remediation/        # Capa 4: risk_scorer · circuit_breaker · executor · notifier · incidentes
+│   ├── security/           # Escáner de postura de seguridad (read-only)
 │   └── tracking/           # MLflow
-├── tests/                  # 65 tests (pytest) — remediación y seguridad
+├── tests/                  # 119 tests (pytest)
 ├── eval/                   # Harness + 210 muestras ciegas + resultados
 ├── finetune/               # SFT · DPO · ORPO · KTO · SimPO + Modelfiles
 ├── dataset/                # Generador + 14 escenarios YAML
-├── web/                    # FastAPI + WebSocket + /health + /ready
+├── web/                    # Consola: server FastAPI + 5 vistas (static/*.html)
 ├── helm/k8s-aiops/         # Chart con RBAC de permisos mínimos
 ├── docs/ · report/         # Informe web (GitHub Pages)
 ├── Dockerfile · docker-compose.yml

@@ -528,6 +528,7 @@
     <a href="#entrenamiento">Entrenamiento</a>
     <a href="#alineacion">Alineación</a>
     <a href="#remediacion">Remediación</a>
+    <a href="#consola">Consola</a>
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
     <a href="#artifacts">Artefactos</a>
@@ -1133,6 +1134,43 @@ TEAMS_WEBHOOK_URL=https://prod.westeurope.logic.azure.com/workflows/... \
 WEBHOOK_BASE_URL=https://k8s-aiops.empresa.com \
 python main.py live</pre>
 
+  </div>
+</section>
+
+<!-- CONSOLA OPERATIVA -->
+<section id="consola">
+  <div class="container">
+    <h2>Consola Operativa y Capacidades Extendidas</h2>
+    <p class="section-lead">Más allá del núcleo detección→diagnóstico→remediación, todo sobre acceso read-only a la API de Kubernetes — sin Loki, sin Prometheus, sin agentes</p>
+
+    <p>El sistema creció hasta una consola web (FastAPI + WebSocket) de cinco vistas navegables. Toda la recopilación de datos usa el cliente Python nativo; el chat y la remediación usan la CLI <code>kubectl</code> restringida a verbos de solo lectura. Nada se despliega dentro del cluster: el sistema permanece portable y sin infraestructura.</p>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Vista</th><th>Propósito</th></tr>
+        <tr><td><strong>Dashboard</strong></td><td>El algoritmo en vivo: templates Drain3, scatter PCA del Isolation Forest, ventanas puntuadas</td></tr>
+        <tr><td><strong>Incidencias</strong></td><td>Bandeja de operaciones: incidentes con diagnóstico + kubectl propuesto, aprobar/rechazar</td></tr>
+        <tr><td><strong>Chat</strong></td><td>Investigación conversacional del cluster en lenguaje natural (ReAct read-only, streaming SSE)</td></tr>
+        <tr><td><strong>Topología</strong></td><td>Mapa del cluster en vivo (grafo de flujo + cuadro eléctrico) coloreado por salud</td></tr>
+        <tr><td><strong>Seguridad</strong></td><td>Postura de seguridad: ~10 checks por severidad</td></tr>
+      </table>
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Doble fuente de detección — eventos + logs de aplicación</h3>
+    <p>La detección consumía solo <strong>Eventos de Kubernetes</strong> (señales del plano de control), que son escasos: un cluster sano emite muy pocos. Se añadió una segunda fuente, los <strong>logs de aplicación</strong> (read-only, acotado por <code>since_seconds</code>/<code>tail_lines</code>/<code>max_pods</code>), que alimenta el mismo Drain3 + Isolation Forest. Captura señal a nivel de app (errores, trazas, fallos de init) que nunca genera un evento K8s. En el cluster de producción, activar logs elevó la señal por ventana de 1-2 eventos a 600+ líneas en 34 namespaces.</p>
+
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Chat con el cluster — investigación conversacional</h3>
+    <p>El motor híbrido ReAct expuesto como chat: el operador pregunta en lenguaje natural y el modelo base investiga en vivo (THOUGHT → <code>kubectl</code> read-only → OBSERVATION, en streaming), y el experto ORPO sintetiza el diagnóstico final. Seguridad estructural: toda acción pasa por un toolbox read-only (solo <code>describe</code>/<code>get</code>/<code>logs</code>/<code>top</code>); los verbos de escritura se rechazan antes de ejecutarse.</p>
+
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Escáner de seguridad — del fallo operativo al riesgo de seguridad</h3>
+    <p>El mismo enfoque read-only se extiende a la postura de seguridad con ~10 checks deterministas basados en reglas: contenedores privilegiados, runAsRoot, hostNetwork/hostPath, capabilities peligrosas, imágenes con tag mutable, secretos en variables de entorno, sin límites de recursos, bindings a cluster-admin y namespaces sin NetworkPolicy. Cada hallazgo lleva severidad y recomendación concreta.</p>
+    <div class="callout" style="margin-top:16px;">
+      <strong>Reglas, no LLM (a propósito):</strong> la detección de seguridad debe ser determinista, auditable y sin alucinaciones — igual que <code>trivy</code>/<code>kubescape</code>. El LLM aporta valor <em>después</em>: contextualiza y prioriza (distingue un CNI legítimamente privilegiado de un pod de aplicación sospechoso). En el cluster real surgieron 353 hallazgos (31 críticos) en menos de un segundo, sin instalar nada.
+    </div>
+
+    <div class="callout" style="margin-top:24px; border-left-color:#7c3aed;">
+      <strong>Tesis:</strong> el mismo pipeline de investigación read-only que diagnostica anomalías operativas audita también la postura de seguridad — sin GPU en inferencia y sin desplegar agentes en el cluster.
+    </div>
   </div>
 </section>
 
