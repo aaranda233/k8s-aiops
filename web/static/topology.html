@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps — Topología del cluster</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<style>
+  :root {
+    --bg:#0f1117; --surface:#181b24; --border:#2a2f3d; --text:#e6e8ee; --muted:#9aa3b2;
+    --ingress:#a78bfa; --service:#38bdf8; --pod:#34d399; --node:#fbbf24;
+    --ok:#22c55e; --warn:#eab308; --error:#ef4444; --mono:'SF Mono',Menlo,monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:14px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:17px; font-weight:700; }
+  header .sub { color:var(--muted); font-size:13px; }
+  .nav { margin-left:auto; display:flex; gap:16px; font-size:14px; }
+  .nav a { color:var(--muted); text-decoration:none; }
+  .nav a:hover, .nav a.active { color:var(--text); }
+  .bar { padding:8px 24px; border-bottom:1px solid var(--border); display:flex; gap:16px; align-items:center; font-size:13px; flex-wrap:wrap; }
+  .stat { color:var(--muted); }
+  .stat b { color:var(--text); font-size:15px; }
+  .legend { display:flex; gap:14px; margin-left:auto; align-items:center; }
+  .legend span { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; }
+  .dot { width:10px; height:10px; border-radius:50%; }
+  select { background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:13px; }
+  #graph { flex:1; position:relative; }
+  svg { width:100%; height:100%; display:block; cursor:grab; }
+  svg:active { cursor:grabbing; }
+  .link { stroke:#3a4150; stroke-opacity:0.5; }
+  .link.routes { stroke:var(--ingress); stroke-opacity:0.6; }
+  .node circle { stroke:#0f1117; stroke-width:1.5px; cursor:pointer; }
+  .node text { font-size:9px; fill:var(--muted); pointer-events:none; }
+  .node.err circle { stroke:var(--error); stroke-width:2.5px; }
+  #detail { position:absolute; top:14px; right:14px; width:280px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; font-size:13px; display:none; }
+  #detail h3 { font-size:14px; margin-bottom:8px; word-break:break-all; }
+  #detail .row { color:var(--muted); margin:3px 0; }
+  #detail .row b { color:var(--text); }
+  #detail .close { float:right; cursor:pointer; color:var(--muted); }
+  .loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ K8s-AIOps</h1><span class="sub">Topología del cluster · cuadro eléctrico</span>
+  <div class="nav">
+    <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
+    <a href="/chat">Chat</a><a href="/topology" class="active">Topología</a>
+  </div>
+</header>
+<div class="bar">
+  <span class="stat"><b id="s-node">0</b> nodos</span>
+  <span class="stat"><b id="s-svc">0</b> servicios</span>
+  <span class="stat"><b id="s-ing">0</b> ingress</span>
+  <span class="stat"><b id="s-pod">0</b> pods</span>
+  <span class="stat"><b id="s-err" style="color:var(--error)">0</b> con fallo</span>
+  <select id="ns-filter"><option value="">todos los namespaces</option></select>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--ingress)"></span>ingress</span>
+    <span><span class="dot" style="background:var(--service)"></span>service</span>
+    <span><span class="dot" style="background:var(--pod)"></span>pod</span>
+    <span><span class="dot" style="background:var(--node)"></span>nodo</span>
+    <span><span class="dot" style="background:var(--error)"></span>fallo</span>
+  </div>
+</div>
+<div id="graph">
+  <div class="loading" id="loading">Cargando topología del cluster…</div>
+  <div id="detail"></div>
+</div>
+
+<script>
+const TYPE_COLOR = { ingress:"#a78bfa", service:"#38bdf8", pod:"#34d399", node:"#fbbf24" };
+const TYPE_SIZE  = { ingress:9, service:7, pod:5, node:14 };
+const HEALTH_COLOR = { error:"#ef4444", warn:"#eab308" };
+let allData = null, sim = null;
+
+function colorFor(n){
+  if (n.health === "error") return HEALTH_COLOR.error;
+  if (n.health === "warn")  return HEALTH_COLOR.warn;
+  return TYPE_COLOR[n.type] || "#888";
+}
+
+async function load(){
+  const r = await fetch("/api/topology");
+  allData = await r.json();
+  document.getElementById("loading").style.display = "none";
+  const st = allData.stats || {};
+  s_node.textContent = st.nodes||0; s_svc.textContent = st.services||0;
+  s_ing.textContent = st.ingresses||0; s_pod.textContent = st.pods||0;
+  s_err.textContent = st.unhealthy||0;
+  // poblar filtro de namespaces
+  const nss = [...new Set(allData.nodes.map(n=>n.namespace).filter(Boolean))].sort();
+  const sel = document.getElementById("ns-filter");
+  nss.forEach(ns=>{ const o=document.createElement("option"); o.value=ns; o.textContent=ns; sel.appendChild(o); });
+  render(allData);
+}
+
+function render(data){
+  const g = document.getElementById("graph");
+  d3.select("#graph svg").remove();
+  const W = g.clientWidth, H = g.clientHeight;
+  const svg = d3.select("#graph").append("svg");
+  const zoomG = svg.append("g");
+  svg.call(d3.zoom().scaleExtent([0.15, 4]).on("zoom", e => zoomG.attr("transform", e.transform)));
+
+  // clonar para no mutar el dataset original
+  const nodes = data.nodes.map(d=>({...d}));
+  const ids = new Set(nodes.map(n=>n.id));
+  const links = data.links.filter(l=>ids.has(l.source)&&ids.has(l.target)).map(d=>({...d}));
+
+  sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d=>d.id).distance(d=>d.kind==="routes"?70:40))
+    .force("charge", d3.forceManyBody().strength(-60))
+    .force("center", d3.forceCenter(W/2, H/2))
+    .force("collide", d3.forceCollide().radius(d=>(TYPE_SIZE[d.type]||5)+3));
+
+  const link = zoomG.append("g").selectAll("line").data(links).join("line")
+    .attr("class", d=>"link "+d.kind).attr("stroke-width", d=>d.kind==="routes"?1.5:1);
+
+  const node = zoomG.append("g").selectAll("g").data(nodes).join("g")
+    .attr("class", d=>"node"+(d.health==="error"?" err":""))
+    .call(d3.drag()
+      .on("start",(e,d)=>{ if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on("drag",(e,d)=>{ d.fx=e.x; d.fy=e.y; })
+      .on("end",(e,d)=>{ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+  node.append("circle").attr("r", d=>TYPE_SIZE[d.type]||5).attr("fill", colorFor)
+    .on("click",(e,d)=>showDetail(d));
+  node.append("text").attr("x", d=>(TYPE_SIZE[d.type]||5)+3).attr("y", 3)
+    .text(d=> d.type==="pod" ? "" : d.label);  // pods sin etiqueta (demasiados)
+
+  sim.on("tick", ()=>{
+    link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
+    node.attr("transform", d=>`translate(${d.x},${d.y})`);
+  });
+}
+
+function showDetail(d){
+  const el = document.getElementById("detail");
+  el.style.display = "block";
+  el.innerHTML = `<span class="close" onclick="document.getElementById('detail').style.display='none'">✕</span>
+    <h3>${d.label}</h3>
+    <div class="row">Tipo: <b>${d.type}</b></div>
+    ${d.namespace?`<div class="row">Namespace: <b>${d.namespace}</b></div>`:""}
+    <div class="row">Estado: <b>${d.status}</b></div>
+    <div class="row">Salud: <b style="color:${colorFor(d)}">${d.health}</b></div>
+    ${d.type==="pod"?`<div class="row" style="margin-top:8px"><a href="/chat" style="color:#38bdf8">Preguntar al chat sobre este pod →</a></div>`:""}`;
+}
+
+document.getElementById("ns-filter").addEventListener("change", e=>{
+  const ns = e.target.value;
+  if(!ns){ render(allData); return; }
+  // filtrar nodos del namespace + sus vecinos directos (servicios/nodos conectados)
+  const keep = new Set(allData.nodes.filter(n=>n.namespace===ns).map(n=>n.id));
+  allData.links.forEach(l=>{ if(keep.has(l.source)) keep.add(l.target); if(keep.has(l.target)) keep.add(l.source); });
+  render({nodes: allData.nodes.filter(n=>keep.has(n.id)), links: allData.links, stats: allData.stats});
+});
+
+load();
+setInterval(load, 20000);  // refresco de salud cada 20s
+</script>
+</body>
+</html>

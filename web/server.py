@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import CollectorConfig, DetectorConfig, DiagnosticsConfig, PipelineConfig, RemediationConfig
+from src.collector.topology_collector import TopologyCollector
 from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
 from src.remediation.incident_store import IncidentStore
@@ -168,6 +169,29 @@ async def chat_stream(q: str):
 
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ------------------------------------------------------------------
+# Topología del cluster — el "cuadro eléctrico"
+# ------------------------------------------------------------------
+
+_topology: dict = {"collector": None}
+
+
+@app.get("/topology", response_class=HTMLResponse)
+async def topology_page():
+    html_path = Path(__file__).parent / "static" / "topology.html"
+    return HTMLResponse(html_path.read_text())
+
+
+@app.get("/api/topology")
+async def api_topology():
+    try:
+        if _topology["collector"] is None:
+            _topology["collector"] = TopologyCollector()
+        return _topology["collector"].build_graph()
+    except Exception as e:
+        return JSONResponse({"error": str(e), "nodes": [], "links": [], "stats": {}}, status_code=200)
 
 
 # ------------------------------------------------------------------
