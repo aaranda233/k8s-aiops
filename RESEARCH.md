@@ -562,7 +562,7 @@ All kubectl commands are classified into four levels before execution:
 |-------|-------|----------|--------|
 | 0 | Read-only | `describe`, `get`, `logs`, `top` | Execute freely |
 | 1 | Reversible | `rollout restart`, `scale`, `rollout undo` | Execute automatically |
-| 2 | Config change | `set resources`, `patch`, `set image` | Require email approval |
+| 2 | Config change | `set resources`, `patch`, `set image` | Require human approval (ChatOps) |
 | 3 | Destructive | `delete`, `drain`, `cordon`, `exec` | Never execute automatically |
 
 The classification is conservative: unknown verbs default to Level 2. This follows the principle of least privilege — the agent assumes more risk, not less, when uncertain.
@@ -581,15 +581,15 @@ Anomaly detected → Hybrid ReAct diagnosis → kubectl proposed
         ├─ Level 0 → no action (read-only, already done in investigation)
         │
         ├─ Level 1 → dry-run → execute → wait 90s → verify
-        │            success: email "resolved" + reset circuit breaker
-        │            failure: email "fix failed" + record attempt
+        │            success: notify "resolved" + reset circuit breaker
+        │            failure: notify "fix failed" + record attempt
         │
-        ├─ Level 2 → email with [APPROVE] / [REJECT] buttons
+        ├─ Level 2 → Teams card with [APPROVE] / [REJECT] buttons
         │            approved: execute → verify
         │            rejected: record + close
         │            no response in 30min: discard + notify
         │
-        └─ Level 3 → email "manual action required" + exact command
+        └─ Level 3 → notify "manual action required" + exact command
                      never executes
 ```
 
@@ -608,57 +608,60 @@ Every Level 1+ command runs `--dry-run=client` first. If dry-run fails, the real
 **Post-Fix Verification:**
 After Level 1 execution, the system waits 90 seconds and queries the affected resource. If replicas are not Ready or Warning events persist, the attempt is recorded as failed and the circuit breaker counter increments.
 
-### 12.5 Email Notification Design
+### 12.5 Pluggable Notification — ChatOps (Teams) as Primary Channel
 
-The email serves two purposes: transparency (the SRE always knows what happened) and control (Level 2 actions require explicit approval).
+Notification serves two purposes: transparency (the operator always knows what happened) and control (Level 2 actions require explicit approval). The notification layer is **pluggable** behind a common interface (`BaseNotifier`), with three implementations:
 
-Level 1 email (informational):
+| Channel | Implementation | Mechanism |
+|---------|---------------|-----------|
+| **Microsoft Teams** (primary) | `TeamsNotifier` | Adaptive Cards via Incoming Webhook |
+| Email (fallback) | `EmailNotifier` | HTML email via SMTP |
+| Both | `CompositeNotifier` | Fan-out with a shared approval token |
+
+Selected via `NOTIFY_CHANNEL=teams|email|both|none`. Email-based approval has known weaknesses in production (no authentication on the link, buried in inboxes, slow). ChatOps via Teams is the industry standard: the on-call engineer already lives in the channel, identity is handled by the platform, and the thread serves as an audit trail.
+
+Level 2 posts an Adaptive Card to the ops channel:
+
 ```
-Subject: [K8s-AIOps] ✅ Incidente auto-resuelto — namespace: producción
+⚠️ K8s-AIOps — Aprobación requerida · namespace: producción · INC-A3F2
 
-Investigation:
-  THOUGHT: Multiple pods evicted, likely memory pressure on node
-  ACTION:  kubectl describe node node-1 -n producción
-  THOUGHT: Node at 97% memory, pod scheduler hitting 498Mi/512Mi limit
+Investigación:
+  • THOUGHT: Multiple pods evicted, likely memory pressure on node
+  • ACTION:  kubectl describe node node-1 -n producción
+  • THOUGHT: Node at 97% memory, scheduler pod at 498Mi/512Mi
 
-Diagnosis:
-  Memory pressure in node-1 causing pod evictions. Scheduler pod
-  exceeding memory limit (498Mi/512Mi).
+Diagnóstico: Memory limit insuficiente en deployment/scheduler
 
-Action executed (Level 1 — automatic):
-  kubectl rollout restart deployment/scheduler -n producción
-  → Pod restarted. Anomaly score: 0.91 → 0.28 (resolved)
-```
+Acción propuesta (Level 2):
+  kubectl set resources deployment/scheduler --limits=memory=1Gi -n producción
 
-Level 2 email (approval required):
-```
-Subject: [K8s-AIOps] ⚠️ Aprobación requerida — namespace: producción
+[ ✅ APROBAR ]   [ ❌ RECHAZAR ]
 
-[same investigation and diagnosis]
-
-Proposed action (Level 2 — config change):
-  kubectl set resources deployment/scheduler \
-    --limits=memory=1Gi -n producción
-
-[✅ APROBAR]  [❌ RECHAZAR]
-
-No response in 30 minutes → action discarded automatically.
+Sin respuesta en 30 min → la acción se descarta.
 ```
 
-The approve/reject links call `GET /remediation/approve/{token}` on the web server, which updates a shared in-memory store polled by the remediation thread.
+The buttons (`Action.OpenUrl`) call `GET /remediation/approve/{token}` on the web server, which updates a shared in-memory store polled by the remediation thread. The same token mechanism is reused across all channels.
+
+**Security note on the approval token:** the command tied to a token is re-validated by the risk scorer before execution — a token cannot be used to execute a command different from the one originally proposed.
+
+**Design limitation:** with an Incoming Webhook, buttons open the approval endpoint in a browser tab. Inline confirmation (the card updating in place within Teams) requires a registered Bot Framework bot — out of scope for the current implementation but a natural extension.
 
 ### 12.6 Configuration
 
 ```bash
-# Minimal — Level 1 auto with email notifications
+# Minimal — Level 1 auto with Teams notifications
 REMEDIATION_ENABLED=true
-SMTP_USER=alerts@company.com
-SMTP_PASS=app_password
-NOTIFY_EMAIL=sre-team@company.com
+NOTIFY_CHANNEL=teams
+TEAMS_WEBHOOK_URL=https://prod.westeurope.logic.azure.com/workflows/...
+WEBHOOK_BASE_URL=https://k8s-aiops.company.com  # public URL for approval links
 
 # Optional tuning
 REMEDIATION_MAX_LEVEL=2        # allow Level 2 with approval
-WEBHOOK_BASE_URL=https://k8s-aiops.company.com  # for approval links
+
+# Email channel / fallback (NOTIFY_CHANNEL=email|both)
+SMTP_USER=alerts@company.com
+SMTP_PASS=app_password
+NOTIFY_EMAIL=sre-team@company.com
 ```
 
 By default `REMEDIATION_ENABLED=false` — the pipeline behaves exactly as before unless explicitly activated.
@@ -673,7 +676,7 @@ The remediation module advances the system from diagnosis to closed-loop operati
 | L2 | Root cause diagnosis | ✅ Hybrid ReAct + grammar |
 | L3 | Remediation proposal | ✅ kubectl suggested |
 | L4 | Autonomous remediation | ✅ Level 1 actions |
-| L4+ | Human-gated remediation | ✅ Level 2 email approval |
+| L4+ | Human-gated remediation | ✅ Level 2 ChatOps approval (Teams) |
 | L5 | Post-fix verification | ✅ 90s verify loop |
 | L5+ | Learning from outcomes | ◻ Future work |
 
@@ -694,7 +697,8 @@ Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis A
 | GGUF Q8_0 — ORPO ⭐ | [HF Hub — k8s-rca-orpo-gguf](https://huggingface.co/aaranda233/k8s-rca-orpo-gguf) (private until publication) |
 | Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
 | Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
-| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, notifier, auto_remediation |
+| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, auto_remediation |
+| Notification (pluggable) | `src/remediation/` — base_notifier, teams_notifier (Teams), notifier (email) |
 | Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
 
 ---

@@ -1059,26 +1059,41 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
 [Risk Scorer] — Level 0-3
         │
         ├─ Level 1 → dry-run → ejecutar → esperar 90s → verificar
-        │            email "resuelto" con contexto completo
+        │            notifica "resuelto" con contexto completo
         │
-        ├─ Level 2 → email con [✅ APROBAR] [❌ RECHAZAR]
+        ├─ Level 2 → tarjeta Teams con [✅ APROBAR] [❌ RECHAZAR]
         │            aprobado → ejecutar · rechazado → registrar
         │            sin respuesta en 30min → descartar
         │
-        └─ Level 3 → email "acción manual requerida" + comando exacto
+        └─ Level 3 → notifica "acción manual requerida" + comando exacto
                      NUNCA ejecuta solo</pre>
 
-    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">El email — transparencia y control</h3>
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Notificación pluggable — Teams como canal principal</h3>
+
+    <p>La capa de notificación es <strong>pluggable</strong> tras una interfaz común (<code>BaseNotifier</code>). El canal se elige con <code>NOTIFY_CHANNEL</code>:</p>
 
     <div class="table-wrap" style="margin-top:16px;">
       <table>
-        <tr><th>Tipo</th><th>Asunto</th><th>Contenido</th></tr>
+        <tr><th>Canal</th><th>Implementación</th><th>Mecanismo</th></tr>
+        <tr style="background:#f0f9ff;"><td><strong>Microsoft Teams</strong> (principal)</td><td><code>TeamsNotifier</code></td><td>Adaptive Cards vía Incoming Webhook</td></tr>
+        <tr><td>Email (fallback)</td><td><code>EmailNotifier</code></td><td>HTML vía SMTP</td></tr>
+        <tr><td>Ambos</td><td><code>CompositeNotifier</code></td><td>Fan-out con token de aprobación compartido</td></tr>
+      </table>
+    </div>
+
+    <p style="margin-top:16px;">La aprobación por email tiene debilidades en producción (sin auth en el link, se entierra en la bandeja, lenta). <strong>ChatOps vía Teams es el estándar de la industria:</strong> el on-call ya vive en el canal, la identidad la gestiona la plataforma, y el hilo queda como registro de auditoría.</p>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Tipo</th><th>Título de la tarjeta</th><th>Contenido</th></tr>
         <tr><td>Level 1</td><td>✅ Incidente auto-resuelto</td><td>Investigación · Diagnóstico · Acción ejecutada · Score antes/después</td></tr>
-        <tr><td>Level 2</td><td>⚠️ Aprobación requerida</td><td>Igual + botones APROBAR/RECHAZAR con link de webhook</td></tr>
+        <tr><td>Level 2</td><td>⚠️ Aprobación requerida</td><td>Igual + botones APROBAR/RECHAZAR (Action.OpenUrl al webhook)</td></tr>
         <tr><td>Level 3</td><td>🚨 Acción manual requerida</td><td>Igual + comando exacto para copiar/pegar</td></tr>
         <tr><td>Circuit breaker</td><td>🔴 Bucle detectado</td><td>N intentos fallidos · Requiere intervención</td></tr>
       </table>
     </div>
+
+    <p style="font-size:13px; color:var(--muted); margin-top:8px;"><strong>Límite de diseño:</strong> con Incoming Webhook los botones abren el endpoint de aprobación en el navegador. La confirmación inline (la tarjeta se actualiza dentro de Teams) requeriría un Bot del Bot Framework — extensión natural fuera del alcance actual.</p>
 
     <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Protecciones anti-bucle</h3>
 
@@ -1101,7 +1116,7 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
         <tr><td>L2</td><td>Diagnóstico de causa raíz</td><td style="color:#16a34a">✅</td><td style="color:#16a34a">✅</td></tr>
         <tr><td>L3</td><td>Propuesta de remediación</td><td style="color:#16a34a">✅</td><td style="color:#16a34a">✅</td></tr>
         <tr><td>L4</td><td>Remediación autónoma (reversible)</td><td style="color:#16a34a">✅</td><td style="color:#d97706">⚠️ cloud only</td></tr>
-        <tr><td>L4+</td><td>Remediación con aprobación humana</td><td style="color:#16a34a">✅</td><td style="color:#dc2626">❌</td></tr>
+        <tr><td>L4+</td><td>Remediación con aprobación humana (ChatOps/Teams)</td><td style="color:#16a34a">✅</td><td style="color:#dc2626">❌</td></tr>
         <tr><td>L5</td><td>Verificación post-fix</td><td style="color:#16a34a">✅</td><td style="color:#dc2626">❌ publicado</td></tr>
         <tr><td>L5+</td><td>On-premise, sin cloud</td><td style="color:#16a34a">✅ CPU local</td><td style="color:#dc2626">❌</td></tr>
       </table>
@@ -1113,9 +1128,9 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
 
     <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Activación</h3>
     <pre style="font-size:13px; margin:16px 0;">REMEDIATION_ENABLED=true \
-SMTP_USER=alerts@empresa.com \
-SMTP_PASS=app_password \
-NOTIFY_EMAIL=sre@empresa.com \
+NOTIFY_CHANNEL=teams \
+TEAMS_WEBHOOK_URL=https://prod.westeurope.logic.azure.com/workflows/... \
+WEBHOOK_BASE_URL=https://k8s-aiops.empresa.com \
 python main.py live</pre>
 
   </div>

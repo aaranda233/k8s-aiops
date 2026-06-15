@@ -96,14 +96,15 @@ docker compose exec ollama ollama pull qwen2.5:1.5b
 # Modo seguro: solo lectura, sin remediación
 helm install aiops helm/k8s-aiops/ -n aiops --create-namespace
 
-# Con remediación Level 1 + permisos de escritura + email
+# Con remediación Level 1 + permisos de escritura + notificación Teams
 helm install aiops helm/k8s-aiops/ -n aiops --create-namespace \
   --set remediation.enabled=true \
   --set rbac.allowRemediation=true \
-  --set smtp.user=alerts@empresa.com \
-  --set smtp.password=APP_PASSWORD \
-  --set smtp.notifyEmail=sre@empresa.com
+  --set remediation.notifyChannel=teams \
+  --set remediation.teamsWebhookUrl=https://prod.westeurope.logic.azure.com/workflows/...
 ```
+
+Las aprobaciones llegan al canal de **Microsoft Teams** del equipo como Adaptive Cards con botones APROBAR/RECHAZAR. Canal configurable (`NOTIFY_CHANNEL=teams|email|both`).
 
 El RBAC es **read-only por defecto**. Los permisos de escritura (`patch`/`scale` sobre deployments) solo se conceden con `rbac.allowRemediation=true`; `delete`/`drain` nunca.
 
