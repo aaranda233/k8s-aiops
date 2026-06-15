@@ -3,68 +3,100 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>K8s-AIOps — Chat con el cluster</title>
+<title>K8s-AIOps · Chat con el cluster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:#0f1117; --surface:#181b24; --surface2:#1f2330; --border:#2a2f3d;
-    --text:#e6e8ee; --muted:#9aa3b2; --blue:#3b82f6; --green:#22c55e;
-    --yellow:#eab308; --purple:#a78bfa; --red:#ef4444; --mono:'SF Mono',Menlo,monospace;
+    --bg:#0a0d13; --panel:#141a26; --panel2:#1a212f; --rail:#0c1018;
+    --border:#222a3a; --border-soft:#1a2130; --text:#e8ebf2; --muted:#8b94a7; --muted2:#5c6577;
+    --accent:#4f8ff7; --teal:#2dd4bf; --ok:#3fb950; --warn:#d29922; --error:#f85149; --purple:#bc8cff;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 12px 32px -8px rgba(0,0,0,.6);
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text); line-height:1.55; height:100vh; display:flex; flex-direction:column; }
-  header { padding:18px 28px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; }
-  header h1 { font-size:18px; font-weight:700; }
-  header .sub { color:var(--muted); font-size:13px; }
-  header .ro { margin-left:auto; font-size:12px; color:var(--green); border:1px solid rgba(34,197,94,.3); padding:3px 10px; border-radius:20px; }
-  .nav { padding:10px 28px; border-bottom:1px solid var(--border); display:flex; gap:18px; font-size:14px; }
-  .nav a { color:var(--muted); text-decoration:none; }
-  .nav a:hover { color:var(--text); }
-  .chat { flex:1; overflow-y:auto; padding:24px 28px; }
-  .wrap { max-width:860px; margin:0 auto; }
-  .msg { margin-bottom:18px; }
+  body { font-family:'Inter',system-ui,sans-serif; background:
+      radial-gradient(1200px 600px at 75% -10%, rgba(79,143,247,.05), transparent), var(--bg);
+      color:var(--text); height:100vh; display:flex; flex-direction:column; -webkit-font-smoothing:antialiased; }
+  svg.icon { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+  header { padding:0 22px; height:56px; border-bottom:1px solid var(--border-soft);
+      display:flex; align-items:center; gap:13px; background:rgba(10,13,19,.7); backdrop-filter:blur(8px); }
+  .logo { display:flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px;
+      background:linear-gradient(135deg,#1e3a6e,#0f1d38); border:1px solid #2a467e; color:#7fb0ff; }
+  .brand { font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .brand span { color:var(--muted2); font-weight:500; }
+  .ro { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ok);
+      border:1px solid rgba(63,185,80,.3); background:rgba(63,185,80,.08); padding:4px 11px; border-radius:20px; }
+  .nav { display:flex; gap:4px; }
+  .nav a { color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:500; padding:7px 12px; border-radius:7px; transition:.15s; }
+  .nav a:hover { color:var(--text); background:var(--panel); }
+  .nav a.active { color:var(--text); background:var(--panel2); }
+  .subbar { padding:9px 22px; border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:10px; }
+
+  .chat { flex:1; overflow-y:auto; padding:26px 22px; }
+  .chat::-webkit-scrollbar { width:10px; } .chat::-webkit-scrollbar-thumb { background:var(--border); border-radius:5px; }
+  .wrap { max-width:880px; margin:0 auto; }
+  .msg { margin-bottom:20px; animation:rise .25s ease; }
+  @keyframes rise { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .user { display:flex; justify-content:flex-end; }
-  .user .bubble { background:var(--blue); color:#fff; padding:10px 16px; border-radius:14px 14px 2px 14px; max-width:75%; }
-  .agent { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
-  .step { margin:8px 0; padding-left:24px; position:relative; font-size:14px; }
-  .step .ic { position:absolute; left:0; top:1px; }
-  .thought { color:var(--muted); }
-  .action .cmd { font-family:var(--mono); font-size:13px; background:#0b0d12; color:#9ae6b4; padding:8px 12px; border-radius:8px; margin-top:4px; overflow-x:auto; }
-  .obs { font-family:var(--mono); font-size:12px; color:var(--muted); background:var(--surface2); padding:8px 12px; border-radius:8px; margin-top:4px; max-height:160px; overflow:auto; white-space:pre-wrap; }
-  .answer { border-left:3px solid var(--green); padding:12px 16px; background:rgba(34,197,94,.06); border-radius:0 8px 8px 0; margin-top:12px; white-space:pre-wrap; }
-  .err { color:var(--red); }
-  .thinking { color:var(--purple); font-size:13px; font-style:italic; }
-  .examples { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-  .chip { font-size:13px; background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 12px; border-radius:18px; cursor:pointer; }
-  .chip:hover { color:var(--text); border-color:var(--blue); }
-  footer { border-top:1px solid var(--border); padding:16px 28px; }
-  .inputbar { max-width:860px; margin:0 auto; display:flex; gap:10px; }
-  input { flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text); padding:12px 16px; border-radius:10px; font-size:15px; font-family:inherit; outline:none; }
-  input:focus { border-color:var(--blue); }
-  button { background:var(--blue); color:#fff; border:none; padding:12px 22px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
+  .user .bubble { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; padding:11px 16px;
+      border-radius:14px 14px 3px 14px; max-width:75%; font-size:14.5px; box-shadow:var(--shadow); }
+  .agent { background:linear-gradient(180deg,rgba(255,255,255,.015),transparent), var(--panel);
+      border:1px solid var(--border-soft); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow); }
+  .agent-head { display:flex; align-items:center; gap:9px; margin-bottom:6px; color:var(--teal); font-weight:600; font-size:13px; }
+  .step { margin:9px 0; padding-left:26px; position:relative; font-size:14px; }
+  .step .ic { position:absolute; left:0; top:1px; color:var(--muted2); display:flex; }
+  .step.thought { color:var(--muted); }
+  .step.thought .ic { color:var(--purple); }
+  .step.action .ic { color:var(--teal); }
+  .cmd { font-family:var(--mono); font-size:12.5px; background:var(--rail); color:#7ee0c0; padding:9px 13px;
+      border-radius:8px; margin-top:5px; overflow-x:auto; border:1px solid var(--border-soft); }
+  .obs { font-family:var(--mono); font-size:12px; color:var(--muted); background:var(--rail); padding:9px 13px;
+      border-radius:8px; margin-top:5px; max-height:180px; overflow:auto; white-space:pre-wrap; border:1px solid var(--border-soft); }
+  .answer { border-left:3px solid var(--ok); padding:13px 17px; background:rgba(63,185,80,.06);
+      border-radius:0 10px 10px 0; margin-top:14px; white-space:pre-wrap; font-size:14.5px; line-height:1.6; }
+  .err { color:var(--error); }
+  .thinking { display:flex; align-items:center; gap:9px; color:var(--purple); font-size:13.5px; }
+  .thinking .spinner { width:15px; height:15px; border:2px solid var(--border); border-top-color:var(--purple); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .examples { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  .chip { font-size:13px; background:var(--panel2); border:1px solid var(--border-soft); color:var(--muted);
+      padding:7px 13px; border-radius:9px; cursor:pointer; transition:.15s; }
+  .chip:hover { color:var(--text); border-color:var(--accent); background:var(--panel); }
+  footer { border-top:1px solid var(--border-soft); padding:16px 22px; background:rgba(10,13,19,.6); }
+  .inputbar { max-width:880px; margin:0 auto; display:flex; gap:10px; }
+  .field { flex:1; display:flex; align-items:center; gap:10px; background:var(--panel); border:1px solid var(--border);
+      border-radius:11px; padding:0 14px; transition:.15s; }
+  .field:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px rgba(79,143,247,.12); }
+  .field svg { color:var(--muted2); }
+  input { flex:1; background:transparent; border:none; color:var(--text); padding:13px 0; font-size:15px; font-family:inherit; outline:none; }
+  button.send { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:none; padding:0 20px;
+      border-radius:11px; font-size:14px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:7px; transition:.15s; }
+  button.send:hover { filter:brightness(1.08); }
+  button.send:disabled { opacity:.5; cursor:not-allowed; }
 </style>
 </head>
 <body>
 <header>
-  <h1>🛡️ K8s-AIOps</h1>
-  <span class="sub">Chat con el cluster</span>
-  <span class="ro">🔒 solo lectura</span>
+  <div class="logo"><svg class="icon" viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+  <div class="brand">K8s-AIOps <span>· Chat</span></div>
+  <span class="ro"><svg class="icon" viewBox="0 0 24 24" style="width:13px;height:13px"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>solo lectura</span>
+  <nav class="nav" style="margin-left:18px">
+    <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
+    <a href="/chat" class="active">Chat</a><a href="/topology">Topología</a>
+  </nav>
 </header>
-<div class="nav">
-  <a href="/">Dashboard</a>
-  <a href="/incidents">Incidencias</a>
-  <a href="/chat" style="color:var(--text)">Chat</a>
-  <a href="/topology">Topología</a>
-</div>
 
 <div class="chat" id="chat">
   <div class="wrap">
     <div class="agent">
-      <p>👋 Pregúntame sobre el estado del cluster. Investigo en vivo con <code>kubectl</code> de solo lectura.</p>
+      <div class="agent-head"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>Asistente del cluster</div>
+      <p style="color:var(--muted);font-size:14.5px">Pregúntame sobre el estado del cluster. Investigo en vivo con <code style="font-family:var(--mono);color:var(--teal)">kubectl</code> de solo lectura y razono paso a paso.</p>
       <div class="examples">
         <span class="chip" onclick="ask(this.textContent)">¿Qué pasa en producción?</span>
         <span class="chip" onclick="ask(this.textContent)">¿Hay pods en CrashLoopBackOff?</span>
-        <span class="chip" onclick="ask(this.textContent)">¿Por qué se reinicia el pod api-gateway?</span>
+        <span class="chip" onclick="ask(this.textContent)">¿Por qué se reinicia oauth2-proxy-vllm?</span>
         <span class="chip" onclick="ask(this.textContent)">¿Cómo está el uso de memoria de los nodos?</span>
       </div>
     </div>
@@ -73,82 +105,54 @@
 
 <footer>
   <div class="inputbar">
-    <input id="q" placeholder="¿Qué quieres saber del cluster?" autofocus
-           onkeydown="if(event.key==='Enter'&&!this.disabled) send()">
-    <button id="btn" onclick="send()">Preguntar</button>
+    <div class="field">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16v12H7l-3 3z"/></svg>
+      <input id="q" placeholder="¿Qué quieres saber del cluster?" autofocus onkeydown="if(event.key==='Enter'&&!this.disabled) send()">
+    </div>
+    <button class="send" id="btn" onclick="send()">
+      Preguntar
+      <svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
   </div>
 </footer>
 
 <script>
-const chat = document.getElementById("chat");
-const input = document.getElementById("q");
-const btn = document.getElementById("btn");
-let streaming = false;
-
+const chat=document.getElementById("chat"), input=document.getElementById("q"), btn=document.getElementById("btn");
+let streaming=false;
+const I = {
+  thought:'<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>',
+  action:'<svg class="icon" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/><path d="M4 6v12"/></svg>',
+  obs:'<svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.5"/></svg>',
+  err:'<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>',
+};
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function scroll(){ chat.scrollTop = chat.scrollHeight; }
+function scroll(){ chat.scrollTop=chat.scrollHeight; }
 function wrap(){ return chat.querySelector(".wrap"); }
-
-function ask(text){ input.value = text; send(); }
-
-function addUser(text){
-  const d = document.createElement("div");
-  d.className = "msg user";
-  d.innerHTML = `<div class="bubble">${esc(text)}</div>`;
-  wrap().appendChild(d); scroll();
-}
-
+function ask(t){ input.value=t; send(); }
+function addUser(t){ const d=document.createElement("div"); d.className="msg user"; d.innerHTML=`<div class="bubble">${esc(t)}</div>`; wrap().appendChild(d); scroll(); }
 function newAgentMsg(){
-  const d = document.createElement("div");
-  d.className = "msg agent";
-  d.innerHTML = `<div class="thinking">🔎 Investigando…</div>`;
-  wrap().appendChild(d); scroll();
-  return d;
+  const d=document.createElement("div"); d.className="msg agent";
+  d.innerHTML=`<div class="thinking"><div class="spinner"></div>Investigando el cluster…</div>`;
+  wrap().appendChild(d); scroll(); return d;
 }
+function add(parent,html){ const t=document.createElement("div"); t.innerHTML=html; parent.appendChild(t.firstElementChild); }
 
 function send(){
-  const q = input.value.trim();
-  if (!q || streaming) return;
-  addUser(q);
-  input.value = "";
-  streaming = true; btn.disabled = true; input.disabled = true;
-
-  const box = newAgentMsg();
-  const steps = document.createElement("div");
-  box.appendChild(steps);
-
-  const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(q)}`);
-  es.onmessage = (e) => {
-    const ev = JSON.parse(e.data);
-    const thinking = box.querySelector(".thinking");
-    if (ev.type === "thought") {
-      add(steps, `<div class="step thought"><span class="ic">💭</span>${esc(ev.text)}</div>`);
-    } else if (ev.type === "action") {
-      add(steps, `<div class="step action"><span class="ic">⚡</span>Ejecuto:<div class="cmd">${esc(ev.command)}</div></div>`);
-    } else if (ev.type === "observation") {
-      add(steps, `<div class="step"><span class="ic">👁️</span><div class="obs">${esc(ev.text)}</div></div>`);
-    } else if (ev.type === "answer") {
-      if (thinking) thinking.remove();
-      add(steps, `<div class="answer">${esc(ev.text)}</div>`);
-    } else if (ev.type === "error") {
-      if (thinking) thinking.remove();
-      add(steps, `<div class="step err"><span class="ic">❌</span>${esc(ev.text)}</div>`);
-    } else if (ev.type === "done") {
-      const t = box.querySelector(".thinking"); if (t) t.remove();
-      es.close(); streaming = false; btn.disabled = false; input.disabled = false; input.focus();
-    }
+  const q=input.value.trim(); if(!q||streaming) return;
+  addUser(q); input.value=""; streaming=true; btn.disabled=true; input.disabled=true;
+  const box=newAgentMsg(); const steps=document.createElement("div"); box.appendChild(steps);
+  const es=new EventSource(`/api/chat/stream?q=${encodeURIComponent(q)}`);
+  es.onmessage=(e)=>{
+    const ev=JSON.parse(e.data); const thinking=box.querySelector(".thinking");
+    if(ev.type==="thought") add(steps,`<div class="step thought"><span class="ic">${I.thought}</span>${esc(ev.text)}</div>`);
+    else if(ev.type==="action") add(steps,`<div class="step action"><span class="ic">${I.action}</span>Ejecuto:<div class="cmd">${esc(ev.command)}</div></div>`);
+    else if(ev.type==="observation") add(steps,`<div class="step"><span class="ic">${I.obs}</span><div class="obs">${esc(ev.text)}</div></div>`);
+    else if(ev.type==="answer"){ if(thinking) thinking.remove(); add(steps,`<div class="answer">${esc(ev.text)}</div>`); }
+    else if(ev.type==="error"){ if(thinking) thinking.remove(); add(steps,`<div class="step err"><span class="ic">${I.err}</span>${esc(ev.text)}</div>`); }
+    else if(ev.type==="done"){ const t=box.querySelector(".thinking"); if(t) t.remove(); es.close(); streaming=false; btn.disabled=false; input.disabled=false; input.focus(); }
     scroll();
   };
-  es.onerror = () => {
-    const t = box.querySelector(".thinking"); if (t) t.remove();
-    es.close(); streaming = false; btn.disabled = false; input.disabled = false;
-  };
-}
-
-function add(parent, html){
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
-  parent.appendChild(tmp.firstChild);
+  es.onerror=()=>{ const t=box.querySelector(".thinking"); if(t) t.remove(); es.close(); streaming=false; btn.disabled=false; input.disabled=false; };
 }
 </script>
 </body>
