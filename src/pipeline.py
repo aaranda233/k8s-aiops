@@ -6,6 +6,7 @@ Modos:
   - live:    stream continuo via Watch API
 """
 
+import logging
 import threading
 import time
 
@@ -25,6 +26,7 @@ from src.remediation.base_notifier import build_notifier
 from src.tracking.mlflow_tracker import MLflowTracker, RetrainEvent
 
 console = Console()
+log = logging.getLogger("aiops.pipeline")
 
 
 class AIOPsPipeline:
@@ -360,13 +362,20 @@ class AIOPsPipeline:
                 ]
             self._emit("rca", rca_event)
 
+            log.info("RCA OK ventana %s: %s", scored.window.index, result.root_cause[:120])
+
             # Auto-remediación en hilo de fondo (no bloquea el pipeline)
             if self.remediation:
                 self.remediation.handle_async(scored, result)
 
         except Exception as e:
+            # El diagnóstico falló — registramos el error COMPLETO al log de fichero
+            # y creamos igualmente el incidente para que la consola nunca quede vacía.
+            log.exception("Error en RCA para ventana %s", scored.window.index)
             console.print(f"  [red]Error RCA: {e}[/]")
             self._emit("rca", {"error": str(e), "window_index": scored.window.index})
+            if self.remediation:
+                self.remediation.register_failed_diagnosis(scored, str(e))
 
     # ------------------------------------------------------------------
     # Helpers

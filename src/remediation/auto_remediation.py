@@ -18,6 +18,7 @@ incident.response — sobre el que este orquestador hace polling.
 Se ejecuta en hilo de fondo para no bloquear el pipeline principal.
 """
 
+import logging
 import threading
 import time
 import uuid
@@ -53,6 +54,7 @@ from src.remediation.incident_store import (
 from src.remediation.risk_scorer import score as risk_score
 
 console = Console()
+log = logging.getLogger("aiops.remediation")
 
 _VERIFY_WAIT_SECONDS = 90
 _APPROVAL_TIMEOUT_SECONDS = 1800  # 30 minutos
@@ -100,11 +102,43 @@ class AutoRemediation:
     def handle_async(self, scored_window, diagnosis: DiagnosisResult) -> None:
         """Lanza el loop de remediación en un hilo de fondo."""
         t = threading.Thread(
-            target=self._handle,
+            target=self._handle_safe,
             args=(scored_window, diagnosis),
             daemon=True,
         )
         t.start()
+
+    def _handle_safe(self, scored_window, diagnosis: DiagnosisResult) -> None:
+        # Garantiza que un fallo en el hilo de remediación no desaparezca en silencio.
+        try:
+            self._handle(scored_window, diagnosis)
+        except Exception as e:
+            log.exception("Fallo en el hilo de remediación")
+            console.print(f"  [red]Fallo en remediación: {e}[/]")
+
+    def register_failed_diagnosis(self, scored_window, error: str) -> str:
+        """Crea un incidente aunque el diagnóstico haya fallado, para que la
+        consola NUNCA se quede vacía ante una anomalía detectada."""
+        import uuid as _uuid
+        incident_id = f"INC-{_uuid.uuid4().hex[:8].upper()}"
+        w = scored_window.window
+        inc = Incident(
+            id=incident_id,
+            created_at=time.time(),
+            namespaces=sorted(w.namespaces),
+            score=scored_window.score,
+            root_cause=f"No se pudo diagnosticar automáticamente (error: {error}). "
+                       f"Anomalía real detectada; revisa la ventana manualmente.",
+            kubectl_cmd="kubectl get events --all-namespaces --sort-by='.lastTimestamp'",
+            risk_level=2,
+            risk_label="sin diagnóstico",
+            investigation=[],
+            status=STATUS_ESCALATED,
+        )
+        self.incidents.add(inc)
+        log.warning("Incidente sin diagnóstico registrado: %s (%s)", incident_id, error)
+        self._notify(inc, KIND_MANUAL)
+        return incident_id
 
     def _handle(self, scored_window, diagnosis: DiagnosisResult) -> RemediationResult:
         incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"

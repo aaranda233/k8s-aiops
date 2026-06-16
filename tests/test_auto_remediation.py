@@ -173,6 +173,21 @@ class RemediationResultStub:
 
 
 @pytest.mark.unit
+def test_failed_diagnosis_still_creates_incident(scored_window):
+    """Si el diagnóstico falla, la consola NUNCA debe quedar vacía: se crea incidente."""
+    notifier = MagicMock()
+    rem = AutoRemediation(notifier=notifier, incident_store=IncidentStore())
+    iid = rem.register_failed_diagnosis(scored_window, "Ollama timeout")
+    inc = rem.incidents.get(iid)
+    assert inc is not None
+    assert inc.status == STATUS_ESCALATED
+    assert "no se pudo diagnosticar" in inc.root_cause.lower()
+    assert KIND_MANUAL in _kinds(notifier)
+    # aparece en el listado de la consola
+    assert any(i.id == iid for i in rem.incidents.list())
+
+
+@pytest.mark.unit
 def test_incident_registered_in_store(scored_window, diagnosis, monkeypatch):
     diagnosis.kubectl_command = "kubectl get pods -n producción"
     rem = _rem(MagicMock())

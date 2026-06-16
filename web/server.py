@@ -7,6 +7,7 @@ a todos los clientes conectados via WebSocket.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -25,6 +26,16 @@ from src.pipeline import AIOPsPipeline
 from src.remediation.incident_store import IncidentStore
 from src.security.scanner import SecurityScanner
 from web.event_bus import bus
+
+# Logging a fichero (observabilidad independiente de cómo se lance el proceso).
+# AIOPS_LOG_FILE=/ruta/al.log activa el FileHandler en el logger 'aiops.*'.
+_log_file = os.getenv("AIOPS_LOG_FILE", "")
+if _log_file:
+    _fh = logging.FileHandler(_log_file)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _root = logging.getLogger("aiops")
+    _root.addHandler(_fh)
+    _root.setLevel(logging.INFO)
 
 # Registro de incidentes compartido entre el pipeline (remediación) y la consola
 incident_store = IncidentStore()
