@@ -1,8 +1,9 @@
 """
 Tests del executor seguro.
 
-CRÍTICO: el dry-run debe ejecutarse SIEMPRE antes del comando real,
-y si el dry-run falla, el comando real NUNCA debe ejecutarse.
+CRÍTICO: para los comandos que soportan --dry-run, este debe ejecutarse SIEMPRE
+antes del comando real, y si falla, el real NUNCA debe ejecutarse. Los comandos
+que no soportan --dry-run (rollout restart/undo) se ejecutan directamente.
 """
 
 from unittest.mock import MagicMock, patch
@@ -24,7 +25,7 @@ def _proc(returncode=0, stdout="ok", stderr=""):
 def test_dryrun_runs_before_real():
     with patch.object(executor.subprocess, "run") as mock_run:
         mock_run.side_effect = [_proc(0, "dry ok"), _proc(0, "real ok")]
-        result = executor.execute_with_dryrun("kubectl rollout restart deployment/x -n prod")
+        result = executor.execute_with_dryrun("kubectl scale deployment/x -n prod --replicas=2")
 
     # Primera llamada debe contener --dry-run=client
     first_call_args = mock_run.call_args_list[0].args[0]
@@ -41,7 +42,7 @@ def test_real_command_not_executed_if_dryrun_fails():
     """El test de seguridad clave: dry-run fallido → no ejecuta real."""
     with patch.object(executor.subprocess, "run") as mock_run:
         mock_run.return_value = _proc(returncode=1, stderr="error de validación")
-        result = executor.execute_with_dryrun("kubectl rollout restart deployment/x")
+        result = executor.execute_with_dryrun("kubectl scale deployment/x --replicas=2")
 
     # Solo se llamó UNA vez (el dry-run), nunca el real
     assert mock_run.call_count == 1
@@ -49,6 +50,21 @@ def test_real_command_not_executed_if_dryrun_fails():
     assert result.executed is False
     assert result.success is False
     assert result.error is not None
+
+
+@pytest.mark.unit
+def test_rollout_restart_skips_dryrun_and_executes():
+    """rollout restart NO soporta --dry-run → se ejecuta directamente (1 sola llamada)."""
+    with patch.object(executor.subprocess, "run") as mock_run:
+        mock_run.return_value = _proc(0, "deployment restarted")
+        result = executor.execute_with_dryrun("kubectl rollout restart deployment/x -n prod")
+
+    assert mock_run.call_count == 1  # solo el comando real, sin dry-run
+    only_call = mock_run.call_args_list[0].args[0]
+    assert "--dry-run" not in " ".join(only_call)
+    assert result.executed is True
+    assert result.success is True
+    assert result.dry_run_ok is True  # no bloqueó
 
 
 @pytest.mark.unit
@@ -67,7 +83,7 @@ def test_timeout_handled_gracefully():
     import subprocess as sp
     with patch.object(executor.subprocess, "run") as mock_run:
         mock_run.side_effect = sp.TimeoutExpired(cmd="kubectl", timeout=30)
-        result = executor.execute_with_dryrun("kubectl rollout restart deployment/x")
+        result = executor.execute_with_dryrun("kubectl scale deployment/x --replicas=2")
     assert result.success is False
     assert "Timeout" in (result.dry_run_output + (result.error or ""))
 
@@ -76,6 +92,6 @@ def test_timeout_handled_gracefully():
 def test_kubectl_not_found_handled():
     with patch.object(executor.subprocess, "run") as mock_run:
         mock_run.side_effect = FileNotFoundError()
-        result = executor.execute_with_dryrun("kubectl rollout restart deployment/x")
+        result = executor.execute_with_dryrun("kubectl scale deployment/x --replicas=2")
     assert result.success is False
     assert result.executed is False

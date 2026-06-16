@@ -11,6 +11,11 @@ from dataclasses import dataclass
 _TIMEOUT = 30
 _MAX_OUTPUT = 100  # líneas
 
+# Comandos que NO soportan --dry-run (kubectl rechaza el flag). Son operaciones
+# reversibles que ya han pasado el risk scoring y, si aplica, la aprobación
+# humana, así que se ejecutan directamente sin el gate de dry-run.
+_NO_DRYRUN = [("rollout", "restart"), ("rollout", "undo")]
+
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -23,22 +28,33 @@ class ExecutionResult:
     error: str | None = None
 
 
+def _supports_dryrun(cmd: str) -> bool:
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return True
+    rest = [p.lower() for p in parts[1:]]  # tras 'kubectl'
+    return not any(rest[:len(pat)] == list(pat) for pat in _NO_DRYRUN)
+
+
 def execute_with_dryrun(kubectl_command: str) -> ExecutionResult:
-    """Ejecuta primero dry-run, luego el comando real si todo va bien."""
+    """Ejecuta dry-run primero (si el comando lo soporta), luego el comando real."""
     cmd = kubectl_command.strip()
 
-    # Dry-run
-    dry_output, dry_ok = _run(cmd + " --dry-run=client")
-    if not dry_ok:
-        return ExecutionResult(
-            command=cmd,
-            dry_run_ok=False,
-            dry_run_output=dry_output,
-            executed=False,
-            real_output="",
-            success=False,
-            error=f"Dry-run falló: {dry_output[:200]}",
-        )
+    if _supports_dryrun(cmd):
+        dry_output, dry_ok = _run(cmd + " --dry-run=client")
+        if not dry_ok:
+            return ExecutionResult(
+                command=cmd,
+                dry_run_ok=False,
+                dry_run_output=dry_output,
+                executed=False,
+                real_output="",
+                success=False,
+                error=f"Dry-run falló: {dry_output[:200]}",
+            )
+    else:
+        dry_output = "(dry-run no soportado para este comando; se ejecuta directamente)"
 
     # Real
     real_output, real_ok = _run(cmd)
