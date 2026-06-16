@@ -3,6 +3,7 @@ Capa 3 — Root Cause Analysis via SLM local (Ollama).
 Solo se activa de forma reactiva cuando score >= threshold.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,14 @@ import httpx
 
 if TYPE_CHECKING:
     pass
+
+# Comando kubectl real (verbo conocido) — evita capturar cabeceras como
+# "KUBECTL COMMANDS:" que el modelo a veces emite en vez de un comando.
+_KUBECTL_RE = re.compile(
+    r"(kubectl\s+(?:get|describe|logs|top|rollout|scale|delete|apply|patch|set|"
+    r"edit|exec|cordon|drain|annotate|label|create|expose|run|explain)\b.*)",
+    re.IGNORECASE,
+)
 
 _SYSTEM_PROMPT = """\
 You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
@@ -53,23 +62,37 @@ def parse_diagnosis(text: str) -> tuple[str, str]:
     el patrón estricto, usa el texto del modelo como causa (mejor que "no parseable")
     y un kubectl por defecto. Nunca devuelve "Could not parse" si el modelo dijo algo.
     """
+    lines = text.splitlines()
     root_cause = None
-    kubectl_cmd = None
-    for raw in text.splitlines():
-        line = raw.strip().strip("*").strip()
-        low = line.lower()
-        if root_cause is None and low.startswith("root cause"):
-            root_cause = line.split(":", 1)[1].strip() if ":" in line else ""
-        if kubectl_cmd is None and low.startswith("kubectl"):
-            ki = low.find("kubectl ")  # salta un posible prefijo "KUBECTL: "
-            if ki != -1:
-                kubectl_cmd = line[ki:].strip().strip("`").strip()
+    for i, raw in enumerate(lines):
+        line = raw.strip().lstrip("#*->").strip()  # tolera markdown/viñetas
+        if line.lower().startswith("root cause"):
+            after = line.split(":", 1)[1].strip() if ":" in line else ""
+            if after:
+                root_cause = after
+            else:
+                # Cabecera sin contenido en la misma línea → tomar las siguientes
+                # hasta la sección de comandos.
+                rest = []
+                for nxt in lines[i + 1:]:
+                    s = nxt.strip().lstrip("#*->").strip()
+                    if not s or s.lower().startswith("kubectl"):
+                        break
+                    rest.append(s)
+                root_cause = " ".join(rest).strip() or None
+            break
+
+    # kubectl: primer comando REAL en cualquier parte del texto (ignora cabeceras).
+    m = _KUBECTL_RE.search(text)
+    kubectl_cmd = m.group(1).strip().strip("`").strip() if m else None
 
     if not root_cause:
-        # Fallback: usar el texto del modelo (sin la línea de comando) como causa.
-        cleaned = [l.strip() for l in text.splitlines()
+        # Fallback: usar el texto del modelo (sin las líneas de comando) como causa.
+        cleaned = [l.strip().lstrip("#*->").strip() for l in lines
                    if l.strip() and "kubectl" not in l.lower()]
         root_cause = " ".join(cleaned)[:400] if cleaned else "Sin causa raíz determinable."
+    # Seguridad: quitar un prefijo "ROOT CAUSE:" redundante si quedó.
+    root_cause = re.sub(r"^\s*root cause\s*:?\s*", "", root_cause, flags=re.IGNORECASE).strip() or root_cause
     if not kubectl_cmd:
         kubectl_cmd = _DEFAULT_KUBECTL
     return root_cause, kubectl_cmd

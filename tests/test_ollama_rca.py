@@ -49,6 +49,38 @@ def test_parse_extracts_bare_kubectl_command():
     assert kc == "kubectl logs api -n prod --tail=20"
 
 
+@pytest.mark.unit
+def test_parse_real_model_format_header_and_numbered_list():
+    """Formato real del modelo: 'KUBECTL COMMANDS:' (cabecera) + lista numerada."""
+    text = (
+        "ROOT CAUSE: The PostgreSQL database is running out of memory and "
+        "dropping connections.\n"
+        "KUBECTL COMMANDS:\n"
+        "1. kubectl describe pod postgres-0 -n db\n"
+        "2. kubectl top pod -n db"
+    )
+    rc, kc = parse_diagnosis(text)
+    # El prefijo 'ROOT CAUSE:' se elimina; no se captura la cabecera como comando
+    assert rc.startswith("The PostgreSQL")
+    assert "ROOT CAUSE" not in rc
+    assert kc == "kubectl describe pod postgres-0 -n db"
+    assert "COMMANDS" not in kc
+
+
+@pytest.mark.unit
+def test_parse_multiline_root_cause_after_header():
+    text = (
+        "ROOT CAUSE:\n"
+        "The node ran out of disk space.\n"
+        "Pods were evicted as a result.\n"
+        "KUBECTL: kubectl describe node worker"
+    )
+    rc, kc = parse_diagnosis(text)
+    assert "disk space" in rc
+    assert "evicted" in rc.lower()
+    assert kc == "kubectl describe node worker"
+
+
 # ── build_event_sample: acotado ─────────────────────────────────────────────
 
 @pytest.mark.unit
