@@ -121,6 +121,37 @@ def test_reject_existing_incident(client):
 
 
 @pytest.mark.unit
+def test_demo_endpoint_disabled_by_default(client, monkeypatch):
+    monkeypatch.delenv("AIOPS_DEMO", raising=False)
+    r = client.post("/api/demo/incident", params={"mode": "human"})
+    assert r.status_code == 403
+
+
+@pytest.mark.unit
+def test_demo_endpoint_enabled_triggers_remediation(client, monkeypatch):
+    monkeypatch.setenv("AIOPS_DEMO", "true")
+    captured = {}
+
+    import src.remediation.auto_remediation as armod
+
+    def fake_handle_async(self, scored, diag):
+        captured["kubectl"] = diag.kubectl_command
+        captured["shadow"] = self.shadow_mode
+    monkeypatch.setattr(armod.AutoRemediation, "handle_async", fake_handle_async)
+
+    r = client.post("/api/demo/incident", params={"mode": "human"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "human"
+    assert "rollout restart" in body["kubectl"]
+    assert captured["shadow"] is True   # human → modo sombra (espera aprobación)
+
+    r = client.post("/api/demo/incident", params={"mode": "auto"})
+    assert r.json()["mode"] == "auto"
+    assert captured["shadow"] is False  # auto → ejecuta sin aprobación
+
+
+@pytest.mark.unit
 def test_approve_then_reject_existing_incident(client):
     """Inyecta un incidente en el store compartido y prueba el ciclo de decisión."""
     import time

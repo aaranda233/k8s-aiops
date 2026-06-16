@@ -207,6 +207,61 @@ async def api_reject(incident_id: str):
 
 
 # ------------------------------------------------------------------
+# Demo de remediación (gated por AIOPS_DEMO=true) — inyecta un incidente
+# por el camino REAL de remediación sobre un workload desechable, para
+# demostrar la aprobación humana y la automática sin esperar una anomalía.
+# ------------------------------------------------------------------
+
+@app.post("/api/demo/incident")
+async def demo_incident(mode: str = "human"):
+    """Crea un incidente de prueba (L1: rollout restart) sobre el deployment demo.
+
+    mode=human → modo sombra: queda PENDING esperando tu aprobación en /incidents.
+    mode=auto  → se ejecuta y verifica automáticamente, sin intervención humana.
+    """
+    if os.getenv("AIOPS_DEMO", "false").lower() != "true":
+        return JSONResponse(
+            {"error": "Demo deshabilitado. Arranca el servidor con AIOPS_DEMO=true."},
+            status_code=403,
+        )
+    from types import SimpleNamespace
+
+    from src.remediation.auto_remediation import AutoRemediation
+
+    ns = os.getenv("DEMO_NAMESPACE", "aiops-demo")
+    deployment = os.getenv("DEMO_DEPLOYMENT", "nginx-demo")
+    auto = mode == "auto"
+
+    window = SimpleNamespace(index=999, namespaces={ns}, log_count=12, template_count=3,
+                             start_time=0.0, end_time=60.0, raw_logs=["[demo] evento sintético"])
+    scored = SimpleNamespace(window=window, score=0.91, model_version=1)
+    diagnosis = SimpleNamespace(
+        root_cause=(f"[DEMO] El deployment {deployment} en {ns} muestra reinicios "
+                    f"elevados; se propone un rollout restart para recuperarlo."),
+        kubectl_command=f"kubectl rollout restart deployment/{deployment} -n {ns}",
+        react_trace=[],
+    )
+
+    rem = AutoRemediation(
+        notifier=None,                      # sin notificación externa en la demo
+        max_auto_level=1,
+        incident_store=incident_store,      # el mismo que ve la consola web
+        shadow_mode=(not auto),             # human → espera aprobación; auto → ejecuta
+        verify_wait=int(os.getenv("DEMO_VERIFY_WAIT", "8")),
+    )
+    rem.handle_async(scored, diagnosis)
+
+    return {
+        "mode": mode,
+        "namespace": ns,
+        "deployment": deployment,
+        "kubectl": diagnosis.kubectl_command,
+        "hint": ("Aprueba/rechaza en /incidents" if not auto
+                 else "Se ejecuta y verifica automáticamente; míralo en /incidents"),
+    }
+
+
+# ------------------------------------------------------------------
 # Chat con el cluster — investigación ReAct read-only en vivo (SSE)
 # ------------------------------------------------------------------
 
