@@ -86,9 +86,14 @@ cluster by a read-only investigation, including a triage summary of pods with
 problems. Produce a clear, concrete answer in Spanish.
 
 Rules:
-- Base your answer ONLY on the evidence. Do NOT invent pods, statuses or data.
+- Base your answer ONLY on the evidence provided. Do NOT invent pods, images,
+  registries, statuses or error messages that are not literally in the evidence.
 - If the triage summary lists pods with problems, name the most critical one
-  (e.g. CrashLoopBackOff / Error) as the root cause and give the concrete fix.
+  (e.g. CrashLoopBackOff / Error) as the root cause and explain it using the
+  describe/logs evidence of that pod.
+- You MAY suggest a fix, but present it as a recommendation for the operator.
+  Never claim a cause you cannot see in the evidence. Do not invent kubectl
+  commands that modify the cluster as if they were verified solutions.
 - If the triage summary says there are NO pods with problems, state that the
   cluster appears healthy — do not fabricate a failure."""
 
@@ -117,16 +122,35 @@ class ClusterChatAgent:
         """
         transcript: list[tuple[str, str, str]] = []  # (thought, action, observation)
         seen_actions: set[str] = set()
+        step = 0
 
         # ── Paso 1: TRIAGE determinista (no depende del modelo) ───────────────
-        yield {"type": "thought", "step": 1, "text": "Reviso el estado de todos los pods del cluster…"}
-        yield {"type": "action", "step": 1, "command": _TRIAGE_CMD}
+        step += 1
+        yield {"type": "thought", "step": step, "text": "Reviso el estado de todos los pods del cluster…"}
+        yield {"type": "action", "step": step, "command": _TRIAGE_CMD}
         pods_output = self._run_tool(_TRIAGE_CMD)
         seen_actions.add(_TRIAGE_CMD)
         digest = _cluster_digest(pods_output)
-        yield {"type": "observation", "step": 1, "text": digest}
+        yield {"type": "observation", "step": step, "text": digest}
         transcript.append(("Estado general de los pods", _TRIAGE_CMD, pods_output))
         problems = extract_problem_pods(pods_output)
+
+        # ── Profundización DETERMINISTA del pod más severo ────────────────────
+        # No dependemos del modelo débil para la evidencia crítica: el harness
+        # ejecuta describe+logs del peor pod, garantizando causa raíz real.
+        if problems:
+            top = _top_problem(problems)
+            yield {"type": "thought", "step": step,
+                   "text": f"Investigo el pod más crítico: {top['ns']}/{top['name']} ({top['status']})."}
+            for cmd in _drill_cmds(top):
+                if cmd in seen_actions:
+                    continue
+                step += 1
+                seen_actions.add(cmd)
+                yield {"type": "action", "step": step, "command": cmd}
+                obs = self._run_tool(cmd)
+                yield {"type": "observation", "step": step, "text": obs}
+                transcript.append((f"Detalle de {top['name']}", cmd, obs))
 
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -134,14 +158,16 @@ class ClusterChatAgent:
             {"role": "assistant", "content": f"THOUGHT: Reviso el estado de los pods.\nACTION: {_TRIAGE_CMD}"},
             {"role": "user", "content": (
                 f"OBSERVATION:\n{digest}\n\n"
-                "Investiga un pod problemático concreto con describe o logs, "
-                "o responde con ANSWER si ya tienes la causa."
+                + ("Ya he investigado el pod más crítico. " if problems else "")
+                + "Si necesitas más detalle, investiga OTRO pod problemático con un "
+                  "comando exacto, por ejemplo:  kubectl logs NOMBRE -n NAMESPACE --tail=40  "
+                  "(usa el nombre del pod SIN el namespace delante). "
+                  "Si ya tienes la causa, responde con ANSWER."
             )},
         ]
 
-        # ── Pasos 2..N: profundización guiada por el modelo ───────────────────
-        auto_drilled = False
-        for step in range(2, self.max_steps + 1):
+        # ── Pasos siguientes: profundización opcional guiada por el modelo ────
+        for _ in range(2, self.max_steps + 1):
             try:
                 response = self._call(messages)
             except Exception as e:
@@ -150,20 +176,13 @@ class ClusterChatAgent:
                 return
 
             thought, action, answer = _parse(response)
+            step += 1
             if thought:
                 yield {"type": "thought", "step": step, "text": thought}
 
             if answer or not action or action in seen_actions:
-                # Si el modelo no propone comando pero hay problemas claros y aún no
-                # hemos auto-profundizado, investigamos el peor pod nosotros mismos.
-                if not answer and not action and problems and not auto_drilled:
-                    auto_drilled = True
-                    action = _describe_cmd(_top_problem(problems))
-                    yield {"type": "thought", "step": step,
-                           "text": "El modelo no eligió comando; investigo el pod más crítico."}
-                else:
-                    yield from self._final_answer(question, transcript)
-                    return
+                yield from self._final_answer(question, transcript)
+                return
 
             # Guard: el modelo a veces copia placeholders del prompt (<namespace>…).
             if _PLACEHOLDER.search(action):
@@ -324,6 +343,15 @@ def _describe_cmd(pod: dict) -> str:
     if pod["ns"]:
         return f"kubectl describe pod {pod['name']} -n {pod['ns']}"
     return f"kubectl describe pod {pod['name']}"
+
+
+def _drill_cmds(pod: dict) -> list[str]:
+    """Comandos read-only para investigar a fondo un pod (describe + logs)."""
+    ns = f" -n {pod['ns']}" if pod["ns"] else ""
+    return [
+        f"kubectl describe pod {pod['name']}{ns}",
+        f"kubectl logs {pod['name']}{ns} --tail=40",
+    ]
 
 
 def _cluster_digest(pods_output: str) -> str:
