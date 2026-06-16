@@ -363,29 +363,30 @@ def test_name_focus_returns_none_without_match():
 
 
 @pytest.mark.unit
-def test_chat_focuses_on_parser_pods_in_evidence():
-    """REGRESIÓN: preguntar por 'parser' debe enfocar esos pods, no el peor del cluster."""
-    captured = {}
+def test_chat_healthy_focus_answers_deterministically_without_expert():
+    """REGRESIÓN: pods enfocados sanos → respuesta determinista, sin alucinar fallos."""
+    expert_called = []
     tool_calls = []
     agent = ClusterChatAgent(max_steps=3)
     def call(msgs, model=None):
         if model == agent.expert_model:
-            captured["evidence"] = msgs[-1]["content"]
-            return "Los 4 pods parser están Running."
+            expert_called.append(True)
+            return "EL EXPERTO NO DEBERIA HABLAR AQUI"
         return "THOUGHT: ya\nANSWER: listo"
     agent._call = call
     def tool(a):
         tool_calls.append(a)
         return _PODS_WITH_PARSERS
     agent._run_tool = tool
-    list(agent.chat_iter("¿cómo están los pods del parser?"))
-    # La evidencia que llega al experto contiene los pods parser
-    assert "anecoop-parser" in captured["evidence"]
-    assert "parser" in captured["evidence"]
-    # Y NO la lista de problemas ajenos del cluster (que confundía al experto)
-    assert "CrashLoopBackOff" not in captured["evidence"]
-    assert "oauth2-proxy-vllm" not in captured["evidence"]
-    # No se auto-profundizó en el vllm (la pregunta no era sobre el peor pod)
+    events = list(agent.chat_iter("¿cómo están los pods del parser?"))
+    answer = next(e["text"] for e in events if e["type"] == "answer")
+    # El experto RCA (sesgado a fallos) NO se invoca para un conjunto sano
+    assert expert_called == []
+    # La respuesta es determinista, menciona los parser y dice que están sanos
+    assert "anecoop-parser" in answer
+    assert "problema" in answer.lower()  # "no hay ningún problema"
+    # No menciona los fallos ajenos del cluster ni profundiza en el vllm
+    assert "CrashLoopBackOff" not in answer
     assert not any("describe pod oauth2-proxy-vllm" in c for c in tool_calls)
 
 

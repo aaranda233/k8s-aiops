@@ -146,6 +146,7 @@ class ClusterChatAgent:
         ns_focus = _mentioned_namespace(question, _namespaces_in(pods_output))
         drill_target = None
         focused = False  # ¿la pregunta acota a un namespace/nombre concreto?
+        focus_summary: str | None = None  # resumen determinista del conjunto enfocado
         if ns_focus:
             focused = True
             scoped_cmd = f"kubectl get pods -n {ns_focus}"
@@ -154,9 +155,9 @@ class ClusterChatAgent:
                 seen_actions.add(scoped_cmd)
                 yield {"type": "action", "step": step, "command": scoped_cmd}
                 scoped_out = self._run_tool(scoped_cmd)
-                summary = _scoped_summary(ns_focus, scoped_out)
-                yield {"type": "observation", "step": step, "text": summary[:1500]}
-                transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, summary))
+                focus_summary = _scoped_summary(ns_focus, scoped_out)
+                yield {"type": "observation", "step": step, "text": focus_summary[:1500]}
+                transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, focus_summary))
                 scoped_problems = extract_problem_pods(scoped_out)
                 if scoped_problems:
                     drill_target = _top_problem(scoped_problems)
@@ -164,12 +165,12 @@ class ClusterChatAgent:
             name_kw, matched = _name_focus(question, all_rows)
             if matched:
                 focused = True
-                summary = _match_summary(name_kw, matched)
+                focus_summary = _match_summary(name_kw, matched)
                 yield {"type": "thought", "step": step,
                        "text": f"Busco los pods cuyo nombre contiene '{name_kw}'."}
-                yield {"type": "observation", "step": step, "text": summary}
+                yield {"type": "observation", "step": step, "text": focus_summary}
                 transcript.append(
-                    (f"Pods que coinciden con '{name_kw}'", f"filtro: nombre contiene '{name_kw}'", summary))
+                    (f"Pods que coinciden con '{name_kw}'", f"filtro: nombre contiene '{name_kw}'", focus_summary))
                 matched_problems = [r for r in matched if _is_problem(r)]
                 if matched_problems:
                     drill_target = _top_problem(matched_problems)
@@ -193,10 +194,16 @@ class ClusterChatAgent:
                 yield {"type": "observation", "step": step, "text": obs}
                 transcript.append((f"Detalle de {top['name']}", cmd, obs))
 
-        # Si la pregunta está enfocada, la evidencia determinista ya es completa:
-        # dejar profundizar al modelo débil solo añade alucinaciones (inventar
-        # fallos, ejecutar comandos sobre nombres inexistentes). Sintetiza ya.
+        # Si la pregunta está enfocada, la evidencia determinista ya es completa.
         if focused:
+            # Conjunto enfocado SANO (sin pods problemáticos): el experto RCA está
+            # sesgado a diagnosticar fallos e inventaría uno. Respondemos de forma
+            # determinista; el experto se reserva para explicar fallos reales.
+            if drill_target is None and focus_summary is not None:
+                yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
+                yield {"type": "answer", "text": _healthy_answer(focus_summary)}
+                return
+            # Hay un fallo en el conjunto enfocado → el experto lo explica.
             yield from self._final_answer(question, transcript, focused)
             return
 
@@ -472,6 +479,16 @@ def _scoped_summary(ns: str, pods_output: str) -> str:
     header = (f"Namespace {ns}: {len(rows)} pods, {len(rows) - len(problems)} sanos, "
               f"{len(problems)} con problemas.")
     return f"{header}\n{pods_output}"
+
+
+def _healthy_answer(focus_summary: str) -> str:
+    """Respuesta determinista para un conjunto enfocado sin pods problemáticos."""
+    lines = focus_summary.splitlines()
+    head = lines[0] if lines else focus_summary
+    rest = "\n".join(lines[1:]).strip()
+    body = (f"{head}\nTodos están en estado Running y listos (READY); no hay ningún "
+            f"problema en estos pods.")
+    return f"{body}\n\n{rest}" if rest else body
 
 
 def _cluster_headline(pods_output: str) -> str:
