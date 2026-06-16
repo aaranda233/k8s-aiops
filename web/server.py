@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -49,7 +50,65 @@ chat_agent = ClusterChatAgent(
     dry_run=os.getenv("CHAT_DRY_RUN", "false").lower() == "true",
 )
 
-app = FastAPI(title="k8s-aiops")
+# Estado de la aplicación (para sondas de K8s)
+_app_state = {"ready": False, "pipeline_thread": None}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Arranca el pipeline en un hilo de fondo al iniciar el servidor."""
+    # Registrar el event loop del servidor en el bus
+    bus.set_loop(asyncio.get_running_loop())
+
+    # Configuración del pipeline — vía variables de entorno
+    mode = os.getenv("PIPELINE_MODE", "live")
+    bootstrap = int(os.getenv("BOOTSTRAP_WINDOWS", "5"))
+    threshold = float(os.getenv("ANOMALY_THRESHOLD", "0.80"))
+    window_size = float(os.getenv("WINDOW_SIZE", "60"))
+    namespaces_env = os.getenv("NAMESPACES", "")
+    namespaces = namespaces_env.split(",") if namespaces_env else None
+
+    # Diagnóstico (RCA) configurable por env — necesario para que la remediación
+    # (y el modo sombra) generen incidentes a partir de las anomalías detectadas.
+    diag_enabled = os.getenv("DIAGNOSTICS_ENABLED", "false").lower() == "true"
+
+    cfg = PipelineConfig(
+        collector=CollectorConfig(
+            namespaces=namespaces,
+            window_size_seconds=window_size,
+            bootstrap_windows=bootstrap,
+        ),
+        detector=DetectorConfig(anomaly_threshold=threshold),
+        diagnostics=DiagnosticsConfig(enabled=diag_enabled),
+        remediation=RemediationConfig(),
+        replay_mode=(mode == "replay"),
+    )
+
+    def _run():
+        # La creación del pipeline (conexión al cluster) va dentro del hilo:
+        # si falla, el servidor HTTP sigue vivo y /ready reporta not_ready
+        # en vez de hacer crash-loop del pod.
+        try:
+            # El incident_store es el mismo que usan los endpoints /api/incidents
+            pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus, incident_store=incident_store)
+            _app_state["ready"] = True
+            if mode == "replay":
+                pipeline_instance.run_replay()
+            else:
+                pipeline_instance.run_live()
+        except Exception as e:
+            logging.getLogger(__name__).error("Pipeline no pudo arrancar: %s", e)
+            _app_state["ready"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    _app_state["pipeline_thread"] = t
+
+    yield
+    # Apagado: el hilo es daemon, muere con el proceso. Nada que limpiar.
+
+
+app = FastAPI(title="k8s-aiops", lifespan=lifespan)
 
 # Servir ficheros estaticos
 static_dir = Path(__file__).parent / "static"
@@ -73,11 +132,9 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ------------------------------------------------------------------
-# Estado de la aplicación (para sondas de K8s)
+# Estado de la aplicación (para sondas de K8s) — _app_state se define
+# junto al lifespan, arriba.
 # ------------------------------------------------------------------
-
-_app_state = {"ready": False, "pipeline_thread": None}
-
 
 @app.get("/health")
 async def health():
@@ -229,66 +286,3 @@ async def api_security():
         return JSONResponse({"error": str(e), "findings": [], "summary": {}}, status_code=200)
 
 
-# ------------------------------------------------------------------
-# Arranque del pipeline en hilo de fondo
-# ------------------------------------------------------------------
-
-def _run_pipeline(cfg: PipelineConfig, mode: str) -> None:
-    pipeline = AIOPsPipeline(cfg=cfg, event_bus=bus)
-    if mode == "replay":
-        pipeline.run_replay()
-    else:
-        pipeline.run_live()
-
-
-@app.on_event("startup")
-async def startup():
-    # Registrar el event loop del servidor en el bus
-    loop = asyncio.get_event_loop()
-    bus.set_loop(loop)
-
-    # Configuracion del pipeline — ajusta aqui o via variables de entorno
-    import os
-    mode = os.getenv("PIPELINE_MODE", "live")
-    bootstrap = int(os.getenv("BOOTSTRAP_WINDOWS", "5"))
-    threshold = float(os.getenv("ANOMALY_THRESHOLD", "0.80"))
-    window_size = float(os.getenv("WINDOW_SIZE", "60"))
-    namespaces_env = os.getenv("NAMESPACES", "")
-    namespaces = namespaces_env.split(",") if namespaces_env else None
-
-    # Diagnóstico (RCA) configurable por env — necesario para que la remediación
-    # (y el modo sombra) generen incidentes a partir de las anomalías detectadas.
-    diag_enabled = os.getenv("DIAGNOSTICS_ENABLED", "false").lower() == "true"
-
-    cfg = PipelineConfig(
-        collector=CollectorConfig(
-            namespaces=namespaces,
-            window_size_seconds=window_size,
-            bootstrap_windows=bootstrap,
-        ),
-        detector=DetectorConfig(anomaly_threshold=threshold),
-        diagnostics=DiagnosticsConfig(enabled=diag_enabled),
-        remediation=RemediationConfig(),
-        replay_mode=(mode == "replay"),
-    )
-
-    def _run():
-        # La creación del pipeline (conexión al cluster) va dentro del hilo:
-        # si falla, el servidor HTTP sigue vivo y /ready reporta not_ready
-        # en vez de hacer crash-loop del pod.
-        try:
-            # El incident_store es el mismo que usan los endpoints /api/incidents
-            pipeline_instance = AIOPsPipeline(cfg=cfg, event_bus=bus, incident_store=incident_store)
-            _app_state["ready"] = True
-            if mode == "replay":
-                pipeline_instance.run_replay()
-            else:
-                pipeline_instance.run_live()
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Pipeline no pudo arrancar: %s", e)
-            _app_state["ready"] = False
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    _app_state["pipeline_thread"] = t
