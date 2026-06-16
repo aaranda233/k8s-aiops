@@ -684,6 +684,23 @@ The remediation module advances the system from diagnosis to closed-loop operati
 
 Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis AI, PagerDuty AIOps) reach L3-L4 but require cloud connectivity and proprietary models. This system reaches L5 running entirely on-premise on CPU with open models.
 
+### 12.8 Reproducible Demonstration of Both Remediation Modes
+
+To demonstrate human-approval and automatic remediation deterministically — without waiting for a natural anomaly whose proposed command happens to be Level 1 — a demo trigger is provided, gated behind `AIOPS_DEMO=true`:
+
+```
+POST /api/demo/incident?mode=auto    # shadow OFF: executes + verifies, no human
+POST /api/demo/incident?mode=human   # shadow ON: stays pending_approval in /incidents
+```
+
+It injects a synthetic Level 1 incident (`rollout restart`) through the **real** remediation path, sharing the console's incident store, targeting a disposable `nginx-demo` deployment in an `aiops-demo` namespace. The operator then approves/rejects in the web console (or via `POST /api/incidents/{id}/{approve,reject}`):
+
+- **Automatic** — the rollout restart executes immediately; verification confirms the new pod is ready → `resolved`.
+- **Approve** — the incident waits in `pending_approval`; on approval the restart executes and verifies → `resolved`.
+- **Reject** — the incident is marked `rejected`; nothing is executed (the pod is untouched).
+
+This validation surfaced a real executor bug: `kubectl rollout restart` does not accept `--dry-run`, so the blanket dry-run gate silently blocked the most common Level 1 action. The executor now skips the dry-run gate only for commands that cannot support it (`rollout restart`/`undo`), which are already reversible and risk-classified.
+
 ---
 
 ## 14. Operational Console and Extended Capabilities
