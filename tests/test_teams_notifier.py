@@ -58,6 +58,39 @@ def test_card_is_adaptive():
 
 
 @pytest.mark.unit
+def test_post_payload_wraps_card_as_json_string():
+    """El payload enviado al flujo lleva la card como string JSON bajo 'card'."""
+    import json
+
+    import src.remediation.teams_notifier as tn
+    n = _teams()
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+    class _Client:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def post(self, url, json=None):
+            captured["url"] = url
+            captured["payload"] = json
+            return _Resp()
+
+    with patch.object(tn.httpx, "Client", lambda *a, **k: _Client()):
+        n.notify(_incident(), KIND_APPROVAL)
+
+    assert set(captured["payload"].keys()) == {"card"}
+    # 'card' es un string JSON que parsea a una Adaptive Card
+    card = json.loads(captured["payload"]["card"])
+    assert card["type"] == "AdaptiveCard"
+    assert "kubectl drain node-1" in str(card["body"])
+
+
+@pytest.mark.unit
 def test_post_failure_does_not_raise():
     import src.remediation.teams_notifier as tn
     n = _teams()

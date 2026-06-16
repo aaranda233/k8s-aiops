@@ -1,14 +1,19 @@
 """
 Notificador de avisos para Microsoft Teams.
 
-Publica una Adaptive Card de AVISO en el canal de ops vía Incoming Webhook.
-La tarjeta NO lleva botones de aprobación: solo informa y ofrece un botón
-"Ver en consola" (Action.OpenUrl) que abre /incidents/{id} en la consola web,
-donde el operador revisa, aprueba/rechaza, edita o chatea con autenticación.
+Publica una Adaptive Card de AVISO en el canal de ops vía un flujo de Power
+Automate (Workflows). La tarjeta NO lleva botones de aprobación: solo informa y
+ofrece un botón "Ver en consola" (Action.OpenUrl) que abre /incidents/{id} en la
+consola web, donde el operador revisa, aprueba/rechaza, edita o chatea.
 
 Este diseño separa el aviso (Teams) del control (web): Teams empuja, la web actúa.
+
+Formato del payload: la Adaptive Card se envía como string JSON bajo la clave
+'card'. El flujo de Power Automate la inyecta con la expresión triggerBody()?['card']
+en la acción "Publicar tarjeta en un chat o canal".
 """
 
+import json
 import logging
 
 import httpx
@@ -73,13 +78,9 @@ class TeamsNotifier(BaseNotifier):
         return card
 
     def _post(self, card: dict) -> None:
-        payload = {
-            "type": "message",
-            "attachments": [{
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": card,
-            }],
-        }
+        # La card viaja como string JSON bajo 'card'; el flujo de Power Automate
+        # la lee con triggerBody()?['card'].
+        payload = {"card": json.dumps(card)}
         try:
             with httpx.Client(timeout=10.0) as client:
                 resp = client.post(self.webhook_url, json=payload)
