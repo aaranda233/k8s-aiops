@@ -356,7 +356,8 @@ class AIOPsPipeline:
                         "thought": s.thought,
                         "action": s.action,
                         "observation": (s.observation or "")[:300],
-                        "is_final": s.is_final,
+                        # TraceStep (react) usa is_final; InvestigationStep (hybrid) usa is_done
+                        "is_final": getattr(s, "is_final", getattr(s, "is_done", False)),
                     }
                     for s in result.react_trace
                 ]
