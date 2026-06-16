@@ -6,6 +6,9 @@ Agrupa ParsedLogs en WindowData por franja de tiempo.
 
 from dataclasses import dataclass, field
 
+# Niveles considerados de error para la señal de severidad del detector.
+_ERROR_LEVELS = {"ERROR", "FATAL", "CRITICAL"}
+
 
 @dataclass
 class WindowData:
@@ -16,6 +19,8 @@ class WindowData:
     namespaces: set[str] = field(default_factory=set)
     # frecuencia de cada cluster_id en esta ventana
     cluster_counts: dict[int, int] = field(default_factory=dict)
+    # logs de nivel error/fatal/critical en esta ventana (señal de severidad)
+    error_count: int = 0
     anomaly_score: float = 0.0
     is_anomaly: bool = False
 
@@ -24,6 +29,8 @@ class WindowData:
         self.namespaces.add(parsed.namespace)
         cid = parsed.cluster_id
         self.cluster_counts[cid] = self.cluster_counts.get(cid, 0) + 1
+        if getattr(parsed, "level", "").upper() in _ERROR_LEVELS:
+            self.error_count += 1
 
     @property
     def log_count(self) -> int:
@@ -32,6 +39,12 @@ class WindowData:
     @property
     def template_count(self) -> int:
         return len(self.cluster_counts)
+
+    @property
+    def error_ratio(self) -> float:
+        """Fracción de logs de nivel error en la ventana (0-1)."""
+        n = self.log_count
+        return self.error_count / n if n else 0.0
 
 
 class WindowBuilder:

@@ -17,6 +17,7 @@ class FakeParsed:
     raw: str
     namespace: str
     cluster_id: int
+    level: str = ""
 
 
 @pytest.mark.unit
@@ -29,6 +30,26 @@ def test_window_add_accumulates_counts_and_namespaces():
     assert w.namespaces == {"ns1", "ns2"}
     assert w.cluster_counts == {1: 2, 2: 1}
     assert w.template_count == 2
+
+
+@pytest.mark.unit
+def test_window_counts_error_level_logs():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("ok", "ns", 1, level="INFO"))
+    w.add(FakeParsed("boom", "ns", 2, level="FATAL"))
+    w.add(FakeParsed("bad", "ns", 2, level="error"))   # case-insensitive
+    w.add(FakeParsed("crit", "ns", 3, level="CRITICAL"))
+    w.add(FakeParsed("warn", "ns", 4, level="WARNING"))  # WARNING no cuenta como error
+    assert w.error_count == 3
+    assert w.error_ratio == 3 / 5
+
+
+@pytest.mark.unit
+def test_window_error_ratio_zero_without_errors():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("a", "ns", 1, level="INFO"))
+    assert w.error_count == 0
+    assert w.error_ratio == 0.0
 
 
 @pytest.mark.unit

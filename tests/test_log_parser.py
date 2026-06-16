@@ -22,6 +22,15 @@ def test_parse_returns_parsedlog_with_metadata():
 
 
 @pytest.mark.unit
+def test_parse_carries_level():
+    p = LogParser()
+    out = p.parse("FATAL: meltdown", namespace="prod", level="FATAL")
+    assert out.level == "FATAL"
+    # Sin nivel, queda vacío
+    assert p.parse("algo normal").level == ""
+
+
+@pytest.mark.unit
 def test_similar_logs_share_cluster_id():
     p = LogParser()
     a = p.parse("Pod foo-12345 failed on node worker-1")

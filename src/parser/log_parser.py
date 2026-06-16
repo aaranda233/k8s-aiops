@@ -18,6 +18,7 @@ class ParsedLog:
     raw: str
     namespace: str = ""
     timestamp: float = 0.0
+    level: str = ""   # nivel/severidad de origen (ERROR, FATAL, CRITICAL, ...)
 
 
 class LogParser:
@@ -36,7 +37,8 @@ class LogParser:
 
         self._miner = TemplateMiner(config=cfg)
 
-    def parse(self, raw: str, namespace: str = "", timestamp: float = 0.0) -> ParsedLog:
+    def parse(self, raw: str, namespace: str = "", timestamp: float = 0.0,
+              level: str = "") -> ParsedLog:
         result = self._miner.add_log_message(raw)
         return ParsedLog(
             cluster_id=result["cluster_id"],
@@ -44,6 +46,7 @@ class LogParser:
             raw=raw,
             namespace=namespace,
             timestamp=timestamp,
+            level=level,
         )
 
     @property

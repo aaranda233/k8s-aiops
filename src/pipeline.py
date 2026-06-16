@@ -226,6 +226,7 @@ class AIOPsPipeline:
                 raw=entry.raw,
                 namespace=entry.namespace,
                 timestamp=entry.timestamp,
+                level=entry.reason,   # nivel del log (FATAL/ERROR/...) para la señal de severidad
             )
 
             # Emitir evento de log parseado a la web

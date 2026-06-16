@@ -8,14 +8,15 @@ baseline normal. Determinista (random_state fijo), sin cluster.
 
 import pytest
 
-from src.detector.isolation_forest import AnomalyDetector, ScoredWindow
+from src.detector.isolation_forest import AnomalyDetector, ScoredWindow, severity_score
 from src.detector.window import WindowData
 
 
-def _window(idx: int, counts: dict[int, int]) -> WindowData:
+def _window(idx: int, counts: dict[int, int], error_count: int = 0) -> WindowData:
     w = WindowData(index=idx, start_time=idx * 60, end_time=(idx + 1) * 60)
     w.cluster_counts = dict(counts)
     w.raw_logs = ["x"] * sum(counts.values())
+    w.error_count = error_count
     return w
 
 
@@ -88,6 +89,42 @@ def test_retrain_increments_model_version():
     _, retrained = det.process(_window(4, {1: 50, 2: 5}))  # 2 → reentrena
     assert retrained is True
     assert det._model_version > v0
+
+
+# ── Señal de severidad (logs de error) ─────────────────────────────────────
+
+@pytest.mark.unit
+def test_severity_score_zero_below_min_errors():
+    # Pocos errores → no puntúa aunque el ratio sea alto
+    w = _window(0, {1: 8}, error_count=3)
+    assert severity_score(w) == 0.0
+
+
+@pytest.mark.unit
+def test_severity_score_rises_with_error_ratio():
+    # 100 logs, 40 de error (ratio 0.40) → satura a 1.0
+    w = _window(0, {1: 100}, error_count=40)
+    assert severity_score(w) == 1.0
+    # ratio bajo (0.10) → 0
+    w2 = _window(0, {1: 100}, error_count=10)
+    assert severity_score(w2) == 0.0
+    # ratio intermedio → entre 0 y 1
+    w3 = _window(0, {1: 100}, error_count=25)
+    assert 0.0 < severity_score(w3) < 1.0
+
+
+@pytest.mark.unit
+def test_error_log_spike_triggers_anomaly():
+    """REGRESIÓN: un pod 'sano' escupiendo errores dispara la detección por severidad."""
+    det = AnomalyDetector(bootstrap_windows=5, retrain_every_n=999, threshold=0.80)
+    # Baseline sano sin errores
+    for i in range(5):
+        det.process(_window(i, {1: 100, 2: 10}, error_count=0))
+    # Ventana con muchos logs de error (50% del volumen) → severidad alta → anomalía
+    scored, _ = det.process(_window(5, {1: 100, 2: 10}, error_count=60))
+    assert scored.severity_score >= 0.8
+    assert scored.is_anomaly is True
+    assert scored.score >= 0.80
 
 
 @pytest.mark.unit

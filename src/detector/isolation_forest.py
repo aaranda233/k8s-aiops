@@ -25,6 +25,25 @@ from sklearn.preprocessing import normalize
 
 from src.detector.window import WindowData
 
+# Señal de severidad: una ventana con un volumen anormal de logs de error
+# (FATAL/ERROR/CRITICAL) es anómala aunque su distribución de plantillas sea
+# estadísticamente regular. Captura fallos que solo se ven en los logs, no en
+# el estado del pod ni en la mezcla de plantillas (un pod "Running" escupiendo
+# errores). Complementa al Isolation Forest, que es ciego a la severidad.
+_SEVERITY_MIN_ERRORS = 5    # mínimo de logs de error para considerarlo
+_SEVERITY_LOW = 0.10        # ratio de error donde empieza a puntuar
+_SEVERITY_HIGH = 0.40       # ratio de error donde satura a 1.0
+
+
+def severity_score(window: WindowData) -> float:
+    """Sub-score [0,1] por proporción anormal de logs de error en la ventana."""
+    if window.error_count < _SEVERITY_MIN_ERRORS:
+        return 0.0
+    ratio = window.error_ratio
+    if ratio <= _SEVERITY_LOW:
+        return 0.0
+    return min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
+
 
 @dataclass
 class ScoredWindow:
@@ -35,6 +54,7 @@ class ScoredWindow:
     pca_x: float = 0.0   # coordenada 2D para scatter plot
     pca_y: float = 0.0
     in_training: bool = False  # esta ventana forma parte del training set actual
+    severity_score: float = 0.0  # componente por severidad de logs (error_ratio)
 
 
 class AnomalyDetector:
@@ -103,8 +123,10 @@ class AnomalyDetector:
                 self._bootstrapping = False
             return None, False
 
-        # Puntuar la ventana con el modelo actual
-        score, pca_coord = self._score_one(window)
+        # Puntuar la ventana: max(score estadístico del IF, señal de severidad).
+        if_score, pca_coord = self._score_one(window)
+        sev = severity_score(window)
+        score = max(if_score, sev)
         self._since_last_retrain += 1
 
         retrained = False
@@ -121,6 +143,7 @@ class AnomalyDetector:
             pca_x=pca_coord[0],
             pca_y=pca_coord[1],
             in_training=False,
+            severity_score=sev,
         ), retrained
 
     @property
