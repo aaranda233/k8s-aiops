@@ -212,6 +212,12 @@ async def api_reject(incident_id: str):
 # demostrar la aprobación humana y la automática sin esperar una anomalía.
 # ------------------------------------------------------------------
 
+@app.get("/api/demo/enabled")
+async def demo_enabled():
+    """Indica a la consola si debe mostrar los botones de demo."""
+    return {"enabled": os.getenv("AIOPS_DEMO", "false").lower() == "true"}
+
+
 @app.post("/api/demo/incident")
 async def demo_incident(mode: str = "human"):
     """Crea un incidente de prueba (L1: rollout restart) sobre el deployment demo.

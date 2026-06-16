@@ -121,6 +121,14 @@ def test_reject_existing_incident(client):
 
 
 @pytest.mark.unit
+def test_demo_enabled_flag_reflects_env(client, monkeypatch):
+    monkeypatch.delenv("AIOPS_DEMO", raising=False)
+    assert client.get("/api/demo/enabled").json() == {"enabled": False}
+    monkeypatch.setenv("AIOPS_DEMO", "true")
+    assert client.get("/api/demo/enabled").json() == {"enabled": True}
+
+
+@pytest.mark.unit
 def test_demo_endpoint_disabled_by_default(client, monkeypatch):
     monkeypatch.delenv("AIOPS_DEMO", raising=False)
     r = client.post("/api/demo/incident", params={"mode": "human"})

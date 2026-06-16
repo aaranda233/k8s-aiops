@@ -93,6 +93,12 @@
 
 <main>
   <div class="stats" id="stats"></div>
+  <div id="demobar" class="demobar" style="display:none">
+    <span class="demohint">Probar remediación:</span>
+    <button class="demobtn auto" onclick="demo('auto')"><svg class="icon" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg> Automática</button>
+    <button class="demobtn human" onclick="demo('human')"><svg class="icon" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2a8 8 0 0 1-7-4l-2.5-4"/></svg> Requiere aprobación</button>
+    <span id="demomsg" class="demomsg"></span>
+  </div>
   <div id="list"><div class="empty"><div class="spinner"></div>Cargando incidencias…</div></div>
 </main>
 
@@ -161,8 +167,40 @@ async function load(){
     list.innerHTML=items.map(card).join("");
   } catch(e){ document.getElementById("list").innerHTML=`<div class="empty">Error al cargar incidencias.</div>`; }
 }
+async function demo(mode){
+  const msg=document.getElementById("demomsg");
+  const btns=document.querySelectorAll(".demobtn");
+  btns.forEach(b=>b.disabled=true);
+  msg.textContent="Creando incidente de prueba…";
+  try{
+    const r=await fetch(`/api/demo/incident?mode=${mode}`,{method:"POST"});
+    const d=await r.json();
+    if(r.ok){
+      msg.textContent = mode==="auto"
+        ? "Incidente automático creado — se ejecuta y verifica solo (mira abajo)."
+        : "Incidente creado — pendiente de tu aprobación abajo.";
+    } else { msg.textContent = d.error || "Error al crear la demo."; }
+    await load();
+  }catch(e){ msg.textContent="Error al crear la demo."; }
+  finally{ setTimeout(()=>btns.forEach(b=>b.disabled=false), 1500); }
+}
+async function initDemo(){
+  try{
+    const d=await (await fetch("/api/demo/enabled")).json();
+    if(d.enabled) document.getElementById("demobar").style.display="flex";
+  }catch(e){}
+}
+initDemo();
 load(); setInterval(load, 3000);
 </script>
-<style>.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style>
+<style>.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.demobar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:10px 14px;background:rgba(79,143,247,.06);border:1px dashed var(--border);border-radius:10px;font-size:13px}
+.demohint{color:var(--muted);font-weight:600}
+.demobtn{display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:1px solid var(--border);background:var(--panel);color:var(--text);padding:6px 12px;border-radius:8px;font-size:13px;transition:border-color .15s}
+.demobtn .icon{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.demobtn.auto:hover{border-color:var(--accent);color:var(--accent)}
+.demobtn.human:hover{border-color:var(--warn);color:var(--warn)}
+.demobtn:disabled{opacity:.5;cursor:default}
+.demomsg{color:var(--muted);font-style:italic}</style>
 </body>
 </html>
