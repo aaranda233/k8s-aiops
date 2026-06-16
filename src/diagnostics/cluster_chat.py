@@ -2,9 +2,18 @@
 Agente conversacional ReAct con acceso de SOLO LECTURA al cluster.
 
 El operador hace una pregunta en lenguaje natural ("¿qué pasa en producción?")
-y el agente investiga en vivo: razona (THOUGHT), ejecuta kubectl de solo lectura
-(ACTION, vía kubectl_toolbox que rechaza cualquier escritura), observa el
-resultado (OBSERVATION) y repite hasta dar una respuesta (ANSWER).
+y el agente investiga en vivo. El diseño está endurecido para un modelo base
+pequeño (1.5B), que por sí solo divaga y no profundiza:
+
+  1. Triage determinista: el harness SIEMPRE ejecuta `kubectl get pods -A` como
+     primer paso (no depende de que el modelo lo pida) y extrae, también de forma
+     determinista, los pods con problemas. Esto elimina la divagación y garantiza
+     evidencia de alta señal desde el primer instante.
+  2. Profundización guiada: con la lista de problemas delante, el modelo elige un
+     pod concreto y hace describe/logs. Si no actúa, el harness auto-profundiza en
+     el peor pod.
+  3. Síntesis con evidencia real: el experto fine-tuneado concluye a partir del
+     RESUMEN de problemas (no de un volcado truncado), de modo que ve los fallos.
 
 Seguridad: toda acción pasa por kubectl_toolbox.execute(), que solo permite
 describe/get/logs/top. Es imposible que el chat ejecute un comando destructivo.
@@ -21,41 +30,67 @@ from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 
 _PLACEHOLDER = re.compile(r"<[^>]+>")
 
+# Estados considerados sanos. Completed/Succeeded son jobs terminados (no fallos).
+_HEALTHY_STATUSES = {"Running", "Completed", "Succeeded"}
+_TRIAGE_CMD = "kubectl get pods -A"
+_MAX_PROBLEMS_SHOWN = 25
+
+# Prioridad de severidad para auto-profundizar en el peor pod primero.
+_SEVERITY = {
+    "CrashLoopBackOff": 100,
+    "OOMKilled": 95,
+    "Error": 90,
+    "ImagePullBackOff": 85,
+    "ErrImagePull": 84,
+    "CreateContainerConfigError": 80,
+    "ContainerStatusUnknown": 70,
+    "Pending": 60,
+}
+
 _SYSTEM_PROMPT = """\
 You are a Kubernetes SRE assistant with READ-ONLY access to a live cluster.
-Answer the user's question by investigating step by step.
+An automatic triage has ALREADY run `kubectl get pods -A` and given you, as the
+first OBSERVATION, a summary that lists the pods WITH PROBLEMS.
 
-Each turn, output EXACTLY one of these two formats:
+Your job: investigate the concrete cause of a failing pod, then answer.
 
-Format A — investigate:
-THOUGHT: what you want to check and why
-ACTION: kubectl get pods -A
+Each turn output EXACTLY one of these two formats:
 
-Format B — answer (when you have enough evidence, or after a few steps):
-THOUGHT: summary of findings
-ANSWER: clear, concise answer to the user's question in Spanish
+Format A — investigate ONE specific resource:
+THOUGHT: which problem pod you check and why
+ACTION: kubectl describe pod REAL-POD-NAME -n REAL-NAMESPACE
+
+Format B — answer:
+THOUGHT: summary of the root cause
+ANSWER: clear, concise answer in Spanish with the root cause and the fix
+
+Example:
+OBSERVATION: 237 pods, 7 con problemas. Pods con problemas:
+- llm-app/oauth2-proxy-vllm-xxx  READY=0/1  STATUS=CrashLoopBackOff  RESTARTS=1620
+THOUGHT: El proxy vllm está en CrashLoopBackOff; leo sus logs.
+ACTION: kubectl logs oauth2-proxy-vllm-xxx -n llm-app --tail=50
 
 CRITICAL rules:
-- The ACTION must be a REAL, ready-to-run command. NEVER write placeholders in
-  angle brackets like <namespace>, <pod> or <resource>. Use literal real names.
-- You do NOT know the namespaces or names in advance. ALWAYS discover them first:
-    step 1: kubectl get namespaces        (to see real namespace names)
-    step 2: kubectl get pods -A           (or -n <real-ns> once you know it)
-    step 3: kubectl describe / logs of a specific real pod
-- If the user mentions a place like "producción" that is not a literal namespace,
-  first list namespaces and pick the relevant real ones (e.g. default, llm-app...).
-- Only read-only kubectl: get, describe, logs, top. Never delete/apply/patch.
-- Use ONLY exact names seen in a previous OBSERVATION or in the user's question.
-- Be efficient: stop and ANSWER once you have the cause.
-- Output ONLY one THOUGHT and one ACTION (or ANSWER) per turn, nothing else."""
+- Use ONLY real pod and namespace names that appear in an OBSERVATION. NEVER write
+  placeholders in angle brackets like <pod> or <namespace>.
+- Prefer describe or logs of a PROBLEM pod from the triage summary.
+- Read-only kubectl only: get, describe, logs, top. Never delete/apply/patch/scale.
+- After 1-2 investigations of the culprit, give your ANSWER.
+- Output ONE THOUGHT and ONE ACTION (or ANSWER) per turn, nothing else."""
 
-# El experto fine-tuneado sintetiza la conclusión a partir de la evidencia
+# El experto fine-tuneado sintetiza la conclusión a partir de la evidencia.
 _SYNTH_SYSTEM = """\
 You are an expert Site Reliability Engineer specialized in Kubernetes.
 You receive an operator's question and the evidence collected from the live
-cluster by a read-only investigation. Produce a clear, concrete answer in
-Spanish. If a failure is present in the evidence, state the specific root
-cause and the concrete fix. Be direct — do not invent data not in the evidence."""
+cluster by a read-only investigation, including a triage summary of pods with
+problems. Produce a clear, concrete answer in Spanish.
+
+Rules:
+- Base your answer ONLY on the evidence. Do NOT invent pods, statuses or data.
+- If the triage summary lists pods with problems, name the most critical one
+  (e.g. CrashLoopBackOff / Error) as the root cause and give the concrete fix.
+- If the triage summary says there are NO pods with problems, state that the
+  cluster appears healthy — do not fabricate a failure."""
 
 
 class ClusterChatAgent:
@@ -69,57 +104,73 @@ class ClusterChatAgent:
         dry_run: bool = False,
     ):
         self.host = host.rstrip("/")
-        self.model = model              # investigador (base, sigue bien el ReAct)
-        self.expert_model = expert_model  # experto fine-tuneado (sintetiza la conclusión)
+        self.model = model              # investigador (base, profundiza)
+        self.expert_model = expert_model  # experto fine-tuneado (sintetiza)
         self.timeout = timeout
         self.max_steps = max_steps
         self.dry_run = dry_run  # True = no ejecuta kubectl real (para demo/test)
 
     def chat_iter(self, question: str) -> Iterator[dict]:
-        """Generador ReAct híbrido: el base investiga, el experto concluye.
+        """Generador ReAct híbrido: triage determinista + el base profundiza + el experto concluye.
 
         Eventos: {"type": "thought"|"action"|"observation"|"answer"|"error", ...}
         """
+        transcript: list[tuple[str, str, str]] = []  # (thought, action, observation)
+        seen_actions: set[str] = set()
+
+        # ── Paso 1: TRIAGE determinista (no depende del modelo) ───────────────
+        yield {"type": "thought", "step": 1, "text": "Reviso el estado de todos los pods del cluster…"}
+        yield {"type": "action", "step": 1, "command": _TRIAGE_CMD}
+        pods_output = self._run_tool(_TRIAGE_CMD)
+        seen_actions.add(_TRIAGE_CMD)
+        digest = _cluster_digest(pods_output)
+        yield {"type": "observation", "step": 1, "text": digest}
+        transcript.append(("Estado general de los pods", _TRIAGE_CMD, pods_output))
+        problems = extract_problem_pods(pods_output)
+
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": question},
+            {"role": "assistant", "content": f"THOUGHT: Reviso el estado de los pods.\nACTION: {_TRIAGE_CMD}"},
+            {"role": "user", "content": (
+                f"OBSERVATION:\n{digest}\n\n"
+                "Investiga un pod problemático concreto con describe o logs, "
+                "o responde con ANSWER si ya tienes la causa."
+            )},
         ]
-        seen_actions: set[str] = set()
-        transcript: list[tuple[str, str, str]] = []  # (thought, action, observation)
 
-        for step in range(1, self.max_steps + 1):
+        # ── Pasos 2..N: profundización guiada por el modelo ───────────────────
+        auto_drilled = False
+        for step in range(2, self.max_steps + 1):
             try:
                 response = self._call(messages)
             except Exception as e:
                 yield {"type": "error", "text": f"Error consultando el modelo: {e}"}
+                yield from self._final_answer(question, transcript)
                 return
 
             thought, action, answer = _parse(response)
-
             if thought:
                 yield {"type": "thought", "step": step, "text": thought}
 
             if answer or not action or action in seen_actions:
-                # Invariante: hay que investigar al menos una vez antes de concluir.
-                # Si el base intenta responder sin evidencia, lo empujamos a investigar.
-                if not transcript and step < self.max_steps:
-                    messages.append({
-                        "role": "user",
-                        "content": "Primero investiga con al menos un comando kubectl read-only "
-                                   "(get/describe/logs) antes de responder.",
-                    })
-                    continue
-                # El EXPERTO sintetiza la conclusión a partir de la evidencia.
-                yield from self._final_answer(question, transcript)
-                return
+                # Si el modelo no propone comando pero hay problemas claros y aún no
+                # hemos auto-profundizado, investigamos el peor pod nosotros mismos.
+                if not answer and not action and problems and not auto_drilled:
+                    auto_drilled = True
+                    action = _describe_cmd(_top_problem(problems))
+                    yield {"type": "thought", "step": step,
+                           "text": "El modelo no eligió comando; investigo el pod más crítico."}
+                else:
+                    yield from self._final_answer(question, transcript)
+                    return
 
-            # Guard: el modelo a veces copia placeholders del prompt (<namespace>...).
-            # No ejecutamos eso; le devolvemos una corrección para que use nombres reales.
+            # Guard: el modelo a veces copia placeholders del prompt (<namespace>…).
             if _PLACEHOLDER.search(action):
                 yield {"type": "action", "step": step, "command": action}
                 corr = ("Ese comando tiene un placeholder entre < >. No es válido. "
-                        "Descubre nombres reales primero: ejecuta  kubectl get namespaces  "
-                        "y luego  kubectl get pods -A  — sin placeholders.")
+                        "Usa un nombre real de pod/namespace de la lista de problemas, "
+                        "por ejemplo haz describe de uno de ellos.")
                 yield {"type": "observation", "step": step, "text": corr}
                 messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": f"OBSERVATION:\n{corr}"})
@@ -127,18 +178,16 @@ class ClusterChatAgent:
 
             seen_actions.add(action)
             yield {"type": "action", "step": step, "command": action}
-
             observation = self._run_tool(action)
             yield {"type": "observation", "step": step, "text": observation}
             transcript.append((thought, action, observation))
 
             messages.append({"role": "assistant", "content": response})
-            messages.append({
-                "role": "user",
-                "content": f"OBSERVATION:\n{observation}\n\nContinue or give ANSWER.",
-            })
+            messages.append({"role": "user", "content": (
+                f"OBSERVATION:\n{observation[:1500]}\n\nContinúa o responde con ANSWER."
+            )})
 
-        # Agotados los pasos → el experto sintetiza con la evidencia acumulada
+        # Agotados los pasos → el experto sintetiza con la evidencia acumulada.
         yield from self._final_answer(question, transcript)
 
     def _final_answer(self, question: str, transcript: list[tuple[str, str, str]]) -> Iterator[dict]:
@@ -152,10 +201,14 @@ class ClusterChatAgent:
         yield {"type": "answer", "text": answer}
 
     def _synthesize(self, question: str, transcript: list[tuple[str, str, str]]) -> str:
-        evidence = "\n\n".join(
-            f"$ {action}\n{observation[:600]}"
-            for _thought, action, observation in transcript
-        ) or "(sin comandos ejecutados)"
+        parts = []
+        for _thought, action, observation in transcript:
+            if _is_broad_pod_listing(action):
+                # Sustituir el volcado gigante por el resumen de problemas (alta señal).
+                parts.append(f"$ {action}\n{_cluster_digest(observation)}")
+            else:
+                parts.append(f"$ {action}\n{observation[:1500]}")
+        evidence = "\n\n".join(parts) or "(sin comandos ejecutados)"
 
         messages = [
             {"role": "system", "content": _SYNTH_SYSTEM},
@@ -207,6 +260,95 @@ class ClusterChatAgent:
         except Exception:
             return False
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# Análisis determinista del estado de los pods
+# ──────────────────────────────────────────────────────────────────────────
+
+def _is_broad_pod_listing(action: str) -> bool:
+    a = action.lower()
+    return "get pods" in a and ("-a" in a.split() or "--all-namespaces" in a)
+
+
+def _int(token: str) -> int:
+    m = re.match(r"\d+", token or "")
+    return int(m.group()) if m else 0
+
+
+def _parse_pod_rows(pods_output: str) -> list[dict]:
+    """Parsea la salida de `kubectl get pods` (con o sin columna NAMESPACE)."""
+    rows: list[dict] = []
+    for line in pods_output.splitlines():
+        s = line.strip()
+        if not s or s.startswith(("NAMESPACE", "NAME ", "...")):
+            continue
+        cols = s.split()
+        # Forma -A: ns name ready status restarts age (ready tiene '/')
+        if len(cols) >= 6 and "/" in cols[2]:
+            ns, name, ready, status, restarts = cols[0], cols[1], cols[2], cols[3], cols[4]
+        # Forma -n <ns>: name ready status restarts age
+        elif len(cols) >= 5 and "/" in cols[1]:
+            ns, name, ready, status, restarts = "", cols[0], cols[1], cols[2], cols[3]
+        else:
+            continue
+        rows.append({"ns": ns, "name": name, "ready": ready,
+                     "status": status, "restarts": _int(restarts)})
+    return rows
+
+
+def _is_problem(row: dict) -> bool:
+    status = row["status"]
+    if status not in _HEALTHY_STATUSES:
+        return True
+    # Un pod Running pero no totalmente listo (p.ej. 0/2) es un problema.
+    # Los reinicios antiguos en pods Running+ready NO se marcan: un crash activo
+    # aparece como CrashLoopBackOff/Error en STATUS, evitando falsos positivos.
+    if status == "Running" and "/" in row["ready"]:
+        have, _, total = row["ready"].partition("/")
+        if _int(have) < _int(total):
+            return True
+    return False
+
+
+def extract_problem_pods(pods_output: str) -> list[dict]:
+    """Devuelve solo las filas de pods que representan un problema real."""
+    return [r for r in _parse_pod_rows(pods_output) if _is_problem(r)]
+
+
+def _top_problem(problems: list[dict]) -> dict:
+    """El pod problemático más severo (para auto-profundizar)."""
+    return max(problems, key=lambda p: (_SEVERITY.get(p["status"], 50), p["restarts"]))
+
+
+def _describe_cmd(pod: dict) -> str:
+    if pod["ns"]:
+        return f"kubectl describe pod {pod['name']} -n {pod['ns']}"
+    return f"kubectl describe pod {pod['name']}"
+
+
+def _cluster_digest(pods_output: str) -> str:
+    """Resumen de alta señal: totales + lista de pods con problemas."""
+    rows = _parse_pod_rows(pods_output)
+    if not rows:
+        # No es una lista de pods (p.ej. salida de describe/logs); devolver tal cual recortado.
+        return pods_output[:1500]
+    problems = [r for r in rows if _is_problem(r)]
+    healthy = len(rows) - len(problems)
+    head = f"Resumen del cluster: {len(rows)} pods, {healthy} sanos, {len(problems)} con problemas."
+    if not problems:
+        return head + "\nNo hay pods con problemas; el cluster parece sano."
+    lines = [head, "Pods con problemas:"]
+    for p in problems[:_MAX_PROBLEMS_SHOWN]:
+        loc = f"{p['ns']}/{p['name']}" if p["ns"] else p["name"]
+        lines.append(f"- {loc}  READY={p['ready']}  STATUS={p['status']}  RESTARTS={p['restarts']}")
+    if len(problems) > _MAX_PROBLEMS_SHOWN:
+        lines.append(f"... y {len(problems) - _MAX_PROBLEMS_SHOWN} más")
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Parsing de la respuesta del modelo
+# ──────────────────────────────────────────────────────────────────────────
 
 def _parse(text: str) -> tuple[str, str | None, str | None]:
     """Devuelve (thought, action, answer). action/answer son None si no aparecen.
