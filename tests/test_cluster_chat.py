@@ -294,6 +294,35 @@ def test_no_dithering_auto_drills_when_model_wont_act():
 
 
 @pytest.mark.unit
+def test_scoped_question_queries_mentioned_namespace():
+    """Si la pregunta menciona un namespace real, se consulta ese namespace."""
+    tool_calls = []
+    agent = ClusterChatAgent(max_steps=3)
+    agent._call = lambda msgs, model=None: "Respuesta." if model == agent.expert_model \
+        else "THOUGHT: ya\nANSWER: listo"
+    def tool(a):
+        tool_calls.append(a)
+        return _PODS_SAMPLE
+    agent._run_tool = tool
+    list(agent.chat_iter("cuantos pods hay en el namespace argocd"))
+    assert "kubectl get pods -n argocd" in tool_calls
+
+
+@pytest.mark.unit
+def test_no_scoped_query_without_namespace_mention():
+    tool_calls = []
+    agent = ClusterChatAgent(max_steps=3)
+    agent._call = lambda msgs, model=None: "Respuesta." if model == agent.expert_model \
+        else "THOUGHT: ya\nANSWER: listo"
+    def tool(a):
+        tool_calls.append(a)
+        return _PODS_SAMPLE
+    agent._run_tool = tool
+    list(agent.chat_iter("hay algun problema en el cluster"))
+    assert not any(c.startswith("kubectl get pods -n ") for c in tool_calls)
+
+
+@pytest.mark.unit
 def test_synthesis_receives_failures_in_evidence():
     """La evidencia que llega al experto contiene los fallos (no truncados)."""
     captured = {}

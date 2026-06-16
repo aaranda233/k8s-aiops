@@ -86,6 +86,8 @@ cluster by a read-only investigation, including a triage summary of pods with
 problems. Produce a clear, concrete answer in Spanish.
 
 Rules:
+- Answer the operator's SPECIFIC question first, using the evidence. If they ask
+  about a concrete namespace or count, answer that directly before anything else.
 - Base your answer ONLY on the evidence provided. Do NOT invent pods, images,
   registries, statuses or error messages that are not literally in the evidence.
 - If the triage summary lists pods with problems, name the most critical one
@@ -135,12 +137,32 @@ class ClusterChatAgent:
         transcript.append(("Estado general de los pods", _TRIAGE_CMD, pods_output))
         problems = extract_problem_pods(pods_output)
 
+        # ── Consulta acotada si la pregunta menciona un namespace concreto ────
+        # Para preguntas tipo "¿cuántos pods en firmas?" enfocamos ese namespace
+        # en vez de diagnosticar el problema más grave del cluster.
+        ns_focus = _mentioned_namespace(question, _namespaces_in(pods_output))
+        drill_target = None
+        if ns_focus:
+            scoped_cmd = f"kubectl get pods -n {ns_focus}"
+            if scoped_cmd not in seen_actions:
+                step += 1
+                seen_actions.add(scoped_cmd)
+                yield {"type": "action", "step": step, "command": scoped_cmd}
+                scoped_out = self._run_tool(scoped_cmd)
+                yield {"type": "observation", "step": step, "text": scoped_out[:1500]}
+                transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, scoped_out))
+                scoped_problems = extract_problem_pods(scoped_out)
+                if scoped_problems:
+                    drill_target = _top_problem(scoped_problems)
+        elif problems:
+            drill_target = _top_problem(problems)
+
         # ── Profundización DETERMINISTA del pod más severo ────────────────────
         # No dependemos del modelo débil para la evidencia crítica: el harness
         # ejecuta describe+logs del peor pod, garantizando causa raíz real.
-        if problems:
-            top = _top_problem(problems)
-            yield {"type": "thought", "step": step,
+        if drill_target:
+            top = drill_target
+            yield {"type": "thought",
                    "text": f"Investigo el pod más crítico: {top['ns']}/{top['name']} ({top['status']})."}
             for cmd in _drill_cmds(top):
                 if cmd in seen_actions:
@@ -158,7 +180,7 @@ class ClusterChatAgent:
             {"role": "assistant", "content": f"THOUGHT: Reviso el estado de los pods.\nACTION: {_TRIAGE_CMD}"},
             {"role": "user", "content": (
                 f"OBSERVATION:\n{digest}\n\n"
-                + ("Ya he investigado el pod más crítico. " if problems else "")
+                + ("Ya he investigado el pod más crítico. " if drill_target else "")
                 + "Si necesitas más detalle, investiga OTRO pod problemático con un "
                   "comando exacto, por ejemplo:  kubectl logs NOMBRE -n NAMESPACE --tail=40  "
                   "(usa el nombre del pod SIN el namespace delante). "
@@ -313,6 +335,20 @@ def _parse_pod_rows(pods_output: str) -> list[dict]:
         rows.append({"ns": ns, "name": name, "ready": ready,
                      "status": status, "restarts": _int(restarts)})
     return rows
+
+
+def _namespaces_in(pods_output: str) -> set[str]:
+    return {r["ns"] for r in _parse_pod_rows(pods_output) if r["ns"]}
+
+
+def _mentioned_namespace(question: str, namespaces: set[str]) -> str | None:
+    """Devuelve el namespace real mencionado en la pregunta (el más largo si varios)."""
+    q = question.lower()
+    best = None
+    for ns in namespaces:
+        if re.search(rf"\b{re.escape(ns.lower())}\b", q) and (best is None or len(ns) > len(best)):
+            best = ns
+    return best
 
 
 def _is_problem(row: dict) -> bool:
