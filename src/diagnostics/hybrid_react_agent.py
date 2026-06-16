@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import httpx
 
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
-from src.diagnostics.ollama_rca import DiagnosisResult, build_event_sample, parse_diagnosis
+from src.diagnostics.ollama_rca import DiagnosisResult, parse_diagnosis, window_event_sample
 
 # GBNF grammar que fuerza ROOT CAUSE: ... \n KUBECTL: kubectl ... a nivel de token.
 # Elimina el fallo de formato independientemente del contexto extra que recibe el experto.
@@ -74,13 +74,13 @@ class HybridReActAgent:
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
 
-        logs_text, n_sample = build_event_sample(w.raw_logs, self.max_logs)
+        logs_text, n_sample, label = window_event_sample(w, self.max_logs)
         initial_context = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
             f"Namespaces affected: {', '.join(w.namespaces)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
-            f"Event sample (last {n_sample}):\n{logs_text}"
+            f"{label} ({n_sample} lines):\n{logs_text}"
         )
 
         # Fase 1: investigador (base model)

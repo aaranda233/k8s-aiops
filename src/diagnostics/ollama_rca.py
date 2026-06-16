@@ -55,6 +55,24 @@ def build_event_sample(raw_logs: list, max_logs: int = 40) -> tuple[str, int]:
     return text, len(sample)
 
 
+_SAMPLE_ERROR_MIN = 5  # mínimo de logs de error para liderar la muestra con ellos
+
+
+def window_event_sample(window, max_logs: int = 40) -> tuple[str, int, str]:
+    """Muestra para el RCA priorizando los logs de error si los hay.
+
+    Cuando la anomalía la dispara la severidad (volumen anormal de logs de error),
+    el RCA debe ver ESAS líneas, no logs recientes al azar de toda la ventana.
+    Devuelve (texto, n_líneas, etiqueta).
+    """
+    error_logs = getattr(window, "error_logs", None) or []
+    if len(error_logs) >= _SAMPLE_ERROR_MIN:
+        text, n = build_event_sample(error_logs, max_logs)
+        return text, n, f"Error log sample ({len(error_logs)} error lines in window)"
+    text, n = build_event_sample(window.raw_logs, max_logs)
+    return text, n, "Event sample"
+
+
 def parse_diagnosis(text: str) -> tuple[str, str]:
     """Extrae (root_cause, kubectl) de la salida del modelo de forma tolerante.
 
@@ -128,14 +146,14 @@ class OllamaRCA:
 
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
-        logs_text, n_sample = build_event_sample(w.raw_logs, self.max_logs)
+        logs_text, n_sample, label = window_event_sample(w, self.max_logs)
 
         user_msg = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
             f"Namespaces affected: {', '.join(w.namespaces)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
-            f"Event sample (last {n_sample}):\n{logs_text}"
+            f"{label} ({n_sample} lines):\n{logs_text}"
         )
 
         payload = {

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 # Niveles considerados de error para la señal de severidad del detector.
 _ERROR_LEVELS = {"ERROR", "FATAL", "CRITICAL"}
+_MAX_ERROR_LOGS = 80  # tope de líneas de error que se guardan para el RCA
 
 
 @dataclass
@@ -21,6 +22,8 @@ class WindowData:
     cluster_counts: dict[int, int] = field(default_factory=dict)
     # logs de nivel error/fatal/critical en esta ventana (señal de severidad)
     error_count: int = 0
+    # muestra de las líneas de error (alta señal para el RCA), acotada
+    error_logs: list[str] = field(default_factory=list)
     anomaly_score: float = 0.0
     is_anomaly: bool = False
 
@@ -31,6 +34,8 @@ class WindowData:
         self.cluster_counts[cid] = self.cluster_counts.get(cid, 0) + 1
         if getattr(parsed, "level", "").upper() in _ERROR_LEVELS:
             self.error_count += 1
+            if len(self.error_logs) < _MAX_ERROR_LOGS:
+                self.error_logs.append(parsed.raw)
 
     @property
     def log_count(self) -> int:

@@ -7,6 +7,7 @@ con la red mockeada.
 """
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from src.diagnostics.ollama_rca import (
     OllamaRCA,
     build_event_sample,
     parse_diagnosis,
+    window_event_sample,
 )
 
 # ── parse_diagnosis: tolerante ──────────────────────────────────────────────
@@ -107,6 +109,27 @@ def test_build_event_sample_keeps_last_n():
     assert n == 5
     assert "e99" in text
     assert "e0\n" not in text
+
+
+@pytest.mark.unit
+def test_window_event_sample_prefers_error_logs():
+    """Si hay suficientes logs de error, la muestra del RCA lidera con ellos."""
+    w = SimpleNamespace(
+        raw_logs=["normal log %d" % i for i in range(50)],
+        error_logs=["FATAL: the cluster is on fire %d" % i for i in range(10)],
+    )
+    text, n, label = window_event_sample(w, max_logs=40)
+    assert "on fire" in text
+    assert "error" in label.lower()
+    assert "normal log" not in text  # lidera con errores, no logs normales
+
+
+@pytest.mark.unit
+def test_window_event_sample_falls_back_to_raw():
+    w = SimpleNamespace(raw_logs=["normal log %d" % i for i in range(5)], error_logs=[])
+    text, n, label = window_event_sample(w, max_logs=40)
+    assert "normal log" in text
+    assert label == "Event sample"
 
 
 # ── diagnose() con red mockeada ─────────────────────────────────────────────
