@@ -149,8 +149,9 @@ class ClusterChatAgent:
                 seen_actions.add(scoped_cmd)
                 yield {"type": "action", "step": step, "command": scoped_cmd}
                 scoped_out = self._run_tool(scoped_cmd)
-                yield {"type": "observation", "step": step, "text": scoped_out[:1500]}
-                transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, scoped_out))
+                summary = _scoped_summary(ns_focus, scoped_out)
+                yield {"type": "observation", "step": step, "text": summary[:1500]}
+                transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, summary))
                 scoped_problems = extract_problem_pods(scoped_out)
                 if scoped_problems:
                     drill_target = _top_problem(scoped_problems)
@@ -390,6 +391,17 @@ def _drill_cmds(pod: dict) -> list[str]:
     ]
 
 
+def _scoped_summary(ns: str, pods_output: str) -> str:
+    """Cuenta determinista (autoritativa) de un namespace + la salida cruda."""
+    rows = _parse_pod_rows(pods_output)
+    if not rows:
+        return pods_output
+    problems = [r for r in rows if _is_problem(r)]
+    header = (f"Namespace {ns}: {len(rows)} pods, {len(rows) - len(problems)} sanos, "
+              f"{len(problems)} con problemas.")
+    return f"{header}\n{pods_output}"
+
+
 def _cluster_digest(pods_output: str) -> str:
     """Resumen de alta señal: totales + lista de pods con problemas."""
     rows = _parse_pod_rows(pods_output)
@@ -460,4 +472,11 @@ def _clean_cmd(s: str) -> str:
     idx = s.find("kubectl ")
     if idx > 0 and idx <= 40:  # 'kubectl' aparece tras algo de prosa corta
         s = s[idx:]
+    s = s.strip()
+    # El modelo a veces escribe 'ns/name' como nombre del recurso mientras ya
+    # pasa '-n ns' (p.ej. describe pod default/foo -n default), y kubectl lo
+    # rechaza. Quitamos el prefijo de namespace duplicado.
+    m = re.search(r"-n\s+(\S+)", s)
+    if m:
+        s = re.sub(rf"\b{re.escape(m.group(1))}/(\S+)", r"\1", s)
     return s.strip()

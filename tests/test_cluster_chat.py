@@ -59,6 +59,15 @@ def test_parse_lenient_kubectl_without_action_prefix():
 
 
 @pytest.mark.unit
+def test_clean_cmd_strips_duplicated_namespace_prefix():
+    """El modelo escribe ns/name como recurso mientras ya pasa -n ns; se normaliza."""
+    _, a, _ = _parse("ACTION: kubectl describe pod default/node-debugger -n default")
+    assert a == "kubectl describe pod node-debugger -n default"
+    _, a, _ = _parse("ACTION: kubectl logs llm-app/vllm-proxy -n llm-app --tail=40")
+    assert a == "kubectl logs vllm-proxy -n llm-app --tail=40"
+
+
+@pytest.mark.unit
 def test_parse_answer_takes_priority_over_loose_kubectl():
     # Si hay ANSWER, no debe confundir un kubectl mencionado en la respuesta
     _, a, ans = _parse("ANSWER: Ejecuta kubectl logs para ver más.")
