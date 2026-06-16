@@ -145,7 +145,9 @@ class ClusterChatAgent:
         all_rows = _parse_pod_rows(pods_output)
         ns_focus = _mentioned_namespace(question, _namespaces_in(pods_output))
         drill_target = None
+        focused = False  # ¿la pregunta acota a un namespace/nombre concreto?
         if ns_focus:
+            focused = True
             scoped_cmd = f"kubectl get pods -n {ns_focus}"
             if scoped_cmd not in seen_actions:
                 step += 1
@@ -161,6 +163,7 @@ class ClusterChatAgent:
         else:
             name_kw, matched = _name_focus(question, all_rows)
             if matched:
+                focused = True
                 summary = _match_summary(name_kw, matched)
                 yield {"type": "thought", "step": step,
                        "text": f"Busco los pods cuyo nombre contiene '{name_kw}'."}
@@ -210,7 +213,7 @@ class ClusterChatAgent:
                 response = self._call(messages)
             except Exception as e:
                 yield {"type": "error", "text": f"Error consultando el modelo: {e}"}
-                yield from self._final_answer(question, transcript)
+                yield from self._final_answer(question, transcript, focused)
                 return
 
             thought, action, answer = _parse(response)
@@ -219,7 +222,7 @@ class ClusterChatAgent:
                 yield {"type": "thought", "step": step, "text": thought}
 
             if answer or not action or action in seen_actions:
-                yield from self._final_answer(question, transcript)
+                yield from self._final_answer(question, transcript, focused)
                 return
 
             # Guard: el modelo a veces copia placeholders del prompt (<namespace>…).
@@ -245,24 +248,29 @@ class ClusterChatAgent:
             )})
 
         # Agotados los pasos → el experto sintetiza con la evidencia acumulada.
-        yield from self._final_answer(question, transcript)
+        yield from self._final_answer(question, transcript, focused)
 
-    def _final_answer(self, question: str, transcript: list[tuple[str, str, str]]) -> Iterator[dict]:
+    def _final_answer(self, question: str, transcript: list[tuple[str, str, str]],
+                      focused: bool = False) -> Iterator[dict]:
         """El modelo experto (fine-tuneado) concluye a partir de la evidencia."""
         yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
         try:
-            answer = self._synthesize(question, transcript)
+            answer = self._synthesize(question, transcript, focused)
         except Exception as e:
             yield {"type": "error", "text": f"Error en la síntesis: {e}"}
             return
         yield {"type": "answer", "text": answer}
 
-    def _synthesize(self, question: str, transcript: list[tuple[str, str, str]]) -> str:
+    def _synthesize(self, question: str, transcript: list[tuple[str, str, str]],
+                    focused: bool = False) -> str:
         parts = []
         for _thought, action, observation in transcript:
             if _is_broad_pod_listing(action):
-                # Sustituir el volcado gigante por el resumen de problemas (alta señal).
-                parts.append(f"$ {action}\n{_cluster_digest(observation)}")
+                # Si la pregunta está enfocada (namespace/nombre concreto), el listado
+                # global se reduce a un titular para NO distraer al experto con fallos
+                # ajenos; si no, se le da el resumen de problemas (alta señal).
+                broad = _cluster_headline(observation) if focused else _cluster_digest(observation)
+                parts.append(f"$ {action}\n{broad}")
             else:
                 parts.append(f"$ {action}\n{observation[:1500]}")
         evidence = "\n\n".join(parts) or "(sin comandos ejecutados)"
@@ -457,6 +465,16 @@ def _scoped_summary(ns: str, pods_output: str) -> str:
     header = (f"Namespace {ns}: {len(rows)} pods, {len(rows) - len(problems)} sanos, "
               f"{len(problems)} con problemas.")
     return f"{header}\n{pods_output}"
+
+
+def _cluster_headline(pods_output: str) -> str:
+    """Solo el titular de conteo del cluster, sin enumerar los problemas."""
+    rows = _parse_pod_rows(pods_output)
+    if not rows:
+        return pods_output[:300]
+    problems = [r for r in rows if _is_problem(r)]
+    return (f"Resumen del cluster: {len(rows)} pods, {len(rows) - len(problems)} sanos, "
+            f"{len(problems)} con problemas.")
 
 
 def _cluster_digest(pods_output: str) -> str:

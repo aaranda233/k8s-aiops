@@ -382,6 +382,9 @@ def test_chat_focuses_on_parser_pods_in_evidence():
     # La evidencia que llega al experto contiene los pods parser
     assert "anecoop-parser" in captured["evidence"]
     assert "parser" in captured["evidence"]
+    # Y NO la lista de problemas ajenos del cluster (que confundía al experto)
+    assert "CrashLoopBackOff" not in captured["evidence"]
+    assert "oauth2-proxy-vllm" not in captured["evidence"]
     # No se auto-profundizó en el vllm (la pregunta no era sobre el peor pod)
     assert not any("describe pod oauth2-proxy-vllm" in c for c in tool_calls)
 
