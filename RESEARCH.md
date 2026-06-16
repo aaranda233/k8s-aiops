@@ -712,7 +712,16 @@ The console is the human-in-the-loop control point: notifications (Teams) only a
 
 ### 14.3 Conversational Investigation — "Chat with the Cluster"
 
-The `ClusterChatAgent` exposes the hybrid ReAct engine as a chat. The operator asks in natural language ("¿por qué falla el pod X?"); the base model investigates live (THOUGHT → read-only `kubectl` ACTION → OBSERVATION, streamed via SSE), then the fine-tuned ORPO expert synthesizes the final diagnosis from the gathered evidence. Safety is structural: every action passes through the read-only `kubectl_toolbox` (only `describe`/`get`/`logs`/`top`; write verbs rejected before execution). Robustness guards: the agent must investigate before concluding, rejects placeholder commands (`<namespace>`), and discovers real resource names before describing them.
+The `ClusterChatAgent` exposes the hybrid ReAct engine as a chat. The operator asks in natural language ("¿por qué falla el pod X?"); the system investigates live (streamed via SSE) and the fine-tuned ORPO expert synthesizes the final diagnosis from the gathered evidence. Safety is structural: every action passes through the read-only `kubectl_toolbox` (only `describe`/`get`/`logs`/`top`; write verbs rejected before execution).
+
+**Deterministic scaffolding for a 1.5B model.** A free-form ReAct loop fails on a small base model: in live tests it dithered (5 consecutive THOUGHT turns with no ACTION), never drilled into the failing pod, and — most damaging — the synthesis hallucinated ("all pods are Running") because it only received the first 600 characters of `kubectl get pods -A`, where the broken pods were below the cut. The redesign moves the critical path out of the model and into the harness:
+
+1. **Deterministic triage.** The harness always runs `kubectl get pods -A` as step 1 and extracts problem pods (CrashLoopBackOff/Error/not-ready; Completed/Succeeded and stale restarts excluded to avoid false positives), producing a compact high-signal digest.
+2. **Deterministic drill-down.** The harness runs `describe` + `logs --tail` on the most severe pod, guaranteeing real root-cause evidence regardless of what the weak model emits.
+3. **Scoped questions.** If the question names a real namespace ("¿cuántos pods en firmas?"), a scoped `get pods -n <ns>` runs with an authoritative deterministic count, so the expert answers the actual question instead of diagnosing the worst cluster fault.
+4. **Grounded synthesis.** The expert receives the problem digest and the culprit's describe/logs (never a truncated dump), with a prompt forbidding invented pods/images/errors and write-command "fixes".
+
+The model retains an optional breadth role (drilling additional problem pods). Guards remain: placeholder commands (`<namespace>`) are rejected, and malformed `ns/name` resource references are auto-normalized. In production this took the chat from a fabricated "everything is Running" answer to correctly quoting the live OIDC-discovery 404 behind a CrashLoopBackOff and proposing a read-only-safe fix.
 
 ### 14.4 Cluster Topology — the "Electrical Panel"
 
