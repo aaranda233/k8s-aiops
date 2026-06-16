@@ -22,6 +22,7 @@ chat_iter() es un generador que emite eventos para streaming en vivo (SSE).
 """
 
 import re
+import unicodedata
 from collections.abc import Iterator
 
 import httpx
@@ -137,9 +138,11 @@ class ClusterChatAgent:
         transcript.append(("Estado general de los pods", _TRIAGE_CMD, pods_output))
         problems = extract_problem_pods(pods_output)
 
-        # ── Consulta acotada si la pregunta menciona un namespace concreto ────
-        # Para preguntas tipo "¿cuántos pods en firmas?" enfocamos ese namespace
-        # en vez de diagnosticar el problema más grave del cluster.
+        # ── Foco de la pregunta: namespace concreto, o palabra-clave de nombre ─
+        # "¿cuántos pods en firmas?" → namespace; "¿cómo están los pods del
+        # parser?" → todos los pods cuyo nombre contiene 'parser'. Si la pregunta
+        # no acota nada, se diagnostica el problema más grave del cluster.
+        all_rows = _parse_pod_rows(pods_output)
         ns_focus = _mentioned_namespace(question, _namespaces_in(pods_output))
         drill_target = None
         if ns_focus:
@@ -155,8 +158,20 @@ class ClusterChatAgent:
                 scoped_problems = extract_problem_pods(scoped_out)
                 if scoped_problems:
                     drill_target = _top_problem(scoped_problems)
-        elif problems:
-            drill_target = _top_problem(problems)
+        else:
+            name_kw, matched = _name_focus(question, all_rows)
+            if matched:
+                summary = _match_summary(name_kw, matched)
+                yield {"type": "thought", "step": step,
+                       "text": f"Busco los pods cuyo nombre contiene '{name_kw}'."}
+                yield {"type": "observation", "step": step, "text": summary}
+                transcript.append(
+                    (f"Pods que coinciden con '{name_kw}'", f"filtro: nombre contiene '{name_kw}'", summary))
+                matched_problems = [r for r in matched if _is_problem(r)]
+                if matched_problems:
+                    drill_target = _top_problem(matched_problems)
+            elif problems:
+                drill_target = _top_problem(problems)
 
         # ── Profundización DETERMINISTA del pod más severo ────────────────────
         # No dependemos del modelo débil para la evidencia crítica: el harness
@@ -350,6 +365,48 @@ def _mentioned_namespace(question: str, namespaces: set[str]) -> str | None:
         if re.search(rf"\b{re.escape(ns.lower())}\b", q) and (best is None or len(ns) > len(best)):
             best = ns
     return best
+
+
+# Palabras vacías frecuentes en preguntas de operación (ya normalizadas sin acentos).
+_STOPWORDS = {
+    "como", "estan", "esta", "tiene", "tienen", "los", "las", "una", "uno",
+    "del", "que", "hay", "pod", "pods", "cluster", "namespace", "todo", "todos",
+    "toda", "todas", "bien", "mal", "con", "sin", "problema", "problemas",
+    "cuantos", "cuantas", "cual", "cuales", "por", "para", "muestra", "muestrame",
+    "dime", "ver", "estado", "fallan", "fallando", "esta", "estoy", "puedes",
+}
+
+
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+def _name_focus(question: str, rows: list[dict]) -> tuple[str | None, list[dict]]:
+    """Si la pregunta menciona una palabra-clave presente en NOMBRES de pod
+    (p.ej. 'parser'), devuelve (palabra, pods que coinciden). Elige la palabra
+    que más pods empareja."""
+    q = _strip_accents(question.lower())
+    tokens = [t for t in re.findall(r"[a-z0-9-]+", q) if len(t) >= 4 and t not in _STOPWORDS]
+    best_kw: str | None = None
+    best_matches: list[dict] = []
+    for t in tokens:
+        matches = [r for r in rows if t in r["name"].lower()]
+        if len(matches) > len(best_matches):
+            best_kw, best_matches = t, matches
+    return best_kw, best_matches
+
+
+def _match_summary(keyword: str, matched: list[dict]) -> str:
+    problems = [r for r in matched if _is_problem(r)]
+    head = (f"Pods cuyo nombre contiene '{keyword}': {len(matched)} "
+            f"({len(matched) - len(problems)} sanos, {len(problems)} con problemas).")
+    lines = [head]
+    for r in matched[:_MAX_PROBLEMS_SHOWN]:
+        loc = f"{r['ns']}/{r['name']}" if r["ns"] else r["name"]
+        lines.append(f"- {loc}  READY={r['ready']}  STATUS={r['status']}  RESTARTS={r['restarts']}")
+    if len(matched) > _MAX_PROBLEMS_SHOWN:
+        lines.append(f"... y {len(matched) - _MAX_PROBLEMS_SHOWN} más")
+    return "\n".join(lines)
 
 
 def _is_problem(row: dict) -> bool:

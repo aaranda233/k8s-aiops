@@ -11,10 +11,22 @@ from src.diagnostics.cluster_chat import (
     ClusterChatAgent,
     _cluster_digest,
     _describe_cmd,
+    _name_focus,
     _parse,
+    _parse_pod_rows,
     _top_problem,
     extract_problem_pods,
 )
+
+# Pods con varios 'parser' (todos sanos) repartidos entre los rotos.
+_PODS_WITH_PARSERS = """\
+NAMESPACE   NAME                                 READY   STATUS             RESTARTS  AGE
+default     anecoop-parser-f9f477478-l6g6x       1/1     Running            0         41d
+default     edeka-parser-58d574d8d4-2jz9x        1/1     Running            0         41d
+default     eurogroup-parser-6dfd6df857-6qxk9    1/1     Running            0         28d
+default     iberiana-parser-8948b99bf-gwq28      1/1     Running            0         17h
+llm-app     oauth2-proxy-vllm-56ffbf5d4d-vkhnb   0/1     CrashLoopBackOff   1624      5d
+"""
 
 # Muestra realista de `kubectl get pods -A` con problemas claros enterrados
 # entre muchos pods sanos (reproduce el fallo de truncado a 600 chars).
@@ -329,6 +341,49 @@ def test_no_scoped_query_without_namespace_mention():
     agent._run_tool = tool
     list(agent.chat_iter("hay algun problema en el cluster"))
     assert not any(c.startswith("kubectl get pods -n ") for c in tool_calls)
+
+
+@pytest.mark.unit
+def test_name_focus_matches_pods_by_name_keyword():
+    rows = _parse_pod_rows(_PODS_WITH_PARSERS)
+    kw, matched = _name_focus("¿cómo están los pods del parser?", rows)
+    assert kw == "parser"
+    names = {m["name"] for m in matched}
+    assert len(matched) == 4
+    assert "anecoop-parser-f9f477478-l6g6x" in names
+    assert "oauth2-proxy-vllm-56ffbf5d4d-vkhnb" not in names  # no es un parser
+
+
+@pytest.mark.unit
+def test_name_focus_returns_none_without_match():
+    rows = _parse_pod_rows(_PODS_WITH_PARSERS)
+    kw, matched = _name_focus("¿hay algún problema en el cluster?", rows)
+    assert kw is None
+    assert matched == []
+
+
+@pytest.mark.unit
+def test_chat_focuses_on_parser_pods_in_evidence():
+    """REGRESIÓN: preguntar por 'parser' debe enfocar esos pods, no el peor del cluster."""
+    captured = {}
+    tool_calls = []
+    agent = ClusterChatAgent(max_steps=3)
+    def call(msgs, model=None):
+        if model == agent.expert_model:
+            captured["evidence"] = msgs[-1]["content"]
+            return "Los 4 pods parser están Running."
+        return "THOUGHT: ya\nANSWER: listo"
+    agent._call = call
+    def tool(a):
+        tool_calls.append(a)
+        return _PODS_WITH_PARSERS
+    agent._run_tool = tool
+    list(agent.chat_iter("¿cómo están los pods del parser?"))
+    # La evidencia que llega al experto contiene los pods parser
+    assert "anecoop-parser" in captured["evidence"]
+    assert "parser" in captured["evidence"]
+    # No se auto-profundizó en el vllm (la pregunta no era sobre el peor pod)
+    assert not any("describe pod oauth2-proxy-vllm" in c for c in tool_calls)
 
 
 @pytest.mark.unit
