@@ -233,6 +233,7 @@ async def demo_incident(mode: str = "human"):
     from types import SimpleNamespace
 
     from src.remediation.auto_remediation import AutoRemediation
+    from src.remediation.base_notifier import build_notifier
 
     ns = os.getenv("DEMO_NAMESPACE", "aiops-demo")
     deployment = os.getenv("DEMO_DEPLOYMENT", "nginx-demo")
@@ -249,7 +250,7 @@ async def demo_incident(mode: str = "human"):
     )
 
     rem = AutoRemediation(
-        notifier=None,                      # sin notificación externa en la demo
+        notifier=build_notifier(RemediationConfig()),  # avisa por Teams si está configurado
         max_auto_level=1,
         incident_store=incident_store,      # el mismo que ve la consola web
         shadow_mode=(not auto),             # human → espera aprobación; auto → ejecuta
