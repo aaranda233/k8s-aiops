@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import httpx
 
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
-from src.diagnostics.ollama_rca import DiagnosisResult
+from src.diagnostics.ollama_rca import DiagnosisResult, build_event_sample, parse_diagnosis
 
 # GBNF grammar que fuerza ROOT CAUSE: ... \n KUBECTL: kubectl ... a nivel de token.
 # Elimina el fallo de formato independientemente del contexto extra que recibe el experto.
@@ -74,14 +74,13 @@ class HybridReActAgent:
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
 
-        sample = w.raw_logs[-self.max_logs:]
-        logs_text = "\n".join(f"  {l}" for l in sample)
+        logs_text, n_sample = build_event_sample(w.raw_logs, self.max_logs)
         initial_context = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
             f"Namespaces affected: {', '.join(w.namespaces)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
-            f"Event sample (last {len(sample)}):\n{logs_text}"
+            f"Event sample (last {n_sample}):\n{logs_text}"
         )
 
         # Fase 1: investigador (base model)
@@ -170,15 +169,7 @@ class HybridReActAgent:
             resp = client.post(f"{self.host}/api/generate", json=payload)
             resp.raise_for_status()
         text = resp.json()["response"].strip()
-
-        root_cause = "Could not parse root cause."
-        kubectl_cmd = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
-        for line in text.splitlines():
-            if line.startswith("ROOT CAUSE:"):
-                root_cause = line.removeprefix("ROOT CAUSE:").strip()
-            elif line.startswith("KUBECTL:"):
-                kubectl_cmd = line.removeprefix("KUBECTL:").strip()
-        return root_cause, kubectl_cmd
+        return parse_diagnosis(text)
 
     def _call(self, messages: list[dict], model: str, num_predict: int = 300) -> str:
         payload = {
