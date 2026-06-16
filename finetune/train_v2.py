@@ -68,12 +68,12 @@ def train(args: argparse.Namespace) -> None:
     print(f"  Eval       : {args.eval_dataset}")
     print(f"  Max epocas : {args.epochs}  (early stopping patience={args.patience})")
     print(f"  LoRA drop  : {args.lora_dropout}  (v1=0.05, v2={args.lora_dropout})")
-    print(f"  Objetivo   : eval_loss > 0.30 al finalizar")
+    print("  Objetivo   : eval_loss > 0.30 al finalizar")
     print("=" * 60 + "\n")
 
-    from unsloth import FastLanguageModel
-    from trl import SFTTrainer, SFTConfig
     from transformers import EarlyStoppingCallback
+    from trl import SFTConfig, SFTTrainer
+    from unsloth import FastLanguageModel
 
     # 1. Modelo base QLoRA 4-bit
     print("[1/4] Cargando modelo base con QLoRA 4-bit...")
@@ -203,6 +203,7 @@ def train(args: argparse.Namespace) -> None:
 
 def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     import shutil
+
     from unsloth import FastLanguageModel
 
     out_dir = Path(output_dir)
@@ -225,8 +226,8 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"  GGUF listo: {out_dir}/k8s-rca-slm-v2-Q4_K_M.gguf")
-    print(f"\n  Registrar en Ollama:")
-    print(f"    cd finetune && ollama create k8s-rca-slm-v2 -f Modelfile_v2")
+    print("\n  Registrar en Ollama:")
+    print("    cd finetune && ollama create k8s-rca-slm-v2 -f Modelfile_v2")
 
 
 def main() -> None:

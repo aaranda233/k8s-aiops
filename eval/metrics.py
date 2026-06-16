@@ -10,7 +10,6 @@ Métricas de evaluación para el SLM k8s-RCA.
 
 from __future__ import annotations
 
-
 # ── Keyword oracle por escenario ──────────────────────────────────────────────
 
 SCENARIO_KEYWORDS: dict[str, list[str]] = {

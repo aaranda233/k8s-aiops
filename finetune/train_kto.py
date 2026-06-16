@@ -95,9 +95,9 @@ def train(args: argparse.Namespace) -> None:
     print("═" * 60 + "\n")
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from peft import LoraConfig, get_peft_model
-    from trl import KTOTrainer, KTOConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from trl import KTOConfig, KTOTrainer
 
     # ── 1. Modelo base con QLoRA 4-bit ─────────────────────────────────────────
     print("[1/4] Cargando modelo base con QLoRA 4-bit...")
@@ -219,9 +219,10 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     """Fusiona LoRA con modelo base y exporta GGUF Q8_0."""
     import shutil
     import subprocess
+
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     out_dir = Path(output_dir)
     tmp_dir = out_dir / "_merged_tmp_kto"
@@ -276,13 +277,12 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"\n  GGUF listo: {gguf_final}")
-    print(f"\n  Registrar en Ollama:")
-    print(f"    cd finetune && ollama create k8s-rca-kto -f Modelfile_kto")
+    print("\n  Registrar en Ollama:")
+    print("    cd finetune && ollama create k8s-rca-kto -f Modelfile_kto")
 
 
 def _strip_peft_prefix(model_dir: Path) -> None:
     """Elimina el prefijo 'base_model.model.' de los tensores si existe."""
-    import glob
     from safetensors.torch import load_file, save_file
 
     sf_files = list(model_dir.glob("*.safetensors"))

@@ -116,9 +116,9 @@ def train(args: argparse.Namespace) -> None:
     print("═" * 60 + "\n")
 
     import torch
+    from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    from peft import LoraConfig, PeftModel
-    from trl import CPOTrainer, CPOConfig
+    from trl import CPOConfig, CPOTrainer
 
     # ── 1. Tokenizer ──────────────────────────────────────────────────────────
     print("[1/4] Cargando tokenizer y modelo SFT con QLoRA 4-bit...")
@@ -226,9 +226,10 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     """Fusiona LoRA SimPO + exporta GGUF Q8_0."""
     import shutil
     import subprocess
+
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     out_dir = Path(output_dir)
     tmp_dir = out_dir / "_simpo_merged_tmp"
@@ -284,8 +285,8 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         print(f"  GGUF listo: {gguf_path}")
 
-    print(f"\n  Registrar en Ollama:")
-    print(f"    cd finetune && ollama create k8s-rca-simpo -f Modelfile_simpo")
+    print("\n  Registrar en Ollama:")
+    print("    cd finetune && ollama create k8s-rca-simpo -f Modelfile_simpo")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

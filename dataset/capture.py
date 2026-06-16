@@ -18,9 +18,8 @@ Uso:
 
 import json
 import sys
-import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 CAPTURE_DIR  = Path(__file__).parent / "output" / "captured"
 LABELED_FILE = Path(__file__).parent / "output" / "labeled.jsonl"

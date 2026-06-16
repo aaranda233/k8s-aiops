@@ -21,7 +21,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset.generator import generate, load_scenarios
+from dataset.generator import generate
 from eval.runner import HybridModelConfig, ModelConfig, evaluate_hybrid_model, evaluate_model
 
 SCENARIOS_DIR = PROJECT_ROOT / "dataset" / "scenarios"

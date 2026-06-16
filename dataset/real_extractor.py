@@ -14,7 +14,6 @@ import random
 import re
 import subprocess
 import sys
-import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -158,7 +157,6 @@ def _rand_host() -> str:
 def _build_sample(logs: list[str], namespace: str, deployment: str,
                   root_cause: str, kubectl: str, score: float,
                   source: str, pattern_id: str) -> dict:
-    pod = _rand_pod(deployment)
     sample_logs = logs[:20]
 
     user_msg = (
@@ -313,7 +311,7 @@ def generate_synthetic_real_names(n_per_pattern: int = 25) -> list[dict]:
 
     # Importar escenarios YAML
     sys.path.insert(0, str(Path(__file__).parent))
-    from generator import load_scenarios, _build_context, _generate_events, _build_sample as _bs
+    from generator import load_scenarios
 
     base = Path(__file__).parent
     scenarios = load_scenarios(base / "scenarios")
@@ -371,10 +369,10 @@ def main(output_path: Path, seed: int = 42) -> None:
 
     print(f"\n{'═'*55}")
     print(f"  Total samples únicos: {len(unique)}")
-    print(f"\n  Por fuente:")
+    print("\n  Por fuente:")
     for src, n in sources.most_common():
         print(f"    {src:<30} {n}")
-    print(f"\n  Por patrón (top 10):")
+    print("\n  Por patrón (top 10):")
     for pid, n in patterns.most_common(10):
         print(f"    {pid:<30} {n}")
     print(f"\n  Guardado en: {output_path}")

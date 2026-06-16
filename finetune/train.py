@@ -13,9 +13,7 @@ Uso:
 
 import argparse
 import json
-import os
 from pathlib import Path
-
 
 # ── Argumentos ────────────────────────────────────────────────────────────────
 
@@ -75,8 +73,8 @@ def train(args: argparse.Namespace) -> None:
     print("═" * 60 + "\n")
 
     # Unsloth acelera el training 2x y reduce VRAM ~40%
+    from trl import SFTConfig, SFTTrainer
     from unsloth import FastLanguageModel
-    from trl import SFTTrainer, SFTConfig
 
     # ── 1. Cargar modelo base con QLoRA 4-bit ─────────────────────────────────
     print("[1/4] Cargando modelo base con QLoRA 4-bit...")
@@ -181,17 +179,14 @@ def quantize_to_gguf(lora_path: str, base_model: str, output_dir: str) -> None:
 
     Qwen2.5-1.5B Q4_K_M ≈ 1.0 GB → 8-15 tok/s en CPU sin GPU.
     """
-    import subprocess
-    import shutil
 
     from unsloth import FastLanguageModel
 
     out_dir  = Path(output_dir)
-    gguf_out = out_dir / "k8s-rca-slm-q4_k_m.gguf"
     tmp_dir  = out_dir / "_merged_tmp"
 
     # Paso 1: fusionar adaptadores + base → safetensors temporal
-    print(f"  Fusionando LoRA con modelo base...")
+    print("  Fusionando LoRA con modelo base...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         lora_path,
         max_seq_length=1024,
@@ -201,7 +196,7 @@ def quantize_to_gguf(lora_path: str, base_model: str, output_dir: str) -> None:
     del model  # liberar VRAM antes de convertir
 
     # Paso 2: fusionado → GGUF (unsloth lo hace internamente con llama.cpp)
-    print(f"  Cuantizando a Q4_K_M...")
+    print("  Cuantizando a Q4_K_M...")
     model_f16, tok = FastLanguageModel.from_pretrained(str(tmp_dir), load_in_4bit=False)
     model_f16.save_pretrained_gguf(
         str(out_dir / "k8s-rca-slm"),
@@ -212,11 +207,11 @@ def quantize_to_gguf(lora_path: str, base_model: str, output_dir: str) -> None:
     # Paso 3: borrar el merged temporal (3GB fp16 que ya no sirven)
     import shutil as _shutil
     _shutil.rmtree(tmp_dir, ignore_errors=True)
-    print(f"  Merged temporal eliminado.")
+    print("  Merged temporal eliminado.")
 
     print(f"  ✓ GGUF listo: {out_dir}/k8s-rca-slm-Q4_K_M.gguf")
-    print(f"\n  Para registrarlo en Ollama:")
-    print(f"    ollama create k8s-rca-slm -f finetune/Modelfile")
+    print("\n  Para registrarlo en Ollama:")
+    print("    ollama create k8s-rca-slm -f finetune/Modelfile")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

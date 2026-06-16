@@ -169,7 +169,9 @@ def test_shadow_mode_level1_routes_to_approval(scored_window, diagnosis, monkeyp
 
 class RemediationResultStub:
     def __init__(self, incident_id):
-        self.incident_id = incident_id; self.action_taken = "pending"; self.risk_level = 1
+        self.incident_id = incident_id
+        self.action_taken = "pending"
+        self.risk_level = 1
 
 
 @pytest.mark.unit

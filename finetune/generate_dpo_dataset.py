@@ -218,11 +218,11 @@ def main():
     STATS_PATH.write_text(json.dumps(stats, indent=2))
 
     print(f"\n{'═'*55}")
-    print(f"  Dataset DPO generado")
+    print("  Dataset DPO generado")
     print(f"{'═'*55}")
     print(f"  Input:          {total} muestras")
     print(f"  Output:         {len(pairs)} pares válidos ({stats['yield_pct']}%)")
-    print(f"  Descartados:")
+    print("  Descartados:")
     print(f"    rouge_too_high:    {stats.get('rouge_too_high', 0)}")
     print(f"    rejected_too_good: {stats.get('rejected_too_good', 0)}")
     print(f"    ollama_error:      {stats.get('ollama_error', 0)}")

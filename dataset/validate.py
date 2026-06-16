@@ -14,7 +14,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-
 MAX_CHARS = 4000   # aprox 1000 tokens — límite seguro para modelos 1.5b
 
 
@@ -87,7 +86,7 @@ def validate(path: Path) -> bool:
         print(f"  Longitud máx:   {max(token_lengths)} chars")
 
     if scenario_ids:
-        print(f"\n  Distribución de escenarios:")
+        print("\n  Distribución de escenarios:")
         for sid, count in Counter(scenario_ids).most_common():
             bar = "█" * (count // 2)
             print(f"    {sid:<30} {bar} {count}")
@@ -103,11 +102,11 @@ def validate(path: Path) -> bool:
         print(f"\n  ✗ Errores ({len(errors)}):")
         for e in errors[:10]:
             print(f"    {e}")
-        print(f"\n  DATASET INVÁLIDO")
+        print("\n  DATASET INVÁLIDO")
         print(f"{'═'*55}\n")
         return False
 
-    print(f"\n  ✓ Dataset válido — listo para fine-tuning")
+    print("\n  ✓ Dataset válido — listo para fine-tuning")
     print(f"{'═'*55}\n")
     return True
 

@@ -10,3 +10,7 @@ ignore = [
 
 [lint.per-file-ignores]
 "tests/*" = ["F811", "F401"]
+# Scripts de investigación/entrenamiento: manipulan sys.path antes de importar.
+"eval/*" = ["E402"]
+"finetune/*" = ["E402"]
+"dataset/*" = ["E402"]

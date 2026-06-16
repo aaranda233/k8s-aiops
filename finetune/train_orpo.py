@@ -116,9 +116,9 @@ def train(args: argparse.Namespace) -> None:
     print("═" * 60 + "\n")
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from peft import LoraConfig, get_peft_model
-    from trl import ORPOTrainer, ORPOConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from trl import ORPOConfig, ORPOTrainer
 
     # ── 1. Modelo base con QLoRA 4-bit ────────────────────────────────────────
     print("[1/4] Cargando modelo base con QLoRA 4-bit...")
@@ -239,9 +239,10 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     """Fusiona LoRA con modelo base y exporta GGUF Q8_0."""
     import shutil
     import subprocess
+
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     out_dir = Path(output_dir)
     tmp_dir = out_dir / "_merged_tmp_orpo"
@@ -297,8 +298,8 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"\n  GGUF listo: {gguf_final}")
-    print(f"\n  Registrar en Ollama:")
-    print(f"    cd finetune && ollama create k8s-rca-orpo -f Modelfile_orpo")
+    print("\n  Registrar en Ollama:")
+    print("    cd finetune && ollama create k8s-rca-orpo -f Modelfile_orpo")
 
 
 def main() -> None:

@@ -102,7 +102,7 @@ def main():
             "task":            "k8s-root-cause-analysis",
         })
 
-        print(f"\n  Run registrado en MLflow.")
+        print("\n  Run registrado en MLflow.")
         print(f"  URI     : {args.mlflow_uri}")
         print(f"  Experimento: {args.experiment}")
         print(f"  Steps   : {state['global_step']}")

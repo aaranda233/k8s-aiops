@@ -18,7 +18,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 # Parámetros del script de entrenamiento DPO (Direct Preference Optimization):
 #
 # | Parámetro       | Tipo  | Defecto                          | Descripción / Propósito |
@@ -132,9 +131,9 @@ def train(args: argparse.Namespace) -> None:
     print("═" * 60 + "\n")
 
     import torch
+    from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    from peft import LoraConfig, get_peft_model, PeftModel
-    from trl import DPOTrainer, DPOConfig
+    from trl import DPOConfig, DPOTrainer
 
     # ── 1. Cargar tokenizer y modelo SFT con QLoRA 4-bit ─────────────────────
     print("[1/4] Cargando modelo SFT con QLoRA 4-bit (PEFT + bitsandbytes)...")
@@ -152,8 +151,7 @@ def train(args: argparse.Namespace) -> None:
 
     # El checkpoint SFT tiene campos propietarios de unsloth en adapter_config.json.
     # Cargamos el modelo base de HF directamente y aplicamos los pesos LoRA manualmente.
-    import json, tempfile, shutil
-    from peft import PeftModel
+    import json
 
     # Leer el base_model del config SFT para saber qué modelo base usar
     sft_cfg_path = Path(args.sft_model) / "adapter_config.json"
@@ -251,8 +249,8 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
 
     print("  Fusionando adaptadores LoRA con modelo base (fp16)...")
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(lora_path)
     base = AutoModelForCausalLM.from_pretrained(
@@ -279,13 +277,13 @@ def quantize_to_gguf(lora_path: str, output_dir: str) -> None:
     if result.returncode != 0:
         print(f"  [!] Error en conversión GGUF: {result.stderr[:500]}")
         print(f"  Modelo fusionado disponible en: {tmp_dir}")
-        print(f"  Convierte manualmente con llama.cpp")
+        print("  Convierte manualmente con llama.cpp")
     else:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         print(f"  GGUF listo: {gguf_path}")
 
-    print(f"\n  Registrar en Ollama:")
-    print(f"    cd finetune && ollama create k8s-rca-dpo -f Modelfile_dpo")
+    print("\n  Registrar en Ollama:")
+    print("    cd finetune && ollama create k8s-rca-dpo -f Modelfile_dpo")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

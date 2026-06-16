@@ -33,7 +33,6 @@ import re
 from collections import Counter
 from pathlib import Path
 
-
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -68,9 +67,9 @@ def evaluate_diversity(samples: list[dict]) -> dict:
     Distancia media alta = dataset diverso.
     Distancia media baja = samples muy similares entre sí.
     """
+    import numpy as np
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics import pairwise_distances
-    import numpy as np
 
     user_msgs = [s["messages"][1]["content"] for s in samples]
 
@@ -113,8 +112,9 @@ def evaluate_perplexity(samples: list[dict], model_name: str, n_samples: int) ->
     PPL < 20  → el modelo ya sabe esto, revisar si el dataset aporta algo ✗
     """
     import random
+
     import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"    Cargando {model_name} en {device} para calcular PPL...")
@@ -265,27 +265,27 @@ def print_report(path: str, n: int, diversity: dict, outputs: dict, perplexity: 
     print(f"  Total samples: {n}")
     print(f"{'─'*60}")
 
-    print(f"\n  [1] DIVERSIDAD SEMÁNTICA (TF-IDF cosine)")
+    print("\n  [1] DIVERSIDAD SEMÁNTICA (TF-IDF cosine)")
     print(f"      Distancia media entre pares : {diversity['mean_cosine_dist']:.3f}  (1.0 = completamente distintos)")
     print(f"      Distancia mediana           : {diversity['median_cosine_dist']:.3f}")
     print(f"      Percentil 10                : {diversity['p10_cosine_dist']:.3f}  (los más similares)")
     print(f"      Near-duplicados (dist<0.1)  : {diversity['near_duplicate_pct']:.1f}%")
 
-    print(f"\n  [2] CALIDAD DE OUTPUTS")
+    print("\n  [2] CALIDAD DE OUTPUTS")
     print(f"      Samples con ROOT CAUSE      : {outputs['samples_with_root_cause']}")
     print(f"      Samples con KUBECTL         : {outputs['samples_with_kubectl']}")
     print(f"      Palabras media ROOT CAUSE   : {outputs['root_cause_avg_words']}")
     print(f"      Palabras media KUBECTL      : {outputs['kubectl_avg_words']}")
     print(f"      Type-Token Ratio            : {outputs['type_token_ratio']:.3f}  (0=repetitivo, 1=todo distinto)")
     print(f"      Patrones kubectl únicos     : {outputs['unique_kubectl_patterns']}")
-    print(f"      Verbos kubectl más usados:")
+    print("      Verbos kubectl más usados:")
     for verb, count in outputs["kubectl_verb_distribution"].items():
         bar = "█" * (count // 5)
         print(f"        kubectl {verb:<20} {bar} {count}")
 
     if perplexity:
         ppl = perplexity["mean_perplexity"]
-        print(f"\n  [3] PERPLEXIDAD DEL MODELO BASE")
+        print("\n  [3] PERPLEXIDAD DEL MODELO BASE")
         print(f"      Samples evaluados           : {perplexity['n_evaluated']}")
         print(f"      PPL media                   : {ppl}")
         print(f"      PPL mediana                 : {perplexity['median_perplexity']}")

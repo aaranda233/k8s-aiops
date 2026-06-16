@@ -16,7 +16,9 @@ from src.security.scanner import (
 def _scanner():
     with patch("src.security.scanner.k8s_config"), patch("src.security.scanner.client"):
         s = SecurityScanner(cache_ttl=0)
-    s._v1 = MagicMock(); s._rbac = MagicMock(); s._net = MagicMock()
+    s._v1 = MagicMock()
+    s._rbac = MagicMock()
+    s._net = MagicMock()
     s._rbac.list_cluster_role_binding.return_value = NS(items=[])
     s._net.list_network_policy_for_all_namespaces.return_value = NS(items=[])
     return s
