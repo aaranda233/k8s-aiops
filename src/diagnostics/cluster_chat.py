@@ -193,6 +193,13 @@ class ClusterChatAgent:
                 yield {"type": "observation", "step": step, "text": obs}
                 transcript.append((f"Detalle de {top['name']}", cmd, obs))
 
+        # Si la pregunta está enfocada, la evidencia determinista ya es completa:
+        # dejar profundizar al modelo débil solo añade alucinaciones (inventar
+        # fallos, ejecutar comandos sobre nombres inexistentes). Sintetiza ya.
+        if focused:
+            yield from self._final_answer(question, transcript, focused)
+            return
+
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": question},

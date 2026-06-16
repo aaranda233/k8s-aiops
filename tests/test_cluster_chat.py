@@ -390,6 +390,27 @@ def test_chat_focuses_on_parser_pods_in_evidence():
 
 
 @pytest.mark.unit
+def test_focused_question_skips_model_drill_loop():
+    """REGRESIÓN: con foco no se invoca al investigador (evita que invente fallos)."""
+    investigator_calls = []
+    tool_calls = []
+    agent = ClusterChatAgent(max_steps=5)
+    def call(msgs, model=None):
+        if model == agent.expert_model:
+            return "Los pods parser están sanos."
+        investigator_calls.append(msgs)  # NO debería ocurrir con foco
+        return "THOUGHT: el parser está roto\nACTION: kubectl logs parser -n default"
+    agent._call = call
+    def tool(a):
+        tool_calls.append(a)
+        return _PODS_WITH_PARSERS
+    agent._run_tool = tool
+    list(agent.chat_iter("¿cómo está el pod parser?"))
+    assert investigator_calls == []                      # el modelo débil no investigó
+    assert "kubectl logs parser -n default" not in tool_calls  # no se ejecutó su comando inventado
+
+
+@pytest.mark.unit
 def test_synthesis_receives_failures_in_evidence():
     """La evidencia que llega al experto contiene los fallos (no truncados)."""
     captured = {}
