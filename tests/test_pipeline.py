@@ -37,6 +37,10 @@ class _Scored:
     score: float = 0.95
     is_anomaly: bool = True
     model_version: int = 1
+    if_score: float = 0.0
+    severity_score: float = 0.0
+    novelty_score: float = 0.0
+    culprit_namespace: str = "default"
 
 
 class _CapturingBus:

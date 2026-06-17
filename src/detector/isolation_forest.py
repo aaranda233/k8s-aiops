@@ -128,6 +128,7 @@ class ScoredWindow:
     in_training: bool = False  # esta ventana forma parte del training set actual
     severity_score: float = 0.0  # componente por severidad de logs (error_ratio)
     novelty_score: float = 0.0   # componente por plantillas nunca vistas
+    if_score: float = 0.0        # componente Isolation Forest (distribución)
     culprit_namespace: str = ""  # namespace que alcanzó el score máximo (foco del RCA)
 
 
@@ -232,9 +233,10 @@ class AnomalyDetector:
             if s > score:
                 score, culprit = s, ns
 
-        # Señales a nivel ventana (fuerza máxima, para UI/transparencia).
+        # Señales a nivel ventana (fuerza máxima cruda, para UI/diagnóstico).
         sev = max(sev_by_ns.values(), default=0.0)
         nov = max(nov_by_ns.values(), default=0.0)
+        if_s = max(if_by_ns.values(), default=0.0)
         self._since_last_retrain += 1
 
         retrained = False
@@ -253,6 +255,7 @@ class AnomalyDetector:
             in_training=False,
             severity_score=sev,
             novelty_score=nov,
+            if_score=if_s,
             culprit_namespace=culprit,
         ), retrained
 
