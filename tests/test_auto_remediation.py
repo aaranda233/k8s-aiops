@@ -200,3 +200,10 @@ def test_incident_registered_in_store(scored_window, diagnosis, monkeypatch):
     inc = rem.incidents.get(result.incident_id)
     assert inc.root_cause == diagnosis.root_cause
     assert inc.investigation  # trae los pasos de investigación
+
+
+@pytest.mark.unit
+def test_looks_spanish_filters_english_thoughts():
+    from src.remediation.auto_remediation import _looks_spanish
+    assert _looks_spanish("El error de espacio en disco se repite en los pods") is True
+    assert _looks_spanish("The command will help identify the storage issue") is False

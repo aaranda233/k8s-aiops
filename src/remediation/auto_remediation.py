@@ -60,6 +60,15 @@ _VERIFY_WAIT_SECONDS = 90
 _APPROVAL_TIMEOUT_SECONDS = 1800  # 30 minutos
 _APPROVAL_POLL_INTERVAL = 10
 
+_EN_MARKERS = (" the ", " is ", " are ", " will ", " command ", " indicates", " issue")
+_ES_MARKERS = (" el ", " la ", " de ", " que ", " los ", " un ", " está", " espacio", " memoria")
+
+
+def _looks_spanish(text: str) -> bool:
+    """Heurística simple: más indicios de español que de inglés (para la UI)."""
+    t = f" {text.lower()} "
+    return sum(m in t for m in _ES_MARKERS) >= sum(m in t for m in _EN_MARKERS)
+
 
 @dataclass
 class RemediationResult:
@@ -149,11 +158,13 @@ class AutoRemediation:
         root_cause = diagnosis.root_cause
         kubectl_cmd = diagnosis.kubectl_command
 
-        # Pasos de investigación del trace si es modo hybrid/react
+        # Pasos de investigación del trace si es modo hybrid/react. Las acciones
+        # (comandos) se sanean; la prosa THOUGHT solo se muestra si está en español
+        # (el modelo base investigador a veces piensa en inglés — ruido para la UI).
         from src.diagnostics.ollama_rca import sanitize_kubectl
         investigation_steps = []
         for step in diagnosis.react_trace:
-            if step.thought:
+            if step.thought and _looks_spanish(step.thought):
                 investigation_steps.append(f"THOUGHT: {step.thought[:120]}")
             if step.action:
                 investigation_steps.append(f"ACTION: {sanitize_kubectl(step.action)}")
