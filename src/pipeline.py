@@ -35,19 +35,21 @@ def _build_retriever():
     if os.getenv("RAG_ENABLED", "false").lower() != "true":
         return None
     try:
-        from src.diagnostics.incident_retriever import IncidentRetriever
+        from src.diagnostics.incident_retriever import RefreshingRetriever
         feedback = os.getenv("AIOPS_FEEDBACK_FILE", "data/feedback/feedback.jsonl")
         corpus = os.getenv("AIOPS_RAG_CORPUS", "")  # casos conocidos para el día 1
-        # Excluir del RAG lo ya consolidado en el modelo activo (cierre del ciclo).
-        skip = 0
-        try:
-            from finetune.deploy_model import ModelRegistry
-            skip = ModelRegistry().consolidation_watermark()
-        except Exception:
-            skip = 0
-        retriever = IncidentRetriever.from_sources(feedback, corpus or None, skip_consolidated=skip)
-        log.info("RAG activado: %d casos en el índice (consolidados excluidos: %d)",
-                 len(retriever.cases), skip)
+
+        def _watermark():
+            # Excluir del RAG lo ya consolidado en el modelo activo (cierre del ciclo).
+            try:
+                from finetune.deploy_model import ModelRegistry
+                return ModelRegistry().consolidation_watermark()
+            except Exception:
+                return 0
+
+        # Auto-refrescante: una corrección guardada entra en el RAG al instante.
+        retriever = RefreshingRetriever(feedback, corpus or None, watermark_fn=_watermark)
+        log.info("RAG activado (auto-refresco): %d casos en el índice", len(retriever.cases))
         return retriever
     except Exception as e:
         log.warning("No se pudo construir el índice RAG: %s", e)

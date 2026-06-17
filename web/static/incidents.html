@@ -113,6 +113,24 @@ const IX='<svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/>
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 async function approve(id){ await act(id,"approve"); }
 async function reject(id){ await act(id,"reject"); }
+function toggleCorrect(id){
+  const b=document.getElementById("cb-"+id);
+  b.style.display = b.style.display==="none" ? "flex" : "none";
+}
+async function correct(id){
+  const rc=(document.getElementById("rc-"+id).value||"").trim();
+  const kc=(document.getElementById("kc-"+id).value||"").trim();
+  const msg=document.getElementById("cmsg-"+id);
+  if(!rc && !kc){ msg.textContent="Escribe la causa o el comando"; return; }
+  msg.textContent="Guardando…";
+  try{
+    const r=await fetch(`/api/incidents/${id}/correct`,{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({root_cause:rc, kubectl:kc})});
+    msg.textContent = r.ok ? "Guardado — el modelo lo aprende (RAG al instante)" : "Error";
+    if(r.ok) setTimeout(load, 1500);
+  }catch(e){ msg.textContent="Error al guardar"; }
+}
 async function act(id,verb){
   document.querySelectorAll(`[data-inc="${id}"] button`).forEach(b=>b.disabled=true);
   try { await fetch(`/api/incidents/${id}/${verb}`,{method:"POST"}); await load(); }
@@ -150,6 +168,17 @@ function card(i){
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
     <div class="section"><div class="label">Acción propuesta</div><div class="cmd">${esc(i.kubectl_cmd)}</div></div>
     ${exec}${actions}
+    <div class="teach">
+      <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
+      <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
+      ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
+      <div class="correctbox" id="cb-${i.id}" style="display:none">
+        <textarea id="rc-${i.id}" rows="2" placeholder="Causa raíz correcta (lo que aprendiste investigando)…"></textarea>
+        <input id="kc-${i.id}" placeholder="kubectl … (acción correcta)">
+        <button class="approve" onclick="correct('${i.id}')">Guardar — enseñar al modelo</button>
+        <span id="cmsg-${i.id}" class="cmsg"></span>
+      </div>
+    </div>
   </div>`;
 }
 async function load(){
@@ -201,6 +230,15 @@ load(); setInterval(load, 3000);
 .demobtn.auto:hover{border-color:var(--accent);color:var(--accent)}
 .demobtn.human:hover{border-color:var(--warn);color:var(--warn)}
 .demobtn:disabled{opacity:.5;cursor:default}
-.demomsg{color:var(--muted);font-style:italic}</style>
+.demomsg{color:var(--muted);font-style:italic}
+.teach{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:13px}
+.teachlink{color:var(--accent);text-decoration:none}
+.teachlink:hover{text-decoration:underline}
+.teachbtn{cursor:pointer;border:1px solid var(--border);background:var(--panel);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px}
+.teachbtn:hover{border-color:var(--teal);color:var(--teal)}
+.taught{color:var(--ok);font-weight:600}
+.correctbox{display:flex;flex-direction:column;gap:8px;width:100%;margin-top:8px}
+.correctbox textarea,.correctbox input{width:100%;background:var(--rail);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-family:var(--mono);font-size:12px}
+.cmsg{color:var(--muted);font-style:italic}</style>
 </body>
 </html>

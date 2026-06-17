@@ -12,6 +12,7 @@ muy pocos casos (1-2), resumidos a causa+fix.
 """
 
 import json
+import os
 from pathlib import Path
 
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -100,6 +101,45 @@ class IncidentRetriever:
                         "namespaces": ex.get("namespaces", []),
                     })
         return cls(cases)
+
+
+class RefreshingRetriever:
+    """Retriever que se reconstruye cuando feedback.jsonl cambia (memoria instantánea).
+
+    El índice estático (1 build) no veía las correcciones nuevas hasta reiniciar.
+    Este wrapper comprueba el mtime del feedback en cada retrieve() y reconstruye
+    solo si ha cambiado, así una corrección guardada está disponible al instante.
+    watermark_fn devuelve el watermark de consolidación (cierre del ciclo).
+    """
+
+    def __init__(self, feedback_path: str, corpus_path: str | None = None,
+                 watermark_fn=None):
+        self.feedback_path = feedback_path
+        self.corpus_path = corpus_path
+        self.watermark_fn = watermark_fn or (lambda: 0)
+        self._mtime = None
+        self._inner = None
+        self._refresh()
+
+    def _current_mtime(self):
+        try:
+            return os.path.getmtime(self.feedback_path)
+        except OSError:
+            return None
+
+    def _refresh(self) -> None:
+        self._inner = IncidentRetriever.from_sources(
+            self.feedback_path, self.corpus_path, skip_consolidated=self.watermark_fn())
+        self._mtime = self._current_mtime()
+
+    def retrieve(self, query: str, k: int = 2, min_score: float = 0.05) -> list[dict]:
+        if self._current_mtime() != self._mtime:
+            self._refresh()  # feedback cambió -> reconstruir
+        return self._inner.retrieve(query, k=k, min_score=min_score)
+
+    @property
+    def cases(self) -> list[dict]:
+        return self._inner.cases
 
 
 def _load_corpus_cases(path: str) -> list[dict]:

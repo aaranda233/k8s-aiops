@@ -8,6 +8,7 @@ import pytest
 
 from src.diagnostics.incident_retriever import (
     IncidentRetriever,
+    RefreshingRetriever,
     rag_context,
 )
 
@@ -68,6 +69,50 @@ def test_rag_context_is_bounded_and_formatted():
 @pytest.mark.unit
 def test_rag_context_empty_when_no_cases():
     assert rag_context([]) == ""
+
+
+@pytest.mark.unit
+def test_refreshing_retriever_picks_up_new_feedback(tmp_path):
+    """A) Memoria instantánea: una corrección guardada entra en el RAG sin reiniciar."""
+    import json
+    import os
+    import time
+
+    fb = tmp_path / "feedback.jsonl"
+    fb.write_text(json.dumps({
+        "label": "positive", "prompt": {"user": "pod api OOMKilled memory exceeded"},
+        "root_cause": "OOM caso viejo", "kubectl_cmd": "kubectl a",
+    }) + "\n")
+    r = RefreshingRetriever(str(fb))
+    assert len(r.cases) == 1
+
+    # Llega una corrección NUEVA (append) sobre otro caso
+    time.sleep(0.01)
+    with open(fb, "a") as f:
+        f.write(json.dumps({
+            "label": "positive", "prompt": {"user": "ingress 503 upstream timeout gateway"},
+            "root_cause": "timeout del upstream", "kubectl_cmd": "kubectl b",
+        }) + "\n")
+    os.utime(fb, None)  # asegurar cambio de mtime
+
+    hits = r.retrieve("ingress returns 503 upstream timeout", k=1)
+    assert len(r.cases) == 2                       # se reconstruyó
+    assert hits and "timeout" in hits[0]["root_cause"]  # el caso nuevo es recuperable al instante
+
+
+@pytest.mark.unit
+def test_refreshing_retriever_respects_watermark(tmp_path):
+    import json
+
+    fb = tmp_path / "feedback.jsonl"
+    fb.write_text("\n".join(json.dumps(r) for r in [
+        {"label": "positive", "prompt": {"user": "consolidado viejo"}, "root_cause": "v", "kubectl_cmd": "k"},
+        {"label": "positive", "prompt": {"user": "nuevo sin consolidar"}, "root_cause": "n", "kubectl_cmd": "k"},
+    ]))
+    r = RefreshingRetriever(str(fb), watermark_fn=lambda: 1)
+    texts = [c["text"] for c in r.cases]
+    assert "consolidado viejo" not in texts
+    assert "nuevo sin consolidar" in texts
 
 
 @pytest.mark.unit

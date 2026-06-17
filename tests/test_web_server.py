@@ -105,6 +105,62 @@ def test_incident_detail_page_served(client):
 
 
 @pytest.mark.unit
+def test_correct_writes_feedback(client, tmp_path, monkeypatch):
+    """B) La corrección humana se guarda como feedback (señal de aprendizaje)."""
+    import time
+
+    from src.remediation.incident_store import STATUS_FAILED, Incident
+    fb = tmp_path / "feedback.jsonl"
+    monkeypatch.setenv("AIOPS_FEEDBACK_FILE", str(fb))
+    inc = Incident(
+        id="INC-CORR1", created_at=time.time(), namespaces=["prod"], score=0.9,
+        root_cause="diagnóstico flojo", kubectl_cmd="kubectl get pods", risk_level=1,
+        risk_label="reversible", status=STATUS_FAILED, prompt_user="eventos del incidente",
+    )
+    server.incident_store.add(inc)
+    r = client.post("/api/incidents/INC-CORR1/correct",
+                    json={"root_cause": "era OOMKilled", "kubectl": "kubectl set resources deploy/x"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "corrected"
+    # se escribió un ejemplo de feedback con la corrección
+    lines = fb.read_text().strip().splitlines()
+    assert any("era OOMKilled" in line for line in lines)
+
+
+@pytest.mark.unit
+def test_correct_empty_is_rejected(client):
+    import time
+
+    from src.remediation.incident_store import Incident
+    inc = Incident(id="INC-CORR2", created_at=time.time(), namespaces=["p"], score=0.9,
+                   root_cause="x", kubectl_cmd="k", risk_level=1, risk_label="r",
+                   prompt_user="ev")
+    server.incident_store.add(inc)
+    r = client.post("/api/incidents/INC-CORR2/correct", json={"root_cause": "", "kubectl": ""})
+    assert r.status_code == 400
+
+
+@pytest.mark.unit
+def test_correct_unknown_incident_404(client):
+    r = client.post("/api/incidents/INC-NOPE/correct", json={"root_cause": "x"})
+    assert r.status_code == 404
+
+
+@pytest.mark.unit
+def test_incidents_page_has_correction_ui(client):
+    html = client.get("/incidents").text
+    assert "Enseñar la solución correcta" in html
+    assert "toggleCorrect" in html and "function correct(" in html
+    assert "Investigar en el chat" in html
+
+
+@pytest.mark.unit
+def test_chat_page_supports_prefill(client):
+    html = client.get("/chat").text
+    assert "URLSearchParams" in html  # prefill desde ?q=
+
+
+@pytest.mark.unit
 def test_reject_existing_incident(client):
     import time
 

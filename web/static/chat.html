@@ -154,6 +154,8 @@ function send(){
   };
   es.onerror=()=>{ const t=box.querySelector(".thinking"); if(t) t.remove(); es.close(); streaming=false; btn.disabled=false; input.disabled=false; };
 }
+// Prefill desde ?q= (enlace "Investigar en el chat" desde un incidente)
+(function(){ const q=new URLSearchParams(location.search).get("q"); if(q) ask(q); })();
 </script>
 </body>
 </html>
