@@ -41,6 +41,9 @@ class WindowData:
     # conteos POR namespace: total y errores (para severidad local, no global)
     ns_log_counts: dict[str, int] = field(default_factory=dict)
     ns_error_counts: dict[str, int] = field(default_factory=dict)
+    # distribución de plantillas POR namespace (para puntuar cada namespace por
+    # separado: un namespace sano no debe arrastrar a toda la ventana a anomalía)
+    ns_cluster_counts: dict[str, dict[int, int]] = field(default_factory=dict)
     anomaly_score: float = 0.0
     is_anomaly: bool = False
 
@@ -51,6 +54,8 @@ class WindowData:
         self.ns_log_counts[ns] = self.ns_log_counts.get(ns, 0) + 1
         cid = parsed.cluster_id
         self.cluster_counts[cid] = self.cluster_counts.get(cid, 0) + 1
+        ns_counts = self.ns_cluster_counts.setdefault(ns, {})
+        ns_counts[cid] = ns_counts.get(cid, 0) + 1
         if getattr(parsed, "level", "").upper() in _ERROR_LEVELS:
             self.error_count += 1
             if ns:

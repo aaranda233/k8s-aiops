@@ -11,7 +11,9 @@ import pytest
 from src.detector.isolation_forest import (
     AnomalyDetector,
     ScoredWindow,
+    novelty_by_namespace,
     novelty_score,
+    severity_by_namespace,
     severity_score,
 )
 from src.detector.window import WindowData
@@ -29,6 +31,64 @@ def _window(idx: int, counts: dict[int, int], error_count: int = 0,
         w.error_namespaces = {namespace}
         w.ns_error_counts = {namespace: error_count}
     return w
+
+
+def _ns_window(idx: int, ns_counts: dict[str, dict[int, int]],
+               ns_errors: dict[str, int] | None = None) -> WindowData:
+    """Ventana con desglose POR namespace (para scoring por namespace)."""
+    w = WindowData(index=idx, start_time=idx * 60, end_time=(idx + 1) * 60)
+    w.ns_cluster_counts = {ns: dict(c) for ns, c in ns_counts.items()}
+    agg: dict[int, int] = {}
+    for counts in ns_counts.values():
+        for cid, c in counts.items():
+            agg[cid] = agg.get(cid, 0) + c
+    w.cluster_counts = agg
+    w.raw_logs = ["x"] * sum(agg.values())
+    w.namespaces = set(ns_counts)
+    w.ns_log_counts = {ns: sum(c.values()) for ns, c in ns_counts.items()}
+    if ns_errors:
+        w.ns_error_counts = dict(ns_errors)
+        w.error_namespaces = set(ns_errors)
+        w.error_count = sum(ns_errors.values())
+    return w
+
+
+@pytest.mark.unit
+def test_per_namespace_culprit_and_no_drag():
+    """Un namespace con novedad dispara la ventana; el culpable es ESE namespace."""
+    det = AnomalyDetector(bootstrap_windows=4, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=0)
+    for i in range(4):
+        det.process(_ns_window(i, {"pg": {1: 80, 2: 20}, "argocd": {3: 50}}))
+    # argocd normal, pg con explosión de plantillas nuevas
+    scored, _ = det.process(_ns_window(4, {"pg": {777: 60, 888: 40}, "argocd": {3: 50}}))
+    assert scored.is_anomaly is True
+    assert scored.culprit_namespace == "pg"
+
+
+@pytest.mark.unit
+def test_normal_multi_namespace_does_not_flood():
+    """Varios namespaces sanos juntos NO disparan (no se arrastra la ventana)."""
+    det = AnomalyDetector(bootstrap_windows=5, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=0)
+    baseline = {"pg": {1: 80, 2: 20}, "argocd": {3: 50}, "rrhh": {4: 30}}
+    for i in range(5):
+        det.process(_ns_window(i, baseline))
+    scored, _ = det.process(_ns_window(5, {"pg": {1: 82, 2: 18}, "argocd": {3: 48}, "rrhh": {4: 31}}))
+    assert scored.is_anomaly is False
+
+
+@pytest.mark.unit
+def test_per_namespace_severity_culprit():
+    """El culpable por severidad es el namespace que arde, no la ventana entera."""
+    det = AnomalyDetector(bootstrap_windows=4, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=0)
+    for i in range(4):
+        det.process(_ns_window(i, {"pg": {1: 100}, "argocd": {3: 100}}))
+    scored, _ = det.process(_ns_window(
+        5, {"pg": {1: 100}, "argocd": {3: 100}}, ns_errors={"argocd": 90}))
+    assert scored.is_anomaly is True
+    assert scored.culprit_namespace == "argocd"
 
 
 @pytest.mark.unit
@@ -146,6 +206,28 @@ def test_error_log_spike_triggers_anomaly():
     assert scored.severity_score >= 0.8
     assert scored.is_anomaly is True
     assert scored.score >= 0.80
+
+
+# ── Señales POR namespace (un ns sano no arrastra a la ventana) ─────────────
+
+@pytest.mark.unit
+def test_severity_by_namespace_isolates_culprit():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.ns_log_counts = {"pg": 100, "argocd": 100}
+    w.ns_error_counts = {"pg": 90}  # solo pg arde
+    sev = severity_by_namespace(w)
+    assert sev["pg"] >= 0.8
+    assert sev.get("argocd", 0.0) == 0.0
+
+
+@pytest.mark.unit
+def test_novelty_by_namespace_isolates_culprit():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    # pg: todo plantillas conocidas; longhorn: explosión de plantillas nuevas
+    w.ns_cluster_counts = {"pg": {1: 100}, "longhorn": {777: 60, 888: 40}}
+    nov = novelty_by_namespace(w, trained_ids={1, 2, 3})
+    assert nov["longhorn"] >= 0.8
+    assert nov.get("pg", 0.0) == 0.0
 
 
 # ── Señal de novedad (plantillas nunca vistas) ──────────────────────────────

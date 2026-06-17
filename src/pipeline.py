@@ -343,10 +343,15 @@ class AIOPsPipeline:
 
     def _trigger_rca(self, scored: ScoredWindow) -> None:
         console.print(f"\n  [bold red][ALERTA] Score={scored.score:.3f}[/]")
+        # El namespace mostrado es el CULPABLE (el que alcanzó el score), no los
+        # ~14 namespaces de la ventana: así el dashboard coincide con Incidencias.
+        culprit = getattr(scored, "culprit_namespace", "") or ""
+        ns_shown = [culprit] if culprit else sorted(scored.window.namespaces)
         self._emit("anomaly", {
             "window_index": scored.window.index,
             "score": round(scored.score, 4),
-            "namespaces": sorted(scored.window.namespaces),
+            "namespaces": ns_shown,
+            "culprit_namespace": culprit,
             "log_count": scored.window.log_count,
             "logs_sample": scored.window.raw_logs[-10:],
         })

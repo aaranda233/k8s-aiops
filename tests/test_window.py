@@ -63,6 +63,19 @@ def test_window_keeps_structured_error_records():
 
 
 @pytest.mark.unit
+def test_ns_cluster_counts_tracks_templates_per_namespace():
+    """Cada namespace mantiene su propia distribución de plantillas (para scoring por ns)."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("a", "pg", 1))
+    w.add(FakeParsed("a", "pg", 1))
+    w.add(FakeParsed("b", "pg", 2))
+    w.add(FakeParsed("c", "longhorn", 9))
+    assert w.ns_cluster_counts == {"pg": {1: 2, 2: 1}, "longhorn": {9: 1}}
+    # el agregado global sigue existiendo (compat)
+    assert w.cluster_counts == {1: 2, 2: 1, 9: 1}
+
+
+@pytest.mark.unit
 def test_primary_namespace_is_dominant_error_namespace():
     """El namespace con más errores es el culpable principal."""
     w = WindowData(index=0, start_time=0, end_time=60)

@@ -78,11 +78,12 @@ class ReActAgent:
         """Ejecuta el ciclo ReAct y devuelve un DiagnosisResult compatible con el pipeline."""
         w = scored_window.window
 
-        logs_text, n_sample, label = window_event_sample(w, self.max_logs)
-        primary, _others = rca_focus(w)
+        culprit = getattr(scored_window, "culprit_namespace", "") or None
+        logs_text, n_sample, label = window_event_sample(w, self.max_logs, focus_ns=culprit)
+        primary, _others = rca_focus(w, culprit)
         initial_context = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
-            f"{rca_namespaces_line(w)}\n"
+            f"{rca_namespaces_line(w, culprit)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"

@@ -35,27 +35,40 @@ _SEVERITY_LOW = 0.25        # ratio de error LOCAL donde empieza a puntuar
 _SEVERITY_HIGH = 0.70       # ratio de error LOCAL donde satura a 1.0
 
 
-def severity_score(window: WindowData) -> float:
-    """Sub-score [0,1] = máximo sobre namespaces de su proporción local de errores."""
+def _map_severity(total: int, err: int) -> float:
+    """Mapea (total, errores) de UN namespace a un sub-score [0,1]."""
+    if err < _SEVERITY_MIN_ERRORS or total == 0:
+        return 0.0
+    ratio = err / total
+    if ratio <= _SEVERITY_LOW:
+        return 0.0
+    return min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
+
+
+def severity_by_namespace(window: WindowData) -> dict[str, float]:
+    """Severidad [0,1] por namespace (proporción local de logs de error)."""
     ns_log = getattr(window, "ns_log_counts", None)
     ns_err = getattr(window, "ns_error_counts", None)
-    if not ns_log or not ns_err:
-        # Compatibilidad con ventanas sin desglose por namespace: ratio global.
-        if window.error_count < _SEVERITY_MIN_ERRORS:
-            return 0.0
-        ratio = window.error_ratio
-        return 0.0 if ratio <= _SEVERITY_LOW else min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
-
-    best = 0.0
+    if not ns_log:
+        return {}
+    out: dict[str, float] = {}
     for ns, total in ns_log.items():
-        err = ns_err.get(ns, 0)
-        if err < _SEVERITY_MIN_ERRORS or total == 0:
-            continue
-        ratio = err / total
-        if ratio <= _SEVERITY_LOW:
-            continue
-        best = max(best, min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW)))
-    return best
+        s = _map_severity(total, (ns_err or {}).get(ns, 0))
+        if s > 0.0:
+            out[ns] = s
+    return out
+
+
+def severity_score(window: WindowData) -> float:
+    """Sub-score [0,1] = máximo sobre namespaces de su proporción local de errores."""
+    by_ns = severity_by_namespace(window)
+    if by_ns:
+        return max(by_ns.values())
+    # Compatibilidad con ventanas sin desglose por namespace: ratio global.
+    if window.error_count < _SEVERITY_MIN_ERRORS:
+        return 0.0
+    ratio = window.error_ratio
+    return 0.0 if ratio <= _SEVERITY_LOW else min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
 
 
 # Señal de novedad: una ventana con muchos logs de plantillas NUNCA vistas por el
@@ -70,19 +83,38 @@ _NOVELTY_LOW = 0.15      # ratio de novedad donde empieza a puntuar
 _NOVELTY_HIGH = 0.50     # ratio de novedad donde satura a 1.0
 
 
-def novelty_score(window: WindowData, trained_ids: set[int]) -> float:
-    """Sub-score [0,1] por proporción de logs de plantillas no vistas en el entrenamiento."""
-    counts = window.cluster_counts
-    total = sum(counts.values())
-    if total == 0:
-        return 0.0
-    novel = sum(c for cid, c in counts.items() if cid not in trained_ids)
-    if novel < _NOVELTY_MIN_LOGS:
+def _map_novelty(novel: int, total: int) -> float:
+    """Mapea (logs novedosos, total) de UN namespace a un sub-score [0,1]."""
+    if total == 0 or novel < _NOVELTY_MIN_LOGS:
         return 0.0
     ratio = novel / total
     if ratio <= _NOVELTY_LOW:
         return 0.0
     return min(1.0, (ratio - _NOVELTY_LOW) / (_NOVELTY_HIGH - _NOVELTY_LOW))
+
+
+def _novelty_from_counts(counts: dict[int, int], trained_ids: set[int]) -> float:
+    total = sum(counts.values())
+    novel = sum(c for cid, c in counts.items() if cid not in trained_ids)
+    return _map_novelty(novel, total)
+
+
+def novelty_by_namespace(window: WindowData, trained_ids: set[int]) -> dict[str, float]:
+    """Novedad [0,1] por namespace (proporción de logs de plantillas no vistas)."""
+    ns_counts = getattr(window, "ns_cluster_counts", None)
+    if not ns_counts:
+        return {}
+    out: dict[str, float] = {}
+    for ns, counts in ns_counts.items():
+        s = _novelty_from_counts(counts, trained_ids)
+        if s > 0.0:
+            out[ns] = s
+    return out
+
+
+def novelty_score(window: WindowData, trained_ids: set[int]) -> float:
+    """Sub-score [0,1] por proporción de logs de plantillas no vistas (whole-window)."""
+    return _novelty_from_counts(window.cluster_counts, trained_ids)
 
 
 @dataclass
@@ -96,6 +128,7 @@ class ScoredWindow:
     in_training: bool = False  # esta ventana forma parte del training set actual
     severity_score: float = 0.0  # componente por severidad de logs (error_ratio)
     novelty_score: float = 0.0   # componente por plantillas nunca vistas
+    culprit_namespace: str = ""  # namespace que alcanzó el score máximo (foco del RCA)
 
 
 class AnomalyDetector:
@@ -130,6 +163,8 @@ class AnomalyDetector:
         self._model: IsolationForest | None = None
         self._model_version: int = 0
         self._trained_cluster_ids: list[int] = []
+        # Escala del lado anómalo de decision_function (referencia absoluta)
+        self._d_scale: float = 0.05
         # PCA 2D para visualizacion — se recalcula en cada entrenamiento
         self._pca: PCA | None = None
         # Coordenadas 2D de las ventanas de entrenamiento para el scatter
@@ -171,16 +206,35 @@ class AnomalyDetector:
                 self._bootstrapping = False
             return None, False
 
-        # Puntuar la ventana: max(IF estadístico, severidad de logs, novedad de
-        # plantillas). Tres señales complementarias — distribución, gravedad y
-        # patrones inéditos.
-        if_score, pca_coord = self._score_one(window)
-        sev = severity_score(window)
-        nov = novelty_score(window, set(self._trained_cluster_ids))
+        # Puntuar POR NAMESPACE: cada namespace de la ventana se evalúa por
+        # separado con tres señales complementarias (IF de distribución, severidad
+        # de logs, novedad de plantillas). El score de la ventana es el máximo y el
+        # CULPABLE es el namespace que lo alcanza — así un namespace sano no arrastra
+        # a toda la ventana a anomalía y la alerta apunta al servicio real.
+        pca_coord = self._project_pca(window)
         self._windows_since_ready += 1
-        # La novedad se amortigua durante el warm-up; severidad e IF, no.
-        nov_effective = nov * self._novelty_warmup_factor()
-        score = max(if_score, sev, nov_effective)
+        warm = self._novelty_warmup_factor()
+        trained = set(self._trained_cluster_ids)
+
+        if getattr(window, "ns_cluster_counts", None):
+            if_by_ns = self._if_by_namespace(window)
+            nov_by_ns = novelty_by_namespace(window, trained)
+        else:
+            # Compatibilidad: ventana sin desglose → un único pseudo-namespace.
+            if_by_ns = {"": self._score_whole(window)}
+            nov_by_ns = {"": novelty_score(window, trained)}
+        sev_by_ns = severity_by_namespace(window)
+
+        culprit, score = "", 0.0
+        for ns in sorted(set(if_by_ns) | set(sev_by_ns) | set(nov_by_ns)):
+            s = max(if_by_ns.get(ns, 0.0), sev_by_ns.get(ns, 0.0),
+                    nov_by_ns.get(ns, 0.0) * warm)
+            if s > score:
+                score, culprit = s, ns
+
+        # Señales a nivel ventana (fuerza máxima, para UI/transparencia).
+        sev = max(sev_by_ns.values(), default=0.0)
+        nov = max(nov_by_ns.values(), default=0.0)
         self._since_last_retrain += 1
 
         retrained = False
@@ -199,6 +253,7 @@ class AnomalyDetector:
             in_training=False,
             severity_score=sev,
             novelty_score=nov,
+            culprit_namespace=culprit,
         ), retrained
 
     def _novelty_warmup_factor(self) -> float:
@@ -245,19 +300,50 @@ class AnomalyDetector:
 
         return normalize(matrix, norm="l1")
 
+    def _vectorize_one(self, counts: dict[int, int], feature_ids: list[int]) -> np.ndarray:
+        """Vector l1-normalizado de UNA distribución de plantillas (un namespace)."""
+        if not feature_ids:
+            return np.zeros(1, dtype=np.float32)
+        v = np.zeros(len(feature_ids), dtype=np.float32)
+        for j, cid in enumerate(feature_ids):
+            v[j] = counts.get(cid, 0)
+        s = v.sum()
+        return v / s if s > 0 else v
+
+    def _namespace_vectors(self, window: WindowData, feature_ids: list[int]) -> list[np.ndarray]:
+        """Vectores por namespace de una ventana (o whole-window si no hay desglose)."""
+        nsc = getattr(window, "ns_cluster_counts", None)
+        if nsc:
+            return [self._vectorize_one(c, feature_ids) for c in nsc.values()]
+        return [self._vectorize_one(window.cluster_counts, feature_ids)]
+
     def _train(self, windows: list[WindowData]) -> None:
         self._trained_cluster_ids = sorted(self._all_cluster_ids)
-        X = self._vectorize(windows, self._trained_cluster_ids)
+        ids = self._trained_cluster_ids
+        # El IF se entrena sobre vectores POR NAMESPACE (fila = (ventana, namespace)):
+        # aprende cómo es la distribución de plantillas de un namespace "normal".
+        rows = [v for w in windows for v in self._namespace_vectors(w, ids)]
+        X = np.vstack(rows) if rows else np.zeros((1, max(1, len(ids))), dtype=np.float32)
         model = IsolationForest(**self._if_params)
         model.fit(X)
         self._model = model
         self._model_version += 1
+        # Escala ABSOLUTA basada en decision_function (calibrada por contamination):
+        # d>=0 = dentro de la distribución normal → score 0; d<0 = anómalo. La escala
+        # del lado anómalo = profundidad del peor punto normal del entrenamiento.
+        # Así una ventana normal NO se fuerza a 1.0 aunque sea la "menos normal" del
+        # momento — esa normalización relativa min-max era la causa del flood.
+        d_train = model.decision_function(X)
+        self._d_scale = float(max(-d_train.min(), 0.05))
 
-        # PCA 2D sobre el training set para visualizacion
-        n_components = min(2, X.shape[0], X.shape[1])
+        # PCA 2D para visualización: se ajusta sobre el agregado POR VENTANA (no
+        # por-namespace) para que el scatter siga teniendo una coordenada por
+        # ventana de entrenamiento (consistente con el evento de retrain).
+        Xw = self._vectorize(windows, ids)
+        n_components = min(2, Xw.shape[0], Xw.shape[1])
         if n_components == 2:
             self._pca = PCA(n_components=2, random_state=42)
-            coords = self._pca.fit_transform(X)
+            coords = self._pca.fit_transform(Xw)
             self._training_coords = [(float(c[0]), float(c[1])) for c in coords]
         else:
             self._pca = None
@@ -267,37 +353,39 @@ class AnomalyDetector:
         """Coordenadas PCA de las ventanas de entrenamiento actuales."""
         return list(self._training_coords)
 
-    def _score_one(self, window: WindowData) -> float:
-        """
-        Puntua UNA ventana usando el feature set fijado en el ultimo entrenamiento.
-        Cluster_ids nuevos descubiertos despues del entrenamiento se ignoran
-        hasta el proximo reentrenamiento (cuando se incorporan al feature set).
-        """
+    def _project_pca(self, window: WindowData) -> tuple[float, float]:
+        """Proyecta el vector whole-window al espacio PCA del modelo (solo viz)."""
+        if self._pca is None or not self._trained_cluster_ids:
+            return (0.0, 0.0)
+        v = self._vectorize_one(window.cluster_counts, self._trained_cluster_ids).reshape(1, -1)
+        try:
+            proj = self._pca.transform(v)[0]
+            return (float(proj[0]), float(proj[1]))
+        except Exception:
+            return (0.0, 0.0)
+
+    def _if_anom(self, d: float) -> float:
+        """decision_function → score de anomalía [0,1]. d>=0 (normal) → 0."""
+        if d >= 0:
+            return 0.0
+        return float(np.clip(-d / self._d_scale, 0.0, 1.0))
+
+    def _score_whole(self, window: WindowData) -> float:
+        """Score IF [0,1] de la ventana entera (fallback sin desglose por namespace)."""
         if self._model is None or not self._trained_cluster_ids:
             return 0.0
+        v = self._vectorize_one(window.cluster_counts, self._trained_cluster_ids)
+        d = float(self._model.decision_function(v.reshape(1, -1))[0])
+        return self._if_anom(d)
 
-        history_list = list(self._history)
-        all_windows = history_list + [window]
-        # Usar siempre el feature set del modelo actual
-        X_all = self._vectorize(all_windows, self._trained_cluster_ids)
-
-        raw_scores = self._model.score_samples(X_all)
-        s_min, s_max = raw_scores.min(), raw_scores.max()
-
-        if s_max == s_min:
-            return 0.0, (0.0, 0.0)
-
-        raw_new = raw_scores[-1]
-        normalized = float(np.clip(1.0 - (raw_new - s_min) / (s_max - s_min), 0.0, 1.0))
-
-        # Proyectar la ventana nueva al espacio PCA del modelo actual
-        pca_coord = (0.0, 0.0)
-        if self._pca is not None:
-            v_new = X_all[-1].reshape(1, -1)
-            try:
-                proj = self._pca.transform(v_new)[0]
-                pca_coord = (float(proj[0]), float(proj[1]))
-            except Exception:
-                pass
-
-        return normalized, pca_coord
+    def _if_by_namespace(self, window: WindowData) -> dict[str, float]:
+        """Score IF [0,1] de cada namespace de la ventana (referencia absoluta)."""
+        if self._model is None or not self._trained_cluster_ids:
+            return {}
+        cur = list((getattr(window, "ns_cluster_counts", None) or {}).items())
+        if not cur:
+            return {}
+        ids = self._trained_cluster_ids
+        X = np.vstack([self._vectorize_one(c, ids) for _, c in cur])
+        d = self._model.decision_function(X)
+        return {ns: self._if_anom(float(di)) for (ns, _), di in zip(cur, d)}

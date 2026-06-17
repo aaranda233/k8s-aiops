@@ -109,21 +109,22 @@ def cluster_error_templates(records, max_templates: int = _MAX_TEMPLATES,
     return text, len(groups)
 
 
-def rca_focus(window) -> tuple[str, list[str]]:
+def rca_focus(window, primary_override: str | None = None) -> tuple[str, list[str]]:
     """Devuelve (namespace_primario, otros_con_errores).
 
-    El primario es el culpable dominante (más errores); si no se conoce, el primer
-    namespace con errores. El RCA debe centrarse en UNA causa, no diluirse.
+    El primario es el culpable: si el detector lo señala (primary_override) se usa
+    ese; si no, el namespace dominante por errores. El RCA debe centrarse en UNA
+    causa, no diluirse.
     """
     focus = list(getattr(window, "focus_namespaces", None) or [])
-    primary = getattr(window, "primary_namespace", None) or (focus[0] if focus else "")
+    primary = primary_override or getattr(window, "primary_namespace", None) or (focus[0] if focus else "")
     others = [ns for ns in focus if ns != primary]
     return primary, others
 
 
-def rca_namespaces_line(window) -> str:
+def rca_namespaces_line(window, primary_override: str | None = None) -> str:
     """Línea de cabecera para el prompt: lidera con el namespace culpable."""
-    primary, others = rca_focus(window)
+    primary, others = rca_focus(window, primary_override)
     if not primary:
         return "Namespaces affected: (desconocido)"
     line = f"Namespace afectado: {primary}"
@@ -132,19 +133,19 @@ def rca_namespaces_line(window) -> str:
     return line
 
 
-def window_event_sample(window, max_logs: int = 40) -> tuple[str, int, str]:
+def window_event_sample(window, max_logs: int = 40, focus_ns: str | None = None) -> tuple[str, int, str]:
     """Muestra para el RCA priorizando los logs de error si los hay.
 
     Cuando la anomalía la dispara la severidad (volumen anormal de logs de error),
     el RCA debe ver ESAS líneas, no logs recientes al azar de toda la ventana.
     Si los errores vienen estructurados (error_records), se agrupan por plantilla
-    y se FILTRAN al namespace culpable dominante (foco) para no diluir la señal.
-    Devuelve (texto, n_líneas, etiqueta).
+    y se FILTRAN al namespace culpable (focus_ns; si no, el dominante por errores)
+    para no diluir la señal. Devuelve (texto, n_líneas, etiqueta).
     """
     error_logs = getattr(window, "error_logs", None) or []
     records = getattr(window, "error_records", None) or []
     if len(error_logs) >= _SAMPLE_ERROR_MIN and records:
-        primary = getattr(window, "primary_namespace", None)
+        primary = focus_ns or getattr(window, "primary_namespace", None)
         focused = [r for r in records
                    if not primary or (getattr(r, "namespace", "") or "") == primary]
         focused = focused or records  # nunca perder señal si el filtro vacía
@@ -346,12 +347,13 @@ class OllamaRCA:
 
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
-        logs_text, n_sample, label = window_event_sample(w, self.max_logs)
-        primary, _others = rca_focus(w)
+        culprit = getattr(scored_window, "culprit_namespace", "") or None
+        logs_text, n_sample, label = window_event_sample(w, self.max_logs, focus_ns=culprit)
+        primary, _others = rca_focus(w, culprit)
 
         user_msg = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
-            f"{rca_namespaces_line(w)}\n"
+            f"{rca_namespaces_line(w, culprit)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
