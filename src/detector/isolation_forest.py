@@ -45,6 +45,33 @@ def severity_score(window: WindowData) -> float:
     return min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
 
 
+# Señal de novedad: una ventana con muchos logs de plantillas NUNCA vistas por el
+# modelo (no están en el feature set entrenado) es anómala — un patrón de log
+# inédito es la señal más fuerte de "algo nuevo está pasando". El IF ignora las
+# plantillas nuevas hasta el siguiente reentrenamiento (su feature set está
+# congelado), así que por sí solo no las detecta; esta señal cierra ese hueco.
+# Es transitoria: cuando el modelo reentrena e incorpora la plantilla, deja de
+# ser nueva y toman el relevo la distribución (IF) y la severidad.
+_NOVELTY_MIN_LOGS = 5    # mínimo de logs novedosos para considerarlo
+_NOVELTY_LOW = 0.15      # ratio de novedad donde empieza a puntuar
+_NOVELTY_HIGH = 0.50     # ratio de novedad donde satura a 1.0
+
+
+def novelty_score(window: WindowData, trained_ids: set[int]) -> float:
+    """Sub-score [0,1] por proporción de logs de plantillas no vistas en el entrenamiento."""
+    counts = window.cluster_counts
+    total = sum(counts.values())
+    if total == 0:
+        return 0.0
+    novel = sum(c for cid, c in counts.items() if cid not in trained_ids)
+    if novel < _NOVELTY_MIN_LOGS:
+        return 0.0
+    ratio = novel / total
+    if ratio <= _NOVELTY_LOW:
+        return 0.0
+    return min(1.0, (ratio - _NOVELTY_LOW) / (_NOVELTY_HIGH - _NOVELTY_LOW))
+
+
 @dataclass
 class ScoredWindow:
     window: WindowData
@@ -55,6 +82,7 @@ class ScoredWindow:
     pca_y: float = 0.0
     in_training: bool = False  # esta ventana forma parte del training set actual
     severity_score: float = 0.0  # componente por severidad de logs (error_ratio)
+    novelty_score: float = 0.0   # componente por plantillas nunca vistas
 
 
 class AnomalyDetector:
@@ -123,10 +151,13 @@ class AnomalyDetector:
                 self._bootstrapping = False
             return None, False
 
-        # Puntuar la ventana: max(score estadístico del IF, señal de severidad).
+        # Puntuar la ventana: max(IF estadístico, severidad de logs, novedad de
+        # plantillas). Tres señales complementarias — distribución, gravedad y
+        # patrones inéditos.
         if_score, pca_coord = self._score_one(window)
         sev = severity_score(window)
-        score = max(if_score, sev)
+        nov = novelty_score(window, set(self._trained_cluster_ids))
+        score = max(if_score, sev, nov)
         self._since_last_retrain += 1
 
         retrained = False
@@ -144,6 +175,7 @@ class AnomalyDetector:
             pca_y=pca_coord[1],
             in_training=False,
             severity_score=sev,
+            novelty_score=nov,
         ), retrained
 
     @property
