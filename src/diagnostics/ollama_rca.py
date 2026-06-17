@@ -62,6 +62,51 @@ def build_event_sample(raw_logs: list, max_logs: int = 40) -> tuple[str, int]:
 
 
 _SAMPLE_ERROR_MIN = 5  # mínimo de logs de error para liderar la muestra con ellos
+_MAX_TEMPLATES = 12    # nº máximo de patrones distintos a mostrar al SLM
+
+
+def cluster_error_templates(records, max_templates: int = _MAX_TEMPLATES,
+                            max_chars: int = _MAX_SAMPLE_CHARS) -> tuple[str, int]:
+    """Agrupa logs de error por (namespace, plantilla) y los resume para el SLM.
+
+    En vez de volcar 40 líneas casi idénticas (que diluyen la señal y consumen el
+    presupuesto de num_ctx), emite una línea por patrón con su frecuencia y un
+    ejemplo real, ordenadas de más a menos frecuente:
+
+        12× [postgresql] FATAL: role "<*>" does not exist
+             ej: FATAL: role "$(POSTGRES_USER)" does not exist
+
+    Devuelve (texto, nº de patrones distintos).
+    """
+    groups: dict[tuple, dict] = {}
+    for r in records:
+        ns = (getattr(r, "namespace", "") or "").strip()
+        template = (getattr(r, "template", "") or getattr(r, "raw", "") or "").strip()
+        key = (ns, getattr(r, "cluster_id", template))
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {"count": 1, "template": template, "namespace": ns,
+                           "example": (getattr(r, "raw", "") or "").strip()}
+        else:
+            g["count"] += 1
+    # Más frecuentes primero (estable: empates conservan orden de aparición).
+    ranked = sorted(groups.values(), key=lambda g: g["count"], reverse=True)[:max_templates]
+    lines: list[str] = []
+    for g in ranked:
+        ns = f"[{g['namespace']}] " if g["namespace"] else ""
+        template = g["template"]
+        if len(template) > _MAX_LINE_CHARS:
+            template = template[:_MAX_LINE_CHARS] + "…"
+        lines.append(f"  {g['count']}× {ns}{template}")
+        example = g["example"]
+        if example and example != g["template"]:
+            if len(example) > _MAX_LINE_CHARS:
+                example = example[:_MAX_LINE_CHARS] + "…"
+            lines.append(f"       ej: {example}")
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    return text, len(groups)
 
 
 def window_event_sample(window, max_logs: int = 40) -> tuple[str, int, str]:
@@ -69,9 +114,14 @@ def window_event_sample(window, max_logs: int = 40) -> tuple[str, int, str]:
 
     Cuando la anomalía la dispara la severidad (volumen anormal de logs de error),
     el RCA debe ver ESAS líneas, no logs recientes al azar de toda la ventana.
-    Devuelve (texto, n_líneas, etiqueta).
+    Si los errores vienen estructurados (error_records), se agrupan por plantilla
+    para densar la señal. Devuelve (texto, n_líneas, etiqueta).
     """
     error_logs = getattr(window, "error_logs", None) or []
+    records = getattr(window, "error_records", None) or []
+    if len(error_logs) >= _SAMPLE_ERROR_MIN and records:
+        text, distinct = cluster_error_templates(records)
+        return text, len(error_logs), f"Error patterns ({distinct} distinct templates)"
     if len(error_logs) >= _SAMPLE_ERROR_MIN:
         text, n = build_event_sample(error_logs, max_logs)
         return text, n, f"Error log sample ({len(error_logs)} error lines in window)"

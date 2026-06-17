@@ -205,6 +205,67 @@ def test_window_event_sample_falls_back_to_raw():
     assert label == "Event sample"
 
 
+# ── cluster_error_templates: densa la señal por plantilla ────────────────────
+
+def _erec(raw, template, cluster_id, namespace="pg"):
+    return SimpleNamespace(raw=raw, template=template, cluster_id=cluster_id, namespace=namespace)
+
+
+@pytest.mark.unit
+def test_cluster_groups_and_counts_by_template():
+    """12 errores de la misma plantilla → una línea '12× plantilla', no 12 líneas."""
+    recs = [_erec(f'FATAL: role "user{i}" does not exist',
+                  'FATAL: role "<*>" does not exist', 7) for i in range(12)]
+    text, distinct = ollama_rca.cluster_error_templates(recs)
+    assert distinct == 1
+    assert "12×" in text
+    assert 'role "<*>" does not exist' in text
+    # un ejemplo real concreto acompaña a la plantilla
+    assert "ej:" in text and "user0" in text
+    # NO repite las 12 líneas crudas
+    assert text.count("does not exist") <= 3
+
+
+@pytest.mark.unit
+def test_cluster_orders_by_frequency():
+    recs = [_erec("conn refused", "conn refused", 2) for _ in range(2)]
+    recs += [_erec(f"role {i} missing", "role <*> missing", 7) for i in range(9)]
+    text, distinct = ollama_rca.cluster_error_templates(recs)
+    assert distinct == 2
+    # la plantilla más frecuente (9×) aparece antes que la de 2×
+    assert text.index("9×") < text.index("2×")
+
+
+@pytest.mark.unit
+def test_cluster_labels_namespace():
+    recs = [_erec("boom", "boom", 1, namespace="longhorn-system") for _ in range(6)]
+    text, distinct = ollama_rca.cluster_error_templates(recs)
+    assert "[longhorn-system]" in text
+
+
+@pytest.mark.unit
+def test_cluster_separates_same_template_different_namespace():
+    recs = [_erec("x", "boom <*>", 1, namespace="a") for _ in range(3)]
+    recs += [_erec("y", "boom <*>", 1, namespace="b") for _ in range(3)]
+    _text, distinct = ollama_rca.cluster_error_templates(recs)
+    assert distinct == 2  # mismo patrón pero distinto namespace = dos grupos
+
+
+@pytest.mark.unit
+def test_window_event_sample_uses_clustering_when_records_present():
+    recs = [_erec(f'FATAL: role "u{i}" does not exist',
+                  'FATAL: role "<*>" does not exist', 7) for i in range(8)]
+    w = SimpleNamespace(
+        raw_logs=["noise"] * 8,
+        error_logs=[r.raw for r in recs],
+        error_records=recs,
+    )
+    text, n, label = window_event_sample(w, max_logs=40)
+    assert "8×" in text
+    assert "pattern" in label.lower() or "template" in label.lower()
+    assert n == 8  # nº total de líneas de error
+
+
 # ── diagnose() con red mockeada ─────────────────────────────────────────────
 
 @dataclass

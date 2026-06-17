@@ -18,6 +18,7 @@ class FakeParsed:
     namespace: str
     cluster_id: int
     level: str = ""
+    template: str = ""
 
 
 @pytest.mark.unit
@@ -42,6 +43,23 @@ def test_window_counts_error_level_logs():
     w.add(FakeParsed("warn", "ns", 4, level="WARNING"))  # WARNING no cuenta como error
     assert w.error_count == 3
     assert w.error_ratio == 3 / 5
+
+
+@pytest.mark.unit
+def test_window_keeps_structured_error_records():
+    """Los logs de error guardan plantilla/cluster/namespace, no solo el raw."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed('FATAL: role "alice" does not exist', "pg", 7,
+                     level="FATAL", template='FATAL: role "<*>" does not exist'))
+    w.add(FakeParsed("INFO ready", "pg", 8, level="INFO"))  # no error, no record
+    assert len(w.error_records) == 1
+    rec = w.error_records[0]
+    assert rec.cluster_id == 7
+    assert rec.namespace == "pg"
+    assert rec.template == 'FATAL: role "<*>" does not exist'
+    assert rec.raw == 'FATAL: role "alice" does not exist'
+    # error_logs (raw) se conserva para compatibilidad
+    assert w.error_logs == ['FATAL: role "alice" does not exist']
 
 
 @pytest.mark.unit

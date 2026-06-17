@@ -11,6 +11,15 @@ _ERROR_LEVELS = {"ERROR", "FATAL", "CRITICAL"}
 _MAX_ERROR_LOGS = 80  # tope de líneas de error que se guardan para el RCA
 
 
+@dataclass(frozen=True)
+class ErrorRecord:
+    """Log de error con su plantilla Drain3 — permite agrupar por patrón en el RCA."""
+    raw: str
+    template: str
+    cluster_id: int
+    namespace: str
+
+
 @dataclass
 class WindowData:
     index: int
@@ -24,6 +33,9 @@ class WindowData:
     error_count: int = 0
     # muestra de las líneas de error (alta señal para el RCA), acotada
     error_logs: list[str] = field(default_factory=list)
+    # mismas líneas de error pero estructuradas (raw+plantilla+cluster+ns) para
+    # agruparlas por patrón antes de enviarlas al SLM (densa la señal)
+    error_records: list[ErrorRecord] = field(default_factory=list)
     # namespaces que produjeron logs de error (los realmente implicados)
     error_namespaces: set[str] = field(default_factory=set)
     # conteos POR namespace: total y errores (para severidad local, no global)
@@ -46,6 +58,12 @@ class WindowData:
                 self.ns_error_counts[ns] = self.ns_error_counts.get(ns, 0) + 1
             if len(self.error_logs) < _MAX_ERROR_LOGS:
                 self.error_logs.append(parsed.raw)
+                self.error_records.append(ErrorRecord(
+                    raw=parsed.raw,
+                    template=getattr(parsed, "template", "") or parsed.raw,
+                    cluster_id=cid,
+                    namespace=ns or "",
+                ))
 
     @property
     def focus_namespaces(self) -> list[str]:
