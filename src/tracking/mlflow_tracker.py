@@ -150,6 +150,36 @@ class MLflowTracker:
         except Exception:
             pass
 
+    def log_loop_cycle(self, version: int, n_examples: int, composition: dict,
+                       gate: dict, promoted: bool) -> None:
+        """Registra un ciclo del bucle de aprendizaje (evidencia de mejora por versión).
+
+        Crea/usa un run propio por versión; la curva de keyword_hit/parse_rate por
+        versión es la prueba de que el modelo aprende solo. No-op si MLflow off.
+        """
+        if not self._enabled:
+            return
+        mlflow = self._mlflow
+        mlflow.set_tracking_uri(self._uri)
+        mlflow.set_experiment("k8s-aiops-learning")
+        with mlflow.start_run(run_name=f"loop-v{version}"):
+            mlflow.log_params({
+                "version": version,
+                "promoted": promoted,
+                "n_examples": n_examples,
+                **{f"dataset_{k}": v for k, v in composition.items()},
+            })
+            cand = gate.get("candidate", {})
+            prod = gate.get("prod", {})
+            mlflow.log_metrics({
+                "cand_parse_rate": cand.get("parse_rate", 0.0),
+                "cand_keyword_hit": cand.get("keyword_hit", 0.0),
+                "prod_parse_rate": prod.get("parse_rate", 0.0),
+                "prod_keyword_hit": prod.get("keyword_hit", 0.0),
+                "promoted": 1.0 if promoted else 0.0,
+            }, step=version)
+            mlflow.set_tags({"gate_decision": gate.get("decision", "?")})
+
     def log_summary(self, total_windows: int, total_anomalies: int, total_rca: int) -> None:
         """Resumen final del run."""
         if not self._enabled or self._run is None:

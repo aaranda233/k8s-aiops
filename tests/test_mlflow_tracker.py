@@ -83,6 +83,27 @@ def test_enabled_tracker_logs_metrics():
 
 
 @pytest.mark.unit
+def test_log_loop_cycle_disabled_is_noop():
+    t = _disabled_tracker()
+    # No debe lanzar ni requerir mlflow
+    t.log_loop_cycle(1, 30, {"positive": 10, "negative": 5}, {"decision": "PROMOTE"}, True)
+
+
+@pytest.mark.unit
+def test_log_loop_cycle_enabled_logs():
+    t = MLflowTracker(uri="http://x")
+    t._enabled = True
+    t._mlflow = MagicMock()
+    t._mlflow.start_run.return_value.__enter__ = lambda *a: None
+    t._mlflow.start_run.return_value.__exit__ = lambda *a: False
+    gate = {"decision": "PROMOTE", "candidate": {"parse_rate": 0.99, "keyword_hit": 0.95},
+            "prod": {"parse_rate": 0.98, "keyword_hit": 0.90}}
+    t.log_loop_cycle(2, 40, {"positive": 12, "negative": 8}, gate, True)
+    t._mlflow.log_metrics.assert_called_once()
+    t._mlflow.set_tags.assert_called_once()
+
+
+@pytest.mark.unit
 def test_log_metrics_skipped_without_active_run():
     t = MLflowTracker(uri="http://x")
     t._enabled = True

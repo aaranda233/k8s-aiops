@@ -96,6 +96,15 @@ def run_cycle(feedback="data/feedback/feedback.jsonl", state_path=STATE_PATH,
     if promote:
         set_alias(version)
 
+    # Observabilidad: curva de mejora por versión en MLflow.
+    try:
+        from src.tracking.mlflow_tracker import MLflowTracker
+        MLflowTracker.from_env().log_loop_cycle(
+            version, total - state["last_trained_count"],
+            {"total": total}, gate, promote)
+    except Exception:
+        pass
+
     state["last_trained_count"] = total
     state["last_version"] = version
     _save_state(state_path, state)

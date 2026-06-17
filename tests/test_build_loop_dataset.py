@@ -46,7 +46,8 @@ def test_positive_without_correction_skipped_without_generator():
 def test_positive_with_generator_creates_pair():
     ex = _fb("INC-1", "ev", label="positive",
              model_output="ROOT CAUSE: causa correcta detallada\nKUBECTL: kubectl describe pod x")
-    gen = lambda prompt: "ROOT CAUSE: respuesta vaga del modelo base\nKUBECTL: kubectl get pods"
+    def gen(prompt):
+        return "ROOT CAUSE: respuesta vaga del modelo base\nKUBECTL: kubectl get pods"
     pairs = feedback_to_pairs([ex], gen_rejected=gen)
     assert len(pairs) == 1
     assert "correcta" in pairs[0]["chosen"][0]["content"]
