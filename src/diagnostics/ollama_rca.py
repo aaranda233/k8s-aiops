@@ -145,16 +145,22 @@ def sanitize_kubectl(cmd: str) -> str:
     - '-n a, b, c' (multi-namespace, inválido) -> '-n a' (el primario).
     - corta la cola de pipes/redirecciones (| grep | awk, >, etc.).
     - recursos cluster-scoped (node/nodes/pv) no llevan -n.
+    - comandos con placeholders <...> (no ejecutables) -> kubectl por defecto.
     """
     cmd = (cmd or "").strip()
     # un solo comando: cortar en el primer pipe/redirección
     cmd = re.split(r"\s*[|>;]", cmd, maxsplit=1)[0].strip()
+    cmd = cmd.replace("`", "").strip()  # backticks sueltos (en cualquier posición)
     # -n con lista separada por comas -> primer namespace
     cmd = re.sub(r"(-n\s+)([A-Za-z0-9-]+)\s*,[\sA-Za-z0-9,-]*", r"\1\2", cmd)
     # recursos no-namespaced: quitar -n
     if re.search(r"\b(node|nodes|pv|persistentvolume|persistentvolumes|namespace|namespaces|ns)\b", cmd):
         cmd = re.sub(r"\s+-n\s+\S+", "", cmd)
-    return re.sub(r"\s+", " ", cmd).strip() or _DEFAULT_KUBECTL
+    cmd = re.sub(r"\s+", " ", cmd).strip()
+    # placeholders no ejecutables (<nombre-pod>, <namespace>...) -> comando por defecto
+    if not cmd or "<" in cmd or ">" in cmd or not cmd.startswith("kubectl "):
+        return _DEFAULT_KUBECTL
+    return cmd
 
 
 @dataclass

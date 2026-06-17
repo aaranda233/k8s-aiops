@@ -135,6 +135,22 @@ def test_sanitize_kubectl_valid_unchanged():
 
 
 @pytest.mark.unit
+def test_sanitize_kubectl_placeholder_to_default():
+    assert sanitize_kubectl("kubectl logs <nombre-pod> -n prod") == _DEFAULT_KUBECTL
+    assert sanitize_kubectl("kubectl describe pod <pod> -n <ns>") == _DEFAULT_KUBECTL
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_strips_stray_backtick():
+    assert sanitize_kubectl("kubectl describe pvc` -n postgresql") == "kubectl describe pvc -n postgresql"
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_non_kubectl_to_default():
+    assert sanitize_kubectl("describe the pvc in postgresql namespace") == _DEFAULT_KUBECTL
+
+
+@pytest.mark.unit
 def test_parse_diagnosis_applies_sanitize():
     rc, kc = parse_diagnosis("ROOT CAUSE: x\nKUBECTL: kubectl describe pvc -n a, b, c")
     assert kc == "kubectl describe pvc -n a"

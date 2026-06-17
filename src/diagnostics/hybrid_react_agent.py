@@ -92,19 +92,21 @@ class HybridReActAgent:
             f"{label} ({n_sample} lines):\n{logs_text}"
         )
 
-        # RAG: recuperar casos pasados similares e inyectarlos como contexto.
-        # Acotado para no reventar num_ctx=2048 (1-2 casos resumidos).
+        # RAG: el contexto recuperado solo se inyecta al INVESTIGADOR (modelo base,
+        # que se beneficia del contexto y no es sensible al formato). NO se inyecta
+        # al EXPERTO fine-tuneado: el bloque RAG le hace abandonar el formato
+        # ROOT CAUSE/KUBECTL y divagar en modo tutorial (hallazgo verificado).
+        investigator_context = initial_context
         if self.retriever is not None:
             from src.diagnostics.incident_retriever import rag_context
-            cases = self.retriever.retrieve(logs_text, k=2)
-            ctx = rag_context(cases)
+            ctx = rag_context(self.retriever.retrieve(logs_text, k=2))
             if ctx:
-                initial_context = f"{ctx}\n\n{initial_context}"
+                investigator_context = f"{ctx}\n\n{initial_context}"
 
-        # Fase 1: investigador (base model)
-        investigation_steps = self._investigate(initial_context)
+        # Fase 1: investigador (base model) — con RAG si lo hay
+        investigation_steps = self._investigate(investigator_context)
 
-        # Fase 2: experto (fine-tuned model) con contexto enriquecido
+        # Fase 2: experto (fine-tuned) — contexto LIMPIO (eventos) + notas, sin RAG
         root_cause, kubectl_cmd = self._expert_diagnose(initial_context, investigation_steps)
 
         return DiagnosisResult(
