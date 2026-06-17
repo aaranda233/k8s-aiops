@@ -25,24 +25,37 @@ from sklearn.preprocessing import normalize
 
 from src.detector.window import WindowData
 
-# Señal de severidad: una ventana con un volumen anormal de logs de error
-# (FATAL/ERROR/CRITICAL) es anómala aunque su distribución de plantillas sea
-# estadísticamente regular. Captura fallos que solo se ven en los logs, no en
-# el estado del pod ni en la mezcla de plantillas (un pod "Running" escupiendo
-# errores). Complementa al Isolation Forest, que es ciego a la severidad.
-_SEVERITY_MIN_ERRORS = 5    # mínimo de logs de error para considerarlo
-_SEVERITY_LOW = 0.10        # ratio de error donde empieza a puntuar
-_SEVERITY_HIGH = 0.40       # ratio de error donde satura a 1.0
+# Señal de severidad: un namespace donde una proporción anormal de SUS logs son
+# de error (FATAL/ERROR/CRITICAL) es anómalo, aunque su volumen sea pequeño frente
+# al cluster. Se evalúa POR NAMESPACE (no global) para que un servicio "callado"
+# pero ardiendo no se diluya entre el ruido de todo el cluster — antes solo
+# disparaban los namespaces ruidosos (postgresql) y se escapaban los demás.
+_SEVERITY_MIN_ERRORS = 3    # mínimo de logs de error EN UN namespace
+_SEVERITY_LOW = 0.25        # ratio de error LOCAL donde empieza a puntuar
+_SEVERITY_HIGH = 0.70       # ratio de error LOCAL donde satura a 1.0
 
 
 def severity_score(window: WindowData) -> float:
-    """Sub-score [0,1] por proporción anormal de logs de error en la ventana."""
-    if window.error_count < _SEVERITY_MIN_ERRORS:
-        return 0.0
-    ratio = window.error_ratio
-    if ratio <= _SEVERITY_LOW:
-        return 0.0
-    return min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
+    """Sub-score [0,1] = máximo sobre namespaces de su proporción local de errores."""
+    ns_log = getattr(window, "ns_log_counts", None)
+    ns_err = getattr(window, "ns_error_counts", None)
+    if not ns_log or not ns_err:
+        # Compatibilidad con ventanas sin desglose por namespace: ratio global.
+        if window.error_count < _SEVERITY_MIN_ERRORS:
+            return 0.0
+        ratio = window.error_ratio
+        return 0.0 if ratio <= _SEVERITY_LOW else min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW))
+
+    best = 0.0
+    for ns, total in ns_log.items():
+        err = ns_err.get(ns, 0)
+        if err < _SEVERITY_MIN_ERRORS or total == 0:
+            continue
+        ratio = err / total
+        if ratio <= _SEVERITY_LOW:
+            continue
+        best = max(best, min(1.0, (ratio - _SEVERITY_LOW) / (_SEVERITY_HIGH - _SEVERITY_LOW)))
+    return best
 
 
 # Señal de novedad: una ventana con muchos logs de plantillas NUNCA vistas por el

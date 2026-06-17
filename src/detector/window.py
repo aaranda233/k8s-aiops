@@ -26,18 +26,24 @@ class WindowData:
     error_logs: list[str] = field(default_factory=list)
     # namespaces que produjeron logs de error (los realmente implicados)
     error_namespaces: set[str] = field(default_factory=set)
+    # conteos POR namespace: total y errores (para severidad local, no global)
+    ns_log_counts: dict[str, int] = field(default_factory=dict)
+    ns_error_counts: dict[str, int] = field(default_factory=dict)
     anomaly_score: float = 0.0
     is_anomaly: bool = False
 
     def add(self, parsed) -> None:
         self.raw_logs.append(parsed.raw)
-        self.namespaces.add(parsed.namespace)
+        ns = parsed.namespace
+        self.namespaces.add(ns)
+        self.ns_log_counts[ns] = self.ns_log_counts.get(ns, 0) + 1
         cid = parsed.cluster_id
         self.cluster_counts[cid] = self.cluster_counts.get(cid, 0) + 1
         if getattr(parsed, "level", "").upper() in _ERROR_LEVELS:
             self.error_count += 1
-            if parsed.namespace:
-                self.error_namespaces.add(parsed.namespace)
+            if ns:
+                self.error_namespaces.add(ns)
+                self.ns_error_counts[ns] = self.ns_error_counts.get(ns, 0) + 1
             if len(self.error_logs) < _MAX_ERROR_LOGS:
                 self.error_logs.append(parsed.raw)
 

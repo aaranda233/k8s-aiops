@@ -38,11 +38,37 @@ def test_empty_namespaces_means_all_cluster():
         p = MagicMock()
         p.metadata.namespace = "kube-system"
         p.metadata.name = "coredns-1"
+        cont = MagicMock()
+        cont.name = "coredns"
+        p.spec.containers = [cont]
         pods.items = [p]
         c._v1.list_pod_for_all_namespaces.return_value = pods
         targets = c._list_target_pods()
-        assert targets == [("kube-system", "coredns-1")]
+        assert targets == [("kube-system", "coredns-1", ["coredns"])]
         c._v1.list_pod_for_all_namespaces.assert_called_once()
+
+
+@pytest.mark.unit
+def test_multi_container_pod_reads_each_container():
+    """Pods multi-contenedor: se leen TODOS los contenedores (antes se saltaban)."""
+    with patch("src.collector.log_collector.k8s_config"), \
+         patch("src.collector.log_collector.client"):
+        c = LogCollector(namespaces=[])
+        c._v1 = MagicMock()
+        p = MagicMock()
+        p.metadata.namespace = "longhorn-system"
+        p.metadata.name = "csi-plugin"
+        c1, c2 = MagicMock(), MagicMock()
+        c1.name, c2.name = "plugin", "registrar"
+        p.spec.containers = [c1, c2]
+        pods = MagicMock()
+        pods.items = [p]
+        c._v1.list_pod_for_all_namespaces.return_value = pods
+        c._v1.read_namespaced_pod_log.return_value = _resp("ERROR boom\n")
+        list(c._poll_once())
+        # Se leyó una vez por cada contenedor
+        containers_read = {call.kwargs.get("container") for call in c._v1.read_namespaced_pod_log.call_args_list}
+        assert containers_read == {"plugin", "registrar"}
 
 
 @pytest.mark.unit

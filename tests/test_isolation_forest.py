@@ -17,11 +17,17 @@ from src.detector.isolation_forest import (
 from src.detector.window import WindowData
 
 
-def _window(idx: int, counts: dict[int, int], error_count: int = 0) -> WindowData:
+def _window(idx: int, counts: dict[int, int], error_count: int = 0,
+            namespace: str = "default") -> WindowData:
     w = WindowData(index=idx, start_time=idx * 60, end_time=(idx + 1) * 60)
     w.cluster_counts = dict(counts)
-    w.raw_logs = ["x"] * sum(counts.values())
+    total = sum(counts.values())
+    w.raw_logs = ["x"] * total
     w.error_count = error_count
+    w.ns_log_counts = {namespace: total}
+    if error_count:
+        w.error_namespaces = {namespace}
+        w.ns_error_counts = {namespace: error_count}
     return w
 
 
@@ -100,33 +106,43 @@ def test_retrain_increments_model_version():
 
 @pytest.mark.unit
 def test_severity_score_zero_below_min_errors():
-    # Pocos errores → no puntúa aunque el ratio sea alto
-    w = _window(0, {1: 8}, error_count=3)
+    # Menos de 3 errores en el namespace → no puntúa aunque el ratio sea alto
+    w = _window(0, {1: 8}, error_count=2)
     assert severity_score(w) == 0.0
 
 
 @pytest.mark.unit
-def test_severity_score_rises_with_error_ratio():
-    # 100 logs, 40 de error (ratio 0.40) → satura a 1.0
-    w = _window(0, {1: 100}, error_count=40)
-    assert severity_score(w) == 1.0
-    # ratio bajo (0.10) → 0
-    w2 = _window(0, {1: 100}, error_count=10)
-    assert severity_score(w2) == 0.0
+def test_severity_score_rises_with_local_ratio():
+    # 100 logs en un namespace, 70 de error (ratio 0.70) → satura a 1.0
+    assert severity_score(_window(0, {1: 100}, error_count=70)) == 1.0
+    # ratio bajo (0.25) → 0
+    assert severity_score(_window(0, {1: 100}, error_count=25)) == 0.0
     # ratio intermedio → entre 0 y 1
-    w3 = _window(0, {1: 100}, error_count=25)
-    assert 0.0 < severity_score(w3) < 1.0
+    assert 0.0 < severity_score(_window(0, {1: 100}, error_count=45)) < 1.0
+
+
+@pytest.mark.unit
+def test_severity_per_namespace_catches_quiet_culprit():
+    """CLAVE: un namespace 'callado' pero 100% errores dispara, aunque sea poco
+    volumen del cluster (antes se diluía y se escapaba)."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    # Cluster ruidoso pero sano: 300 logs normales en 'default'
+    w.ns_log_counts = {"default": 300, "postgresql": 6}
+    w.ns_error_counts = {"postgresql": 6}   # postgresql: 6/6 = 100% errores
+    w.error_count = 6
+    w.raw_logs = ["x"] * 306
+    # Ratio GLOBAL = 6/306 = 0.02 (se diluiría); LOCAL postgresql = 1.0 → dispara
+    assert severity_score(w) == 1.0
 
 
 @pytest.mark.unit
 def test_error_log_spike_triggers_anomaly():
     """REGRESIÓN: un pod 'sano' escupiendo errores dispara la detección por severidad."""
     det = AnomalyDetector(bootstrap_windows=5, retrain_every_n=999, threshold=0.80)
-    # Baseline sano sin errores
     for i in range(5):
         det.process(_window(i, {1: 100, 2: 10}, error_count=0))
-    # Ventana con muchos logs de error (50% del volumen) → severidad alta → anomalía
-    scored, _ = det.process(_window(5, {1: 100, 2: 10}, error_count=60))
+    # Namespace con 80% de errores → severidad alta → anomalía
+    scored, _ = det.process(_window(5, {1: 100}, error_count=80))
     assert scored.severity_score >= 0.8
     assert scored.is_anomaly is True
     assert scored.score >= 0.80

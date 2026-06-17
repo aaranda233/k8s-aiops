@@ -69,17 +69,27 @@ class LogCollector:
 
     def _poll_once(self) -> Iterator[LogEntry]:
         pods = self._list_target_pods()
-        for ns, pod_name in pods[: self.max_pods]:
-            yield from self._read_pod_logs(ns, pod_name)
+        for ns, pod_name, containers in pods[: self.max_pods]:
+            # Pods multi-contenedor: leer cada contenedor (si no, la API rechaza
+            # la lectura sin -c y el pod se saltaría entero).
+            if len(containers) <= 1:
+                yield from self._read_pod_logs(ns, pod_name, containers[0] if containers else None)
+            else:
+                for c in containers:
+                    yield from self._read_pod_logs(ns, pod_name, c)
 
-    def _list_target_pods(self) -> list[tuple[str, str]]:
-        result: list[tuple[str, str]] = []
+    def _list_target_pods(self) -> list[tuple[str, str, list[str]]]:
+        result: list[tuple[str, str, list[str]]] = []
+
+        def _containers(p):
+            return [c.name for c in (p.spec.containers or [])] if p.spec else []
+
         if self.all_namespaces:
             # Todo el cluster en una sola llamada (read-only)
             try:
                 pods = self._v1.list_pod_for_all_namespaces(limit=self.max_pods)
                 for p in pods.items:
-                    result.append((p.metadata.namespace, p.metadata.name))
+                    result.append((p.metadata.namespace, p.metadata.name, _containers(p)))
             except ApiException:
                 pass
             return result
@@ -87,16 +97,17 @@ class LogCollector:
             try:
                 pods = self._v1.list_namespaced_pod(ns, limit=self.max_pods)
                 for p in pods.items:
-                    result.append((ns, p.metadata.name))
+                    result.append((ns, p.metadata.name, _containers(p)))
             except ApiException:
                 continue
         return result
 
-    def _read_pod_logs(self, namespace: str, pod_name: str) -> Iterator[LogEntry]:
+    def _read_pod_logs(self, namespace: str, pod_name: str, container: str | None = None) -> Iterator[LogEntry]:
         try:
             # _preload_content=False evita un bug del cliente k8s que devuelve el
             # repr de bytes ("b'...\\n...'") en vez del texto. Leemos los bytes
             # reales de la respuesta y los decodificamos nosotros.
+            kwargs = {} if container is None else {"container": container}
             resp = self._v1.read_namespaced_pod_log(
                 name=pod_name,
                 namespace=namespace,
@@ -104,10 +115,11 @@ class LogCollector:
                 tail_lines=self.tail_lines,
                 timestamps=False,
                 _preload_content=False,
+                **kwargs,
             )
             raw = resp.data.decode("utf-8", errors="replace")
         except ApiException:
-            # Pod sin logs, terminando, multi-contenedor sin default, etc. → saltar
+            # Pod sin logs, terminando, etc. → saltar
             return
 
         if not raw:
