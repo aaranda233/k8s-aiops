@@ -281,6 +281,8 @@ async def demo_incident(mode: str = "human"):
                     f"elevados; se propone un rollout restart para recuperarlo."),
         kubectl_command=f"kubectl rollout restart deployment/{deployment} -n {ns}",
         react_trace=[],
+        prompt_user=(f"Anomaly Score: 0.91\nNamespaces affected: {ns}\n"
+                     f"Event sample:\n  {ns} Pod/{deployment} BackOff restarting failed container"),
     )
 
     rem = AutoRemediation(
