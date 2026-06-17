@@ -266,6 +266,117 @@ def test_window_event_sample_uses_clustering_when_records_present():
     assert n == 8  # nº total de líneas de error
 
 
+@pytest.mark.unit
+def test_window_event_sample_focuses_on_primary_namespace():
+    """La evidencia se filtra al namespace culpable dominante, no a todos."""
+    recs = [_erec(f"role {i} missing", "role <*> missing", 7, namespace="postgresql")
+            for i in range(9)]
+    recs += [_erec("volume degraded", "volume degraded", 8, namespace="longhorn-system")
+             for _ in range(2)]
+    w = SimpleNamespace(
+        raw_logs=["noise"] * 11,
+        error_logs=[r.raw for r in recs],
+        error_records=recs,
+        primary_namespace="postgresql",
+    )
+    text, n, label = window_event_sample(w, max_logs=40)
+    assert "role <*> missing" in text
+    assert "longhorn" not in text          # el namespace secundario se excluye
+    assert "postgresql" in label.lower()   # la etiqueta nombra el foco
+    assert n == 9                          # solo las líneas del primario
+
+
+# ── rca_focus / rca_namespaces_line: liderar el prompt con el culpable ───────
+
+@pytest.mark.unit
+def test_rca_focus_primary_and_others():
+    w = SimpleNamespace(primary_namespace="postgresql",
+                        focus_namespaces=["argocd", "longhorn-system", "postgresql"])
+    primary, others = ollama_rca.rca_focus(w)
+    assert primary == "postgresql"
+    assert set(others) == {"argocd", "longhorn-system"}
+
+
+@pytest.mark.unit
+def test_rca_focus_fallback_to_first_when_no_primary():
+    w = SimpleNamespace(primary_namespace=None, focus_namespaces=["argocd", "kube-system"])
+    primary, others = ollama_rca.rca_focus(w)
+    assert primary == "argocd"
+    assert others == ["kube-system"]
+
+
+@pytest.mark.unit
+def test_rca_namespaces_line_mentions_others_as_context():
+    w = SimpleNamespace(primary_namespace="postgresql",
+                        focus_namespaces=["postgresql", "longhorn-system"])
+    line = ollama_rca.rca_namespaces_line(w)
+    assert "postgresql" in line
+    assert "longhorn-system" in line
+    assert line.index("postgresql") < line.index("longhorn-system")  # foco primero
+
+
+# ── Punto 3: anti-deriva del SLM + fallback determinista ─────────────────────
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [
+    "Lo siento, parece que hay un error en la estructura de tu mensaje.",
+    "Here are some additional steps you can take: Step 4: Check Node Status",
+    "En respuesta a la primera revisión: El primer paso para investigar...",
+    "I'm sorry, but as an AI I cannot determine the cause.",
+    "Parece que falta información importante para continuar.",
+    "",
+])
+def test_looks_like_drift_detects_garbage(bad):
+    assert ollama_rca._looks_like_drift(bad) is True
+
+
+@pytest.mark.unit
+def test_looks_like_drift_accepts_good_diagnosis():
+    good = "El rol de PostgreSQL $(POSTGRES_USER) no existe, lo que impide arrancar los pods."
+    assert ollama_rca._looks_like_drift(good) is False
+
+
+def _win_with_errors(primary="postgresql"):
+    recs = [_erec(f'FATAL: role "u{i}" does not exist',
+                  'FATAL: role "<*>" does not exist', 7, namespace=primary) for i in range(7)]
+    recs += [_erec("conn refused", "could not connect <*>", 8, namespace=primary) for _ in range(2)]
+    return SimpleNamespace(error_records=recs, primary_namespace=primary,
+                           focus_namespaces=[primary])
+
+
+@pytest.mark.unit
+def test_synthesize_root_cause_from_templates():
+    """Sin un buen diagnóstico del modelo, se sintetiza desde la plantilla dominante."""
+    rc = ollama_rca.synthesize_root_cause(_win_with_errors())
+    assert "postgresql" in rc
+    assert "7" in rc                               # frecuencia del patrón dominante
+    assert 'role "<*>" does not exist' in rc       # la plantilla real
+    assert ollama_rca._looks_like_drift(rc) is False
+
+
+@pytest.mark.unit
+def test_ensure_meaningful_replaces_drift_with_synthesis():
+    w = _win_with_errors()
+    out = ollama_rca.ensure_meaningful_root_cause("Lo siento, no puedo continuar.", w)
+    assert "postgresql" in out
+    assert "lo siento" not in out.lower()
+
+
+@pytest.mark.unit
+def test_ensure_meaningful_keeps_good_diagnosis():
+    w = _win_with_errors()
+    good = "El rol de PostgreSQL no existe e impide el arranque."
+    assert ollama_rca.ensure_meaningful_root_cause(good, w) == good
+
+
+@pytest.mark.unit
+def test_ensure_meaningful_no_records_falls_back_to_text():
+    """Sin error_records no se inventa nada: se conserva el texto original."""
+    w = SimpleNamespace(error_records=[], primary_namespace=None, focus_namespaces=[])
+    out = ollama_rca.ensure_meaningful_root_cause("Sin causa raíz determinable.", w)
+    assert out == "Sin causa raíz determinable."
+
+
 # ── diagnose() con red mockeada ─────────────────────────────────────────────
 
 @dataclass

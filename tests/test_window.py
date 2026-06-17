@@ -63,6 +63,34 @@ def test_window_keeps_structured_error_records():
 
 
 @pytest.mark.unit
+def test_primary_namespace_is_dominant_error_namespace():
+    """El namespace con más errores es el culpable principal."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    for _ in range(9):
+        w.add(FakeParsed("boom", "postgresql", 1, level="FATAL"))
+    for _ in range(2):
+        w.add(FakeParsed("warn", "longhorn-system", 2, level="ERROR"))
+    w.add(FakeParsed("ok", "argocd", 3, level="INFO"))  # sin errores, no cuenta
+    assert w.primary_namespace == "postgresql"
+
+
+@pytest.mark.unit
+def test_primary_namespace_none_without_errors():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("ok", "ns", 1, level="INFO"))
+    assert w.primary_namespace is None
+
+
+@pytest.mark.unit
+def test_primary_namespace_tie_is_deterministic():
+    """Empate en nº de errores → alfabético (determinista entre ejecuciones)."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("e", "zeta", 1, level="ERROR"))
+    w.add(FakeParsed("e", "alpha", 2, level="ERROR"))
+    assert w.primary_namespace == "alpha"
+
+
+@pytest.mark.unit
 def test_window_error_ratio_zero_without_errors():
     w = WindowData(index=0, start_time=0, end_time=60)
     w.add(FakeParsed("a", "ns", 1, level="INFO"))

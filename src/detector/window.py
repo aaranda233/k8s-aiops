@@ -66,6 +66,17 @@ class WindowData:
                 ))
 
     @property
+    def primary_namespace(self) -> str | None:
+        """Namespace culpable dominante: el de más logs de error en la ventana.
+
+        Enfoca el RCA en UNA causa raíz en vez de diluirse entre varios namespaces.
+        Empates → orden alfabético (determinista). None si no hubo errores.
+        """
+        if not self.ns_error_counts:
+            return None
+        return max(sorted(self.ns_error_counts), key=lambda ns: self.ns_error_counts[ns])
+
+    @property
     def focus_namespaces(self) -> list[str]:
         """Namespaces realmente implicados en la anomalía.
 

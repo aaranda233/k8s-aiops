@@ -109,19 +109,48 @@ def cluster_error_templates(records, max_templates: int = _MAX_TEMPLATES,
     return text, len(groups)
 
 
+def rca_focus(window) -> tuple[str, list[str]]:
+    """Devuelve (namespace_primario, otros_con_errores).
+
+    El primario es el culpable dominante (más errores); si no se conoce, el primer
+    namespace con errores. El RCA debe centrarse en UNA causa, no diluirse.
+    """
+    focus = list(getattr(window, "focus_namespaces", None) or [])
+    primary = getattr(window, "primary_namespace", None) or (focus[0] if focus else "")
+    others = [ns for ns in focus if ns != primary]
+    return primary, others
+
+
+def rca_namespaces_line(window) -> str:
+    """Línea de cabecera para el prompt: lidera con el namespace culpable."""
+    primary, others = rca_focus(window)
+    if not primary:
+        return "Namespaces affected: (desconocido)"
+    line = f"Namespace afectado: {primary}"
+    if others:
+        line += f"\nOtros namespaces con errores (contexto): {', '.join(others)}"
+    return line
+
+
 def window_event_sample(window, max_logs: int = 40) -> tuple[str, int, str]:
     """Muestra para el RCA priorizando los logs de error si los hay.
 
     Cuando la anomalía la dispara la severidad (volumen anormal de logs de error),
     el RCA debe ver ESAS líneas, no logs recientes al azar de toda la ventana.
     Si los errores vienen estructurados (error_records), se agrupan por plantilla
-    para densar la señal. Devuelve (texto, n_líneas, etiqueta).
+    y se FILTRAN al namespace culpable dominante (foco) para no diluir la señal.
+    Devuelve (texto, n_líneas, etiqueta).
     """
     error_logs = getattr(window, "error_logs", None) or []
     records = getattr(window, "error_records", None) or []
     if len(error_logs) >= _SAMPLE_ERROR_MIN and records:
-        text, distinct = cluster_error_templates(records)
-        return text, len(error_logs), f"Error patterns ({distinct} distinct templates)"
+        primary = getattr(window, "primary_namespace", None)
+        focused = [r for r in records
+                   if not primary or (getattr(r, "namespace", "") or "") == primary]
+        focused = focused or records  # nunca perder señal si el filtro vacía
+        text, distinct = cluster_error_templates(focused)
+        ns_tag = f" en {primary}" if primary else ""
+        return text, len(focused), f"Error patterns{ns_tag} ({distinct} distinct templates)"
     if len(error_logs) >= _SAMPLE_ERROR_MIN:
         text, n = build_event_sample(error_logs, max_logs)
         return text, n, f"Error log sample ({len(error_logs)} error lines in window)"
@@ -189,6 +218,79 @@ def _concise(text: str, max_sentences: int = 3, max_chars: int = 320) -> str:
     return (out[:max_chars].rstrip() or s[:max_chars]).strip()
 
 
+# Marcadores de "deriva": el SLM se disculpa, pide datos o entra en modo tutorial
+# en vez de dar la causa raíz. Detectarlos permite sustituir por un fallback útil.
+_DRIFT_MARKERS = (
+    "lo siento", "i'm sorry", "i am sorry", "as an ai", "as a language model",
+    "parece que falta", "parece que hay un error en", "no se puede identificar",
+    "necesito más información", "necesito mas informacion",
+    "no puedo ayudar", "no puedo continuar", "no puedo determinar",
+    "here are", "additional steps", "first step", "primer paso", "en respuesta a",
+    "confusión anterior", "confusion anterior",
+)
+_DRIFT_STEP_RE = re.compile(r"\b(?:step|paso)\s*\d", re.IGNORECASE)
+# Causas "débiles" que no aportan nada (incluye nuestros propios fallbacks).
+_WEAK_RC = (
+    "sin causa raíz determinable", "sin causa raiz determinable",
+    "could not parse", "no se pudo determinar",
+)
+
+
+def _looks_like_drift(text: str) -> bool:
+    """True si la salida del modelo es una disculpa/relleno/tutorial, no un diagnóstico."""
+    if not text or not text.strip():
+        return True
+    low = text.lower()
+    if any(m in low for m in _DRIFT_MARKERS):
+        return True
+    return bool(_DRIFT_STEP_RE.search(low))
+
+
+def _is_weak_root_cause(text: str) -> bool:
+    low = (text or "").lower().strip()
+    return (not low) or any(w in low for w in _WEAK_RC)
+
+
+def synthesize_root_cause(window) -> str:
+    """Causa raíz determinista a partir de la plantilla de error dominante.
+
+    Cuando el SLM divaga o no concluye, NO mostramos "sin causa": tenemos las
+    plantillas Drain3, así que describimos el patrón de error real observado.
+    Devuelve "" si la ventana no tiene errores estructurados (nada que sintetizar).
+    """
+    records = getattr(window, "error_records", None) or []
+    primary = getattr(window, "primary_namespace", None)
+    focused = [r for r in records
+               if not primary or (getattr(r, "namespace", "") or "") == primary] or records
+    if not focused:
+        return ""
+    counts: dict[str, int] = {}
+    for r in focused:
+        tmpl = (getattr(r, "template", "") or getattr(r, "raw", "") or "").strip()
+        if tmpl:
+            counts[tmpl] = counts.get(tmpl, 0) + 1
+    if not counts:
+        return ""
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    ns = primary or (list(getattr(window, "focus_namespaces", None) or ["?"]) or ["?"])[0]
+    main_t, main_c = top[0]
+    if len(main_t) > _MAX_LINE_CHARS:
+        main_t = main_t[:_MAX_LINE_CHARS] + "…"
+    msg = f"El namespace «{ns}» acumula {main_c} errores recurrentes del tipo: «{main_t}»."
+    if len(top) > 1:
+        msg += f" También aparece: «{top[1][0]}» ({top[1][1]}×)."
+    return msg
+
+
+def ensure_meaningful_root_cause(root_cause: str, window) -> str:
+    """Sustituye un diagnóstico en deriva/vacío por el fallback determinista."""
+    if _looks_like_drift(root_cause) or _is_weak_root_cause(root_cause):
+        synth = synthesize_root_cause(window)
+        if synth:
+            return synth
+    return root_cause
+
+
 def sanitize_kubectl(cmd: str) -> str:
     """Convierte el kubectl propuesto en un comando válido y de una sola línea.
 
@@ -245,10 +347,11 @@ class OllamaRCA:
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
         logs_text, n_sample, label = window_event_sample(w, self.max_logs)
+        primary, _others = rca_focus(w)
 
         user_msg = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
-            f"Namespaces affected: {', '.join(w.focus_namespaces)}\n"
+            f"{rca_namespaces_line(w)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
@@ -261,7 +364,12 @@ class OllamaRCA:
                 {"role": "user", "content": user_msg},
             ],
             "stream": False,
-            "options": {"temperature": 0.1, "num_predict": 300},
+            # stop: corta la divagación tipo tutorial (listas, markdown, pasos).
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 300,
+                "stop": ["\n\n", "\n1.", "\n- ", "\n#", "```", "\nPaso", "\nStep"],
+            },
         }
 
         with httpx.Client(timeout=self.timeout) as client:
@@ -270,11 +378,12 @@ class OllamaRCA:
 
         text = resp.json()["message"]["content"].strip()
         root_cause, kubectl_cmd = parse_diagnosis(text)
+        root_cause = ensure_meaningful_root_cause(root_cause, w)
 
         return DiagnosisResult(
             window_index=w.index,
             anomaly_score=scored_window.score,
-            namespaces=set(w.focus_namespaces),
+            namespaces={primary} if primary else set(w.focus_namespaces),
             root_cause=root_cause,
             kubectl_command=kubectl_cmd,
             model_version=scored_window.model_version,

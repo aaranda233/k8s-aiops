@@ -10,7 +10,13 @@ from dataclasses import dataclass
 import httpx
 
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
-from src.diagnostics.ollama_rca import DiagnosisResult, window_event_sample
+from src.diagnostics.ollama_rca import (
+    DiagnosisResult,
+    ensure_meaningful_root_cause,
+    rca_focus,
+    rca_namespaces_line,
+    window_event_sample,
+)
 
 _SYSTEM_PROMPT = """\
 You are an expert SRE investigating a Kubernetes anomaly step by step.
@@ -73,9 +79,10 @@ class ReActAgent:
         w = scored_window.window
 
         logs_text, n_sample, label = window_event_sample(w, self.max_logs)
+        primary, _others = rca_focus(w)
         initial_context = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
-            f"Namespaces affected: {', '.join(w.focus_namespaces)}\n"
+            f"{rca_namespaces_line(w)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
@@ -128,10 +135,13 @@ class ReActAgent:
             if rc:
                 root_cause, kubectl_cmd, confidence = rc, kc or kubectl_cmd, conf
 
+        # Anti-deriva: fallback determinista desde la plantilla de error dominante.
+        root_cause = ensure_meaningful_root_cause(root_cause, w)
+
         return DiagnosisResult(
             window_index=w.index,
             anomaly_score=scored_window.score,
-            namespaces=set(w.focus_namespaces),
+            namespaces={primary} if primary else set(w.focus_namespaces),
             root_cause=root_cause,
             kubectl_command=kubectl_cmd,
             model_version=scored_window.model_version,
