@@ -72,6 +72,7 @@ class AIOPsPipeline:
             n_estimators=cfg.detector.n_estimators,
             contamination=cfg.detector.contamination,
             random_state=cfg.detector.random_state,
+            warmup_windows=cfg.detector.novelty_warmup_windows,
         )
         if cfg.diagnostics.enabled:
             mode = cfg.diagnostics.react_mode

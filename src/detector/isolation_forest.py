@@ -108,11 +108,18 @@ class AnomalyDetector:
         n_estimators: int = 200,
         contamination: float = 0.05,
         random_state: int = 42,
+        warmup_windows: int = 0,
     ):
         self.bootstrap_windows = bootstrap_windows
         self.rolling_size = rolling_window_size
         self.retrain_every_n = retrain_every_n
         self.threshold = threshold
+        # Warm-up: nº de ventanas tras arrancar durante las que la NOVEDAD se
+        # amortigua (rampa 0→1). 0 = desactivado. Tras un arranque en frío el
+        # parser y el modelo están vacíos y todo template es "nuevo", así que la
+        # novedad es ruido; severidad e IF no se tocan.
+        self.warmup_windows = warmup_windows
+        self._windows_since_ready: int = 0
         self._if_params = dict(
             n_estimators=n_estimators,
             contamination=contamination,
@@ -170,7 +177,10 @@ class AnomalyDetector:
         if_score, pca_coord = self._score_one(window)
         sev = severity_score(window)
         nov = novelty_score(window, set(self._trained_cluster_ids))
-        score = max(if_score, sev, nov)
+        self._windows_since_ready += 1
+        # La novedad se amortigua durante el warm-up; severidad e IF, no.
+        nov_effective = nov * self._novelty_warmup_factor()
+        score = max(if_score, sev, nov_effective)
         self._since_last_retrain += 1
 
         retrained = False
@@ -190,6 +200,17 @@ class AnomalyDetector:
             severity_score=sev,
             novelty_score=nov,
         ), retrained
+
+    def _novelty_warmup_factor(self) -> float:
+        """Factor [0,1] que amortigua la novedad tras (re)arrancar (rampa lineal).
+
+        Nada más arrancar TODO es novedoso (parser/modelo en frío), así que la
+        señal de novedad es poco informativa y satura el detector. La rampa la
+        reintroduce gradualmente conforme el baseline madura.
+        """
+        if self.warmup_windows <= 0:
+            return 1.0
+        return min(1.0, self._windows_since_ready / self.warmup_windows)
 
     @property
     def is_ready(self) -> bool:

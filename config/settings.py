@@ -40,6 +40,9 @@ class DetectorConfig:
     n_estimators: int = 200
     contamination: float = 0.05
     random_state: int = 42
+    # Ventanas de warm-up tras arrancar durante las que se amortigua la señal de
+    # novedad (en frío todo es "nuevo" y satura el detector). 0 = desactivado.
+    novelty_warmup_windows: int = field(default_factory=lambda: int(os.getenv("NOVELTY_WARMUP_WINDOWS", "20")))
 
 
 @dataclass

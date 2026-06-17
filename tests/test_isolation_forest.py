@@ -204,6 +204,60 @@ def test_novelty_transient_after_retrain():
     assert s2.novelty_score == 0.0
 
 
+# ── Warm-up: amortiguar la novedad tras (re)arrancar ────────────────────────
+
+@pytest.mark.unit
+def test_warmup_damps_novelty_right_after_bootstrap():
+    """Con warm-up, una explosión novedosa JUSTO tras arrancar NO dispara por sí sola.
+
+    La parte conocida imita el baseline (IF bajo); solo la novedad es alta. El
+    warm-up la amortigua → no es anomalía todavía.
+    """
+    det = AnomalyDetector(bootstrap_windows=3, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=10)
+    for i in range(3):
+        det.process(_window(i, {1: 80, 2: 15, 3: 5}))
+    scored, _ = det.process(_window(3, {1: 80, 2: 15, 3: 5, 777: 50, 888: 50}))
+    assert scored.novelty_score >= 0.8        # la novedad CRUDA medida sigue alta
+    assert scored.is_anomaly is False         # pero amortiguada no dispara
+
+
+@pytest.mark.unit
+def test_no_warmup_novelty_fires_immediately():
+    """Sin warm-up (default), la misma explosión novedosa dispara de inmediato."""
+    det = AnomalyDetector(bootstrap_windows=3, retrain_every_n=999, threshold=0.80)
+    for i in range(3):
+        det.process(_window(i, {1: 80, 2: 15, 3: 5}))
+    scored, _ = det.process(_window(3, {1: 80, 2: 15, 3: 5, 777: 50, 888: 50}))
+    assert scored.is_anomaly is True
+
+
+@pytest.mark.unit
+def test_warmup_ramps_novelty_back_in():
+    """Tras pasar el warm-up, la novedad vuelve a disparar con normalidad."""
+    det = AnomalyDetector(bootstrap_windows=3, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=5)
+    for i in range(3):
+        det.process(_window(i, {1: 80, 2: 15, 3: 5}))
+    # Consumir el warm-up con ventanas normales (sin novedad)
+    for i in range(3, 3 + 5):
+        det.process(_window(i, {1: 80, 2: 15, 3: 5}))
+    scored, _ = det.process(_window(20, {1: 80, 2: 15, 3: 5, 777: 50, 888: 50}))
+    assert scored.is_anomaly is True          # warm-up superado → novedad activa
+
+
+@pytest.mark.unit
+def test_warmup_does_not_damp_severity():
+    """La severidad (errores reales) NO se amortigua: dispara aunque sea el arranque."""
+    det = AnomalyDetector(bootstrap_windows=3, retrain_every_n=999,
+                          threshold=0.80, warmup_windows=10)
+    for i in range(3):
+        det.process(_window(i, {1: 100, 2: 10}, error_count=0))
+    scored, _ = det.process(_window(3, {1: 100}, error_count=80))
+    assert scored.severity_score >= 0.8
+    assert scored.is_anomaly is True          # severidad pasa por encima del warm-up
+
+
 @pytest.mark.unit
 def test_vectorize_ignores_unknown_clusters():
     det = AnomalyDetector(bootstrap_windows=2)
