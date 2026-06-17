@@ -839,7 +839,29 @@ and dilutes** the prompt and can distract an already-capable model. RAG's benefi
 grows precisely where these don't hold: a non-specialised base model, harder cases,
 or a larger context window.
 
-### 16.5 Decision framework
+### 16.5 The closed cycle — RAG as fast memory, fine-tuning as consolidation
+
+The two approaches are wired into a single loop modelled on *complementary
+learning systems* (fast hippocampal vs slow cortical memory):
+
+1. An incident occurs; the operator investigates via chat and reaches a solution
+   (recorded as a human correction — the highest-quality signal).
+2. The solution lands in `feedback.jsonl`, which is the RAG index → **available
+   instantly** to the next similar incident, no training.
+3. When the un-consolidated feedback reaches the threshold Z, `loop_train.py`
+   retrains (ORPO), the gate validates, and a promoted version is deployed (canary).
+4. On promotion the registry records a **consolidation watermark** (`feedback_count`);
+   the RAG retriever excludes everything up to it (`skip_consolidated`) — that
+   knowledge now lives in the weights, so RAG **"empties"** of what is learned and
+   keeps only newer, not-yet-consolidated cases.
+5. On rollback the watermark follows the active version, so RAG **automatically
+   recovers** the de-consolidated cases. No knowledge is ever lost.
+
+This makes RAG a bounded, self-clearing working memory rather than an
+ever-growing index, and fine-tuning the durable consolidation — each reinforcing
+the other.
+
+### 16.6 Decision framework
 
 | Dimension | Fine-tuning (ORPO loop) | RAG |
 |-----------|-------------------------|-----|
