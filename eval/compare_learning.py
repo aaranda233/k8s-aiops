@@ -82,7 +82,11 @@ def load_test_set(path: str) -> list[dict]:
 
 
 def corpus_from_messages(path: str) -> IncidentRetriever:
-    """Construye un corpus de recuperación desde un jsonl de mensajes (casos pasados)."""
+    """Construye un corpus de recuperación desde un jsonl de casos pasados.
+
+    Acepta dos formatos: SFT (messages=[system,user,assistant]) y preferencia
+    (prompt=[system,user], chosen=[assistant]).
+    """
     cases = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -90,11 +94,15 @@ def corpus_from_messages(path: str) -> IncidentRetriever:
             if not line:
                 continue
             ex = json.loads(line)
-            msgs = ex.get("messages") or []
-            if len(msgs) < 3:
+            user = answer = None
+            msgs = ex.get("messages")
+            if msgs and len(msgs) >= 3:
+                user, answer = msgs[1]["content"], msgs[2]["content"]
+            elif ex.get("prompt") and ex.get("chosen"):
+                user = ex["prompt"][1]["content"]
+                answer = ex["chosen"][0]["content"]
+            if not user or not answer:
                 continue
-            user = msgs[1]["content"]
-            answer = msgs[2]["content"]
             rc, kc = parse_diagnosis(answer)
             cases.append({"text": user, "root_cause": rc, "kubectl": kc})
     return IncidentRetriever(cases)
