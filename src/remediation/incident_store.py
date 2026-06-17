@@ -10,6 +10,8 @@ La aprobación se identifica por incident_id (no por token aparte).
 import time
 from dataclasses import asdict, dataclass, field
 
+from src.remediation.incident_log import TERMINAL_STATUSES
+
 # Estados del ciclo de vida de un incidente
 STATUS_PENDING = "pending_approval"   # Level 2 esperando decisión humana
 STATUS_APPROVED = "approved"          # humano aprobó, en ejecución
@@ -38,6 +40,8 @@ class Incident:
     verified: bool | None = None
     response: str | None = None        # "approved" | "rejected" (decisión humana)
     updated_at: float = 0.0
+    prompt_user: str = ""              # prompt/eventos de entrada del SLM (para reentrenar)
+    human_correction: str = ""         # corrección humana opcional (root_cause + kubectl)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,14 +50,22 @@ class Incident:
 class IncidentStore:
     """Almacén thread-safe-enough para el caso de uso (dict + asignaciones atómicas)."""
 
-    def __init__(self, max_incidents: int = 500):
+    def __init__(self, max_incidents: int = 500, incident_log=None):
         self._incidents: dict[str, Incident] = {}
         self._max = max_incidents
+        # Log durable opcional (persistencia + dataset de aprendizaje).
+        self._log = incident_log
+        self._feedback_hook = None  # callback(incident_dict) en estado terminal
+
+    def set_feedback_hook(self, hook) -> None:
+        """Registra un callback que se invoca con el incidente al llegar a terminal."""
+        self._feedback_hook = hook
 
     def add(self, incident: Incident) -> None:
         incident.updated_at = incident.created_at
         self._incidents[incident.id] = incident
         self._evict_if_needed()
+        self._record(incident, "created")
 
     def get(self, incident_id: str) -> Incident | None:
         return self._incidents.get(incident_id)
@@ -70,16 +82,33 @@ class IncidentStore:
             return False
         inc.response = response
         inc.updated_at = _now()
+        self._record(inc, "response")
         return True
 
     def update(self, incident_id: str, **fields) -> None:
         inc = self._incidents.get(incident_id)
         if inc is None:
             return
+        prev_status = inc.status
         for k, v in fields.items():
             if hasattr(inc, k):
                 setattr(inc, k, v)
         inc.updated_at = _now()
+        # Persistir/feedback solo al ENTRAR en un estado terminal (señal de outcome).
+        if inc.status != prev_status and inc.status in TERMINAL_STATUSES:
+            self._record(inc, "terminal")
+            if self._feedback_hook is not None:
+                try:
+                    self._feedback_hook(inc.to_dict())
+                except Exception:
+                    pass  # el feedback nunca debe tumbar la remediación
+
+    def _record(self, incident: Incident, event_type: str) -> None:
+        if self._log is not None:
+            try:
+                self._log.append_event(incident.to_dict(), event_type)
+            except Exception:
+                pass  # la persistencia nunca debe tumbar la remediación
 
     def _evict_if_needed(self) -> None:
         if len(self._incidents) <= self._max:

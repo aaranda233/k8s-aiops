@@ -100,6 +100,7 @@ class HybridReActAgent:
             steps_taken=len(investigation_steps),
             react_trace=investigation_steps,
             mode="hybrid",
+            prompt_user=initial_context,
         )
 
     def _investigate(self, initial_context: str) -> list[InvestigationStep]:

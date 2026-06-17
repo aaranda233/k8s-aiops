@@ -129,6 +129,7 @@ class DiagnosisResult:
     steps_taken: int = 1
     react_trace: list = field(default_factory=list)
     mode: str = "single_shot"
+    prompt_user: str = ""   # input exacto que recibió el modelo (para el dataset de feedback)
 
 
 class OllamaRCA:
@@ -180,6 +181,7 @@ class OllamaRCA:
             root_cause=root_cause,
             kubectl_command=kubectl_cmd,
             model_version=scored_window.model_version,
+            prompt_user=user_msg,
         )
 
     @staticmethod

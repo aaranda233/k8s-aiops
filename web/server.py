@@ -21,10 +21,12 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import CollectorConfig, DetectorConfig, DiagnosticsConfig, PipelineConfig, RemediationConfig
+from dataset.feedback_capture import record_feedback
 from src.collector.topology_collector import TopologyCollector
 from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
-from src.remediation.incident_store import IncidentStore
+from src.remediation.incident_log import IncidentLog
+from src.remediation.incident_store import Incident, IncidentStore
 from src.security.scanner import SecurityScanner
 from web.event_bus import bus
 
@@ -38,8 +40,19 @@ if _log_file:
     _root.addHandler(_fh)
     _root.setLevel(logging.INFO)
 
-# Registro de incidentes compartido entre el pipeline (remediación) y la consola
-incident_store = IncidentStore()
+# Registro de incidentes compartido entre el pipeline (remediación) y la consola.
+# Con log durable (persistencia + dataset de aprendizaje) y captura de feedback.
+_incident_log = IncidentLog(os.getenv("AIOPS_INCIDENT_LOG", "data/incidents/incidents.jsonl"))
+incident_store = IncidentStore(incident_log=_incident_log)
+incident_store.set_feedback_hook(record_feedback)
+# Rehidratar la consola con los incidentes persistidos en arranques previos.
+for _snap in _incident_log.latest_incidents():
+    try:
+        incident_store._incidents[_snap["id"]] = Incident(**{
+            k: v for k, v in _snap.items() if k in Incident.__dataclass_fields__
+        })
+    except Exception:
+        pass
 
 # Agente de chat read-only (investigación on-demand del cluster)
 chat_agent = ClusterChatAgent(
@@ -204,6 +217,27 @@ async def api_reject(incident_id: str):
     if not incident_store.set_response(incident_id, "rejected"):
         return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
     return {"status": "rejected", "id": incident_id}
+
+
+@app.post("/api/incidents/{incident_id}/correct")
+async def api_correct(incident_id: str, correction: dict):
+    """Corrección humana del diagnóstico (señal de aprendizaje de máxima calidad).
+
+    Body: {"root_cause": "...", "kubectl": "..."}. NO ejecuta nada: solo guarda la
+    corrección para el dataset de feedback.
+    """
+    inc = incident_store.get(incident_id)
+    if inc is None:
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    rc = (correction.get("root_cause") or "").strip()
+    kc = (correction.get("kubectl") or "").strip()
+    if not rc and not kc:
+        return JSONResponse({"error": "Corrección vacía"}, status_code=400)
+    text = f"ROOT CAUSE: {rc}\nKUBECTL: {kc}".strip()
+    incident_store.update(incident_id, human_correction=text)
+    # Captura inmediata: la corrección humana es la señal de mayor calidad.
+    record_feedback(incident_store.get(incident_id).to_dict())
+    return {"status": "corrected", "id": incident_id}
 
 
 # ------------------------------------------------------------------

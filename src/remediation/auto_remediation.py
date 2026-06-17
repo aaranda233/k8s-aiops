@@ -170,6 +170,7 @@ class AutoRemediation:
             risk_label=risk.label,
             investigation=investigation_steps,
             status=STATUS_PENDING,
+            prompt_user=getattr(diagnosis, "prompt_user", ""),
         )
         self.incidents.add(incident)
 

@@ -139,6 +139,7 @@ class ReActAgent:
             steps_taken=len(trace),
             react_trace=trace,
             mode="react",
+            prompt_user=initial_context,
         )
 
     def _call_llm(self, messages: list[dict]) -> str:
