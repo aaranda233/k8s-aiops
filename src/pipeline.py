@@ -36,8 +36,9 @@ def _build_retriever():
         return None
     try:
         from src.diagnostics.incident_retriever import IncidentRetriever
-        path = os.getenv("AIOPS_FEEDBACK_FILE", "data/feedback/feedback.jsonl")
-        retriever = IncidentRetriever.from_feedback(path)
+        feedback = os.getenv("AIOPS_FEEDBACK_FILE", "data/feedback/feedback.jsonl")
+        corpus = os.getenv("AIOPS_RAG_CORPUS", "")  # casos conocidos para el día 1
+        retriever = IncidentRetriever.from_sources(feedback, corpus or None)
         log.info("RAG activado: %d casos en el índice", len(retriever.cases))
         return retriever
     except Exception as e:

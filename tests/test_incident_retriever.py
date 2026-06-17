@@ -71,6 +71,27 @@ def test_rag_context_empty_when_no_cases():
 
 
 @pytest.mark.unit
+def test_from_sources_combines_feedback_and_corpus(tmp_path):
+    fb = tmp_path / "feedback.jsonl"
+    fb.write_text(json.dumps({
+        "label": "positive", "prompt": {"user": "feedback case events"},
+        "root_cause": "causa feedback", "kubectl_cmd": "kubectl a", "namespaces": ["x"],
+    }))
+    corpus = tmp_path / "corpus.jsonl"
+    corpus.write_text(json.dumps({
+        "messages": [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "corpus case events"},
+            {"role": "assistant", "content": "ROOT CAUSE: causa corpus\nKUBECTL: kubectl b"},
+        ]
+    }))
+    r = IncidentRetriever.from_sources(str(fb), str(corpus))
+    texts = [c["text"] for c in r.cases]
+    assert "feedback case events" in texts
+    assert "corpus case events" in texts
+
+
+@pytest.mark.unit
 def test_from_feedback_loads_positives(tmp_path):
     p = tmp_path / "feedback.jsonl"
     rows = [

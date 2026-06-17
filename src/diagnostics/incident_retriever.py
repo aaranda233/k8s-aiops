@@ -46,6 +46,19 @@ class IncidentRetriever:
         ]
 
     @classmethod
+    def from_sources(cls, feedback_path: str, corpus_path: str | None = None,
+                     positive_only: bool = True) -> "IncidentRetriever":
+        """Índice combinado: memoria del bucle (feedback) + corpus de casos conocidos.
+
+        Permite que RAG funcione desde el primer día (corpus) y mejore con el
+        feedback real acumulado.
+        """
+        cases = cls.from_feedback(feedback_path, positive_only).cases
+        if corpus_path:
+            cases = cases + _load_corpus_cases(corpus_path)
+        return cls(cases)
+
+    @classmethod
     def from_feedback(cls, path: str, positive_only: bool = True) -> "IncidentRetriever":
         """Construye el índice desde feedback.jsonl (memoria de casos validados)."""
         cases: list[dict] = []
@@ -75,6 +88,36 @@ class IncidentRetriever:
                         "namespaces": ex.get("namespaces", []),
                     })
         return cls(cases)
+
+
+def _load_corpus_cases(path: str) -> list[dict]:
+    """Carga casos pasados de un dataset (formato SFT messages o preferencia)."""
+    from src.diagnostics.ollama_rca import parse_diagnosis
+
+    cases: list[dict] = []
+    p = Path(path)
+    if not p.exists():
+        return cases
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ex = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            user = answer = None
+            msgs = ex.get("messages")
+            if msgs and len(msgs) >= 3:
+                user, answer = msgs[1]["content"], msgs[2]["content"]
+            elif ex.get("prompt") and ex.get("chosen"):
+                user, answer = ex["prompt"][1]["content"], ex["chosen"][0]["content"]
+            if not user or not answer:
+                continue
+            rc, kc = parse_diagnosis(answer)
+            cases.append({"text": user, "root_cause": rc, "kubectl": kc, "namespaces": []})
+    return cases
 
 
 def _split_correction(correction: str, default_rc: str, default_kc: str) -> tuple[str, str]:
