@@ -42,9 +42,16 @@ class Incident:
     updated_at: float = 0.0
     prompt_user: str = ""              # prompt/eventos de entrada del SLM (para reentrenar)
     human_correction: str = ""         # corrección humana opcional (root_cause + kubectl)
+    occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
+    last_seen: float = 0.0             # última vez que se observó el mismo problema
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def fingerprint(self) -> str:
+        """Huella para deduplicar: el conjunto de namespaces implicados."""
+        return ",".join(sorted(self.namespaces))
 
 
 class IncidentStore:
@@ -63,9 +70,37 @@ class IncidentStore:
 
     def add(self, incident: Incident) -> None:
         incident.updated_at = incident.created_at
+        incident.last_seen = incident.created_at
         self._incidents[incident.id] = incident
         self._evict_if_needed()
         self._record(incident, "created")
+
+    def find_recent_duplicate(self, namespaces, ttl_seconds: float) -> Incident | None:
+        """Incidente reciente con la misma huella (mismos namespaces) dentro del TTL.
+
+        Evita crear un incidente nuevo por ventana ante un problema persistente:
+        si el mismo conjunto de namespaces sigue fallando, se reutiliza el incidente
+        existente (sliding window por last_seen).
+        """
+        fp = ",".join(sorted(namespaces))
+        now = _now()
+        candidates = [
+            i for i in self._incidents.values()
+            if i.fingerprint == fp and (now - max(i.last_seen, i.created_at)) <= ttl_seconds
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda i: max(i.last_seen, i.created_at))
+
+    def bump(self, incident_id: str) -> bool:
+        """Registra otra ocurrencia del mismo problema (deduplicación)."""
+        inc = self._incidents.get(incident_id)
+        if inc is None:
+            return False
+        inc.occurrence_count += 1
+        inc.last_seen = _now()
+        inc.updated_at = inc.last_seen
+        return True
 
     def get(self, incident_id: str) -> Incident | None:
         return self._incidents.get(incident_id)

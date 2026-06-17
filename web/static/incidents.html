@@ -61,6 +61,7 @@
   .risk { font-size:11.5px; padding:3px 9px; border-radius:7px; font-weight:600; font-family:var(--mono); }
   .r0{background:rgba(63,185,80,.12);color:var(--ok)} .r1{background:rgba(79,143,247,.12);color:var(--accent)}
   .r2{background:rgba(210,153,34,.12);color:var(--warn)} .r3{background:rgba(248,81,73,.12);color:var(--error)}
+  .recur { font-family:var(--mono); font-size:11.5px; color:#fbbf24; background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.3); border-radius:6px; padding:1px 7px; }
   .score { margin-left:auto; font-family:var(--mono); font-size:12.5px; color:var(--muted); }
   .section { margin-top:15px; }
   .section .label { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted2); margin-bottom:6px; font-weight:600; }
@@ -162,6 +163,7 @@ function card(i){
       <span class="badge ${STATUS_CLASS[i.status]||''}">${STATUS_LABEL[i.status]||i.status}</span>
       <span class="risk r${i.risk_level}">L${i.risk_level} · ${RISK_LABEL[i.risk_level]||''}</span>
       <span class="id">${i.id}</span>
+      ${i.occurrence_count>1?`<span class="recur" title="Problema recurrente (deduplicado)">↻ visto ${i.occurrence_count} veces</span>`:""}
       <span class="score">score ${i.score.toFixed(3)}</span>
     </div>
     ${invest?`<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}

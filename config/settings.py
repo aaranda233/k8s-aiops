@@ -69,6 +69,10 @@ class RemediationConfig:
     shadow_mode: bool = field(default_factory=lambda: os.getenv("REMEDIATION_SHADOW", "false").lower() == "true")
     # Segundos de espera tras el fix para verificar
     verify_wait_seconds: int = 90
+    # Ventana de deduplicación: un mismo problema (mismos namespaces) que recurre
+    # dentro de este tiempo no crea un incidente nuevo, sino que incrementa el
+    # contador del existente. 0 = sin deduplicación.
+    dedup_window_seconds: int = field(default_factory=lambda: int(os.getenv("REMEDIATION_DEDUP_WINDOW", "1800")))
     # Canal de notificación: teams | email | both | none
     notify_channel: str = field(default_factory=lambda: os.getenv("NOTIFY_CHANNEL", "teams"))
     # Teams — Incoming Webhook del canal de ops

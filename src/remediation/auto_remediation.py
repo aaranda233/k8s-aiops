@@ -90,6 +90,7 @@ class AutoRemediation:
         approval_timeout: int = _APPROVAL_TIMEOUT_SECONDS,
         incident_store: IncidentStore | None = None,
         shadow_mode: bool = False,
+        dedup_window: int = 1800,
     ):
         self.notifier = notifier
         self.max_auto_level = max_auto_level
@@ -98,6 +99,9 @@ class AutoRemediation:
         self.shadow_mode = shadow_mode
         self.verify_wait = verify_wait
         self.approval_timeout = approval_timeout
+        # Ventana de deduplicación: un mismo problema recurrente no crea un
+        # incidente por ventana; incrementa el contador del existente.
+        self.dedup_window = dedup_window
         self.incidents = incident_store or IncidentStore()
         self._circuit = CircuitBreaker()
 
@@ -129,12 +133,19 @@ class AutoRemediation:
         """Crea un incidente aunque el diagnóstico haya fallado, para que la
         consola NUNCA se quede vacía ante una anomalía detectada."""
         import uuid as _uuid
-        incident_id = f"INC-{_uuid.uuid4().hex[:8].upper()}"
         w = scored_window.window
+        ns = sorted(getattr(w, "focus_namespaces", None) or w.namespaces)
+        # Deduplicación también para fallos de diagnóstico recurrentes.
+        if self.dedup_window > 0:
+            dup = self.incidents.find_recent_duplicate(ns, self.dedup_window)
+            if dup is not None:
+                self.incidents.bump(dup.id)
+                return dup.id
+        incident_id = f"INC-{_uuid.uuid4().hex[:8].upper()}"
         inc = Incident(
             id=incident_id,
             created_at=time.time(),
-            namespaces=sorted(w.namespaces),
+            namespaces=ns,
             score=scored_window.score,
             root_cause=f"No se pudo diagnosticar automáticamente (error: {error}). "
                        f"Anomalía real detectada; revisa la ventana manualmente.",
@@ -157,6 +168,16 @@ class AutoRemediation:
         namespaces = set(diagnosis.namespaces) if diagnosis.namespaces else set(w.namespaces)
         root_cause = diagnosis.root_cause
         kubectl_cmd = diagnosis.kubectl_command
+
+        # Deduplicación: si el mismo problema (mismos namespaces) ya tiene un
+        # incidente reciente, incrementamos su contador en vez de crear otro.
+        if self.dedup_window > 0:
+            dup = self.incidents.find_recent_duplicate(namespaces, self.dedup_window)
+            if dup is not None:
+                self.incidents.bump(dup.id)
+                console.print(f"  [dim]Duplicado de {dup.id} (x{dup.occurrence_count}) — no se crea otro[/]")
+                return RemediationResult(dup.id, dup.fingerprint, dup.risk_level,
+                                         "deduped", dup.kubectl_cmd, None, None)
 
         # Pasos de investigación del trace si es modo hybrid/react. Las acciones
         # (comandos) se sanean; la prosa THOUGHT solo se muestra si está en español
