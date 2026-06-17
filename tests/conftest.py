@@ -42,6 +42,7 @@ class FakeDiagnosis:
     root_cause: str = "Memory pressure en node-1 causando evictions"
     kubectl_command: str = "kubectl rollout restart deployment/scheduler -n producción"
     react_trace: list = field(default_factory=list)
+    namespaces: set = field(default_factory=set)
 
 
 @pytest.fixture

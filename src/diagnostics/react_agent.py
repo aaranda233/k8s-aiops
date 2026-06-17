@@ -75,7 +75,7 @@ class ReActAgent:
         logs_text, n_sample, label = window_event_sample(w, self.max_logs)
         initial_context = (
             f"Anomaly Score: {scored_window.score:.3f}\n"
-            f"Namespaces affected: {', '.join(w.namespaces)}\n"
+            f"Namespaces affected: {', '.join(w.focus_namespaces)}\n"
             f"Window: t={w.start_time:.0f}s – t={w.end_time:.0f}s\n"
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
@@ -131,7 +131,7 @@ class ReActAgent:
         return DiagnosisResult(
             window_index=w.index,
             anomaly_score=scored_window.score,
-            namespaces=w.namespaces,
+            namespaces=set(w.focus_namespaces),
             root_cause=root_cause,
             kubectl_command=kubectl_cmd,
             model_version=scored_window.model_version,

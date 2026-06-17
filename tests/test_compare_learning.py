@@ -40,7 +40,7 @@ def test_rag_injects_context_into_prompt():
         seen["user"] = user
         return "ROOT CAUSE: x\nKUBECTL: kubectl get pods"
     evaluate_samples(_SAMPLES, capture, retriever=_CORPUS)
-    assert "past incidents" in seen["user"].lower()  # contexto RAG inyectado
+    assert "incidentes pasados" in seen["user"].lower()  # contexto RAG inyectado
 
 
 @pytest.mark.unit
@@ -50,7 +50,7 @@ def test_plain_has_no_rag_context():
         seen["user"] = user
         return "ROOT CAUSE: x\nKUBECTL: kubectl get pods"
     evaluate_samples(_SAMPLES, capture, retriever=None)
-    assert "past incidents" not in seen["user"].lower()
+    assert "incidentes pasados" not in seen["user"].lower()
 
 
 @pytest.mark.unit

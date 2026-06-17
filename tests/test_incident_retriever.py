@@ -61,8 +61,8 @@ def test_rag_context_is_bounded_and_formatted():
     r = IncidentRetriever(_CASES)
     hits = r.retrieve("postgres role does not exist connection refused", k=2)
     ctx = rag_context(hits, max_chars=600)
-    assert "past incidents" in ctx.lower()
-    assert "CAUSE:" in ctx
+    assert "incidentes pasados" in ctx.lower()
+    assert "CAUSA:" in ctx
     assert len(ctx) <= 600
 
 

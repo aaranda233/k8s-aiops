@@ -144,6 +144,10 @@ class _W:
     log_count: int = 2
     template_count: int = 2
 
+    @property
+    def focus_namespaces(self):
+        return sorted(self.namespaces)
+
 
 @dataclass
 class _Scored:

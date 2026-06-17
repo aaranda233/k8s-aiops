@@ -53,6 +53,27 @@ def test_window_error_ratio_zero_without_errors():
 
 
 @pytest.mark.unit
+def test_focus_namespaces_uses_error_namespaces():
+    """Atribuye la anomalía a los namespaces de los logs de error, no a todos."""
+    w = WindowData(index=0, start_time=0, end_time=60)
+    # Muchos namespaces con logs normales, solo 'postgresql' con error
+    w.add(FakeParsed("ok", "argocd", 1, level="INFO"))
+    w.add(FakeParsed("ok", "default", 2, level="INFO"))
+    w.add(FakeParsed("ok", "kube-system", 3, level="INFO"))
+    w.add(FakeParsed("boom", "postgresql", 4, level="FATAL"))
+    assert set(w.namespaces) == {"argocd", "default", "kube-system", "postgresql"}
+    assert w.focus_namespaces == ["postgresql"]  # solo el culpable
+
+
+@pytest.mark.unit
+def test_focus_namespaces_falls_back_to_all_without_errors():
+    w = WindowData(index=0, start_time=0, end_time=60)
+    w.add(FakeParsed("a", "ns1", 1, level="INFO"))
+    w.add(FakeParsed("b", "ns2", 2, level="INFO"))
+    assert w.focus_namespaces == ["ns1", "ns2"]  # sin errores -> todos
+
+
+@pytest.mark.unit
 def test_feed_keeps_logs_in_same_window_until_boundary():
     b = WindowBuilder(window_size_seconds=60)
     assert b.feed(FakeParsed("a", "ns", 1), timestamp=1000.0) is None

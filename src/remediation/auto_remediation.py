@@ -143,7 +143,9 @@ class AutoRemediation:
     def _handle(self, scored_window, diagnosis: DiagnosisResult) -> RemediationResult:
         incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
         w = scored_window.window
-        namespaces = w.namespaces
+        # Namespaces realmente implicados (los del diagnóstico, ya enfocados a los
+        # logs de error), no todos los que la ventana de 60s agregó del cluster.
+        namespaces = set(diagnosis.namespaces) if diagnosis.namespaces else set(w.namespaces)
         root_cause = diagnosis.root_cause
         kubectl_cmd = diagnosis.kubectl_command
 

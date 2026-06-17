@@ -24,6 +24,8 @@ class WindowData:
     error_count: int = 0
     # muestra de las líneas de error (alta señal para el RCA), acotada
     error_logs: list[str] = field(default_factory=list)
+    # namespaces que produjeron logs de error (los realmente implicados)
+    error_namespaces: set[str] = field(default_factory=set)
     anomaly_score: float = 0.0
     is_anomaly: bool = False
 
@@ -34,8 +36,21 @@ class WindowData:
         self.cluster_counts[cid] = self.cluster_counts.get(cid, 0) + 1
         if getattr(parsed, "level", "").upper() in _ERROR_LEVELS:
             self.error_count += 1
+            if parsed.namespace:
+                self.error_namespaces.add(parsed.namespace)
             if len(self.error_logs) < _MAX_ERROR_LOGS:
                 self.error_logs.append(parsed.raw)
+
+    @property
+    def focus_namespaces(self) -> list[str]:
+        """Namespaces realmente implicados en la anomalía.
+
+        Si hay logs de error, son sus namespaces (el culpable); si no, todos los
+        de la ventana. Evita atribuir la anomalía a todo el cluster cuando la
+        ventana de 60s agrega logs de muchos namespaces.
+        """
+        src = self.error_namespaces if self.error_namespaces else self.namespaces
+        return sorted(src)
 
     @property
     def log_count(self) -> int:

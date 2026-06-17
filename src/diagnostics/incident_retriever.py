@@ -187,10 +187,10 @@ def rag_context(cases: list[dict], max_chars: int = 600) -> str:
     """Formatea los casos recuperados como bloque de contexto acotado para el prompt."""
     if not cases:
         return ""
-    lines = ["Similar past incidents (already resolved on this cluster):"]
+    lines = ["Incidentes pasados similares (ya resueltos en este cluster):"]
     for c in cases:
         rc = (c.get("root_cause", "") or "")[:200]
         kc = (c.get("kubectl", "") or "")[:120]
-        lines.append(f"- [sim {c.get('score', 0)}] CAUSE: {rc} | FIX: {kc}")
+        lines.append(f"- [sim {c.get('score', 0)}] CAUSA: {rc} | FIX: {kc}")
     text = "\n".join(lines)
     return text[:max_chars]
