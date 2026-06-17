@@ -70,6 +70,7 @@ class HybridReActAgent:
     timeout: float = 120.0
     max_steps: int = 3
     dry_run: bool = True
+    retriever: object = None   # IncidentRetriever opcional (RAG): casos pasados
 
     def diagnose(self, scored_window) -> DiagnosisResult:
         w = scored_window.window
@@ -82,6 +83,15 @@ class HybridReActAgent:
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
         )
+
+        # RAG: recuperar casos pasados similares e inyectarlos como contexto.
+        # Acotado para no reventar num_ctx=2048 (1-2 casos resumidos).
+        if self.retriever is not None:
+            from src.diagnostics.incident_retriever import rag_context
+            cases = self.retriever.retrieve(logs_text, k=2)
+            ctx = rag_context(cases)
+            if ctx:
+                initial_context = f"{ctx}\n\n{initial_context}"
 
         # Fase 1: investigador (base model)
         investigation_steps = self._investigate(initial_context)

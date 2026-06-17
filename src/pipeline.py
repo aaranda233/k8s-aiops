@@ -29,6 +29,22 @@ console = Console()
 log = logging.getLogger("aiops.pipeline")
 
 
+def _build_retriever():
+    """Construye el recuperador RAG desde el feedback si RAG_ENABLED=true."""
+    import os
+    if os.getenv("RAG_ENABLED", "false").lower() != "true":
+        return None
+    try:
+        from src.diagnostics.incident_retriever import IncidentRetriever
+        path = os.getenv("AIOPS_FEEDBACK_FILE", "data/feedback/feedback.jsonl")
+        retriever = IncidentRetriever.from_feedback(path)
+        log.info("RAG activado: %d casos en el índice", len(retriever.cases))
+        return retriever
+    except Exception as e:
+        log.warning("No se pudo construir el índice RAG: %s", e)
+        return None
+
+
 class AIOPsPipeline:
     def __init__(self, cfg: PipelineConfig, event_bus=None, incident_store=None):
         self.cfg = cfg
@@ -57,6 +73,7 @@ class AIOPsPipeline:
                     timeout=cfg.diagnostics.timeout_seconds,
                     max_steps=cfg.diagnostics.react_max_steps,
                     dry_run=cfg.diagnostics.react_dry_run,
+                    retriever=_build_retriever(),  # RAG opcional (env RAG_ENABLED)
                 )
             elif mode == "react":
                 self.rca = ReActAgent(
