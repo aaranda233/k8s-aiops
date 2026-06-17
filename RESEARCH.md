@@ -776,7 +776,91 @@ Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection
 
 ---
 
-## 16. Pending / Future Work
+## 16. Continual Learning — Closed-Loop Fine-Tuning vs RAG
+
+The system implements two complementary mechanisms so the RCA expert improves
+from real operation, plus an empirical comparison between them. This realises the
+"L5+ Learning from outcomes" previously listed as future work.
+
+### 16.1 The learning signal is free
+
+Every incident already carries a supervision signal: the human decision
+(`response` = approved/rejected), the verification outcome (`status` = resolved/
+failed), and optionally an explicit human correction. The mapping is direct:
+approved+resolved → positive (chosen), rejected/failed → negative (rejected).
+
+The blocker was that `IncidentStore` was in-memory only. Fixed with an
+append-only JSONL log (`src/remediation/incident_log.py`) hooked into every
+state transition, which both survives restarts and feeds the learning loop.
+
+### 16.2 Approach A — Closed-loop preference fine-tuning (ORPO)
+
+Pipeline (offline, GPU batch): incident outcomes → `data/feedback/feedback.jsonl`
+(`dataset/feedback_capture.py`) → preference pairs `chosen`/`rejected`
+(`finetune/build_loop_dataset.py`, with **experience replay** of the base dataset
+to prevent catastrophic forgetting) → continual ORPO training
+(`finetune/loop_train.py`, reusing `train_orpo.py`, triggered by an N-new-examples
+threshold) → **non-regression gate** (`eval/gate.py`: promote only if
+parse_rate/keyword_hit do not regress on a blind test set) → versioned deploy with
+rollback (`finetune/deploy_model.py`: `k8s-rca-orpo-v{N}` + stable alias) →
+per-version metrics in MLflow (`log_loop_cycle` → improvement curve).
+
+Conceptually this is **continual preference fine-tuning with human feedback**
+(RLHF/RLAIF family, offline, no RL), with safeguards against degenerative loops
+(only verified positives / human corrections become `chosen`; gate + canary),
+catastrophic forgetting (replay + non-regression), and data poisoning
+(human-in-the-loop review). It changes the weights; requires a GPU; learns in
+cycles.
+
+### 16.3 Approach B — Retrieval-Augmented Generation (RAG)
+
+`src/diagnostics/incident_retriever.py` indexes resolved/validated incidents
+(TF-IDF over event text — sklearn, zero new dependencies, CPU-only) and retrieves
+the most similar past cases for a new incident, injecting them (bounded to fit
+`num_ctx=2048`) into the RCA prompt. The model improves by **context, not
+weights**: new knowledge is available instantly, with no GPU and no forgetting.
+Enabled via `RAG_ENABLED` and wired into `HybridReActAgent`.
+
+### 16.4 Empirical comparison (RAG vs plain, same model, same test set)
+
+`eval/compare_learning.py`, run live on CPU over the held-out test set, RAG corpus
+= 1960 past cases:
+
+| Model | parse_rate plain → RAG | keyword_hit plain → RAG |
+|-------|------------------------|-------------------------|
+| ORPO fine-tuned (`k8s-rca-orpo`) | 1.000 → 1.000 | 1.000 → 0.917 |
+| Base (`qwen2.5:1.5b`) | 1.000 → 1.000 | 1.000 → 0.833 |
+
+**Finding (honest):** on this domain, RAG provides **no improvement and a small
+regression**. Two compounding reasons: (1) the test scenarios are keyword-detectable
+from the events themselves, so both models are already at ceiling (no headroom);
+(2) with a 1.5B model and a 2048-token budget, the retrieved context **competes for
+and dilutes** the prompt and can distract an already-capable model. RAG's benefit
+grows precisely where these don't hold: a non-specialised base model, harder cases,
+or a larger context window.
+
+### 16.5 Decision framework
+
+| Dimension | Fine-tuning (ORPO loop) | RAG |
+|-----------|-------------------------|-----|
+| GPU | Required (batch) | Not required (CPU) |
+| Learning latency | Per cycle | Instant |
+| Catastrophic forgetting | Risk (mitigated by replay) | None |
+| Degenerative loop | Risk (mitigated by gate+canary) | None (weights untouched) |
+| Explainability | Low (black box) | High (shows the cases used) |
+| Format/domain adherence | Strong (what reached parse 98.6%) | Depends on base model |
+| Context cost | None at inference | High (critical at num_ctx=2048) |
+
+**Conclusion:** in *this* system fine-tuning (ORPO) is the primary mechanism — it
+is what lifted RCA quality to the strong baseline measured here — while RAG is a
+complementary, GPU-free continual-memory path whose marginal value is currently
+limited by the tiny context window. The recommended architecture is **hybrid**:
+RAG for instant, auditable day-to-day retention; periodic ORPO consolidation when
+the accumulated feedback warrants it (and a GPU is available).
+
+---
+
+## 17. Pending / Future Work
 
 - [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
