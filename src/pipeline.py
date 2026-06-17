@@ -38,8 +38,16 @@ def _build_retriever():
         from src.diagnostics.incident_retriever import IncidentRetriever
         feedback = os.getenv("AIOPS_FEEDBACK_FILE", "data/feedback/feedback.jsonl")
         corpus = os.getenv("AIOPS_RAG_CORPUS", "")  # casos conocidos para el día 1
-        retriever = IncidentRetriever.from_sources(feedback, corpus or None)
-        log.info("RAG activado: %d casos en el índice", len(retriever.cases))
+        # Excluir del RAG lo ya consolidado en el modelo activo (cierre del ciclo).
+        skip = 0
+        try:
+            from finetune.deploy_model import ModelRegistry
+            skip = ModelRegistry().consolidation_watermark()
+        except Exception:
+            skip = 0
+        retriever = IncidentRetriever.from_sources(feedback, corpus or None, skip_consolidated=skip)
+        log.info("RAG activado: %d casos en el índice (consolidados excluidos: %d)",
+                 len(retriever.cases), skip)
         return retriever
     except Exception as e:
         log.warning("No se pudo construir el índice RAG: %s", e)

@@ -91,8 +91,10 @@ def run_cycle(feedback="data/feedback/feedback.jsonl", state_path=STATE_PATH,
     gate = run_gate(f"k8s-rca-orpo-v{version}", prod)
     promote = gate["decision"] == "PROMOTE"
 
-    # 5. Registrar y, si procede, promover
-    reg.record(version, gguf, gate, out_dataset, promoted=promote)
+    # 5. Registrar y, si procede, promover. feedback_count = watermark: al
+    # promocionar, estos ejemplos quedan consolidados en los pesos y el RAG los
+    # retira (se "vacía" lo ya aprendido).
+    reg.record(version, gguf, gate, out_dataset, promoted=promote, feedback_count=total)
     if promote:
         set_alias(version)
 

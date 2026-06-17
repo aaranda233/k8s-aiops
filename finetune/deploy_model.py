@@ -39,7 +39,7 @@ class ModelRegistry:
         return len(self._data["versions"]) + 1
 
     def record(self, version: int, gguf_path: str, gate: dict, dataset: str,
-               promoted: bool) -> None:
+               promoted: bool, feedback_count: int = 0) -> None:
         self._data["versions"].append({
             "version": version,
             "model": f"{ALIAS}-v{version}",
@@ -47,11 +47,27 @@ class ModelRegistry:
             "dataset": dataset,
             "gate": gate,
             "promoted": promoted,
+            "feedback_count": feedback_count,  # nº ejemplos consolidados en esta versión
             "created_at": time.time(),
         })
         if promoted:
             self._data["active"] = version
         self._save()
+
+    def consolidation_watermark(self) -> int:
+        """Nº de ejemplos de feedback ya consolidados en el modelo ACTIVO.
+
+        El RAG excluye los ejemplos hasta este punto (ya están en los pesos). Si
+        no hay versión activa, 0 (RAG retiene todo el feedback). En rollback, el
+        watermark sigue al modelo activo automáticamente.
+        """
+        active = self._data["active"]
+        if active is None:
+            return 0
+        for v in self._data["versions"]:
+            if v["version"] == active:
+                return v.get("feedback_count", 0)
+        return 0
 
     def active(self) -> int | None:
         return self._data["active"]

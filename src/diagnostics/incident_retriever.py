@@ -47,23 +47,32 @@ class IncidentRetriever:
 
     @classmethod
     def from_sources(cls, feedback_path: str, corpus_path: str | None = None,
-                     positive_only: bool = True) -> "IncidentRetriever":
+                     positive_only: bool = True, skip_consolidated: int = 0) -> "IncidentRetriever":
         """Índice combinado: memoria del bucle (feedback) + corpus de casos conocidos.
 
         Permite que RAG funcione desde el primer día (corpus) y mejore con el
-        feedback real acumulado.
+        feedback real acumulado. skip_consolidated excluye el feedback ya
+        consolidado en el modelo activo (cierre del ciclo).
         """
-        cases = cls.from_feedback(feedback_path, positive_only).cases
+        cases = cls.from_feedback(feedback_path, positive_only, skip_consolidated).cases
         if corpus_path:
             cases = cases + _load_corpus_cases(corpus_path)
         return cls(cases)
 
     @classmethod
-    def from_feedback(cls, path: str, positive_only: bool = True) -> "IncidentRetriever":
-        """Construye el índice desde feedback.jsonl (memoria de casos validados)."""
+    def from_feedback(cls, path: str, positive_only: bool = True,
+                      skip_consolidated: int = 0) -> "IncidentRetriever":
+        """Construye el índice desde feedback.jsonl (memoria de casos validados).
+
+        skip_consolidated: nº de ejemplos iniciales ya consolidados en el modelo
+        activo (su conocimiento ya está en los pesos) -> se EXCLUYEN del RAG. Es
+        la pieza que "vacía" el RAG tras la promoción: solo retiene lo que el
+        modelo aún no sabe.
+        """
         cases: list[dict] = []
         p = Path(path)
         if p.exists():
+            seen = 0  # ejemplos válidos vistos (para el watermark de consolidación)
             with open(p, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -73,6 +82,9 @@ class IncidentRetriever:
                         ex = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    seen += 1
+                    if seen <= skip_consolidated:
+                        continue  # ya consolidado en el modelo activo
                     if positive_only and ex.get("label") != "positive" and not ex.get("human_correction"):
                         continue
                     # preferir la corrección humana como "verdad" del caso
