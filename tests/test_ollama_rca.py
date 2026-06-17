@@ -17,6 +17,7 @@ from src.diagnostics.ollama_rca import (
     OllamaRCA,
     build_event_sample,
     parse_diagnosis,
+    sanitize_kubectl,
     window_event_sample,
 )
 
@@ -81,6 +82,62 @@ def test_parse_multiline_root_cause_after_header():
     assert "disk space" in rc
     assert "evicted" in rc.lower()
     assert kc == "kubectl describe node worker"
+
+
+# ── Calidad: concisión y saneo del kubectl ──────────────────────────────────
+
+@pytest.mark.unit
+def test_parse_strips_tutorial_rambling():
+    """Una salida tipo tutorial (listas, markdown, pasos) se reduce a frases concisas."""
+    text = (
+        "El primer paso para investigar este problema sería un análisis detallado. "
+        "Aquí te muestro cómo hacerlo:\n"
+        "1. **Obtener el nombre del volumen**:\n```bash\n```\n"
+        "2. **Verificar las propiedades**: Size, AccessModes, etc.\n"
+        "3. Más pasos y más pasos y más texto interminable que no aporta nada."
+    )
+    rc, kc = parse_diagnosis(text)
+    assert "```" not in rc and "**" not in rc and "1." not in rc
+    assert len(rc) <= 330
+    assert rc.count(".") <= 4  # pocas frases
+
+
+@pytest.mark.unit
+def test_parse_removes_analysis_preamble():
+    rc, _ = parse_diagnosis("Analysis The pod is failing due to OOM.")
+    assert not rc.lower().startswith("analysis")
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_multi_namespace():
+    assert sanitize_kubectl("kubectl describe pvc -n aiops-demo, longhorn-system, postgresql") == \
+        "kubectl describe pvc -n aiops-demo"
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_strips_pipe_tail():
+    assert sanitize_kubectl("kubectl get pods -n prod | grep Error | awk '{print $1}'") == \
+        "kubectl get pods -n prod"
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_node_has_no_namespace():
+    # node es cluster-scoped: no debe llevar -n
+    out = sanitize_kubectl("kubectl describe node -n aiops-demo")
+    assert "-n" not in out
+    assert out == "kubectl describe node"
+
+
+@pytest.mark.unit
+def test_sanitize_kubectl_valid_unchanged():
+    cmd = "kubectl logs api -n prod --tail=20"
+    assert sanitize_kubectl(cmd) == cmd
+
+
+@pytest.mark.unit
+def test_parse_diagnosis_applies_sanitize():
+    rc, kc = parse_diagnosis("ROOT CAUSE: x\nKUBECTL: kubectl describe pvc -n a, b, c")
+    assert kc == "kubectl describe pvc -n a"
 
 
 # ── build_event_sample: acotado ─────────────────────────────────────────────

@@ -27,11 +27,15 @@ Your task:
 1. Identify the root cause in 2-3 sentences.
 2. Propose ONE specific kubectl command to investigate or mitigate.
 
-IMPORTANT: Respond ALWAYS in Spanish. No preamble before ROOT CAUSE.
+IMPORTANT:
+- Respond ALWAYS in Spanish. No preamble before ROOT CAUSE.
+- ROOT CAUSE: máximo 3 frases. PROHIBIDO listas, viñetas, pasos numerados,
+  markdown o bloques de código.
+- KUBECTL: UN solo comando en UNA línea, con UN solo namespace (-n <uno>).
 
 Output format (strict, no extra text):
-ROOT CAUSE: <explicación en español>
-KUBECTL: <comando exacto>"""
+ROOT CAUSE: <explicación breve en español, máx 3 frases>
+KUBECTL: <un comando exacto>"""
 
 _DEFAULT_KUBECTL = "kubectl get events --all-namespaces --sort-by='.lastTimestamp'"
 # Límite de contexto del experto (num_ctx=2048). Acotamos la muestra de eventos
@@ -110,12 +114,47 @@ def parse_diagnosis(text: str) -> tuple[str, str]:
         # Fallback: usar el texto del modelo (sin las líneas de comando) como causa.
         cleaned = [l.strip().lstrip("#*->").strip() for l in lines
                    if l.strip() and "kubectl" not in l.lower()]
-        root_cause = " ".join(cleaned)[:400] if cleaned else "Sin causa raíz determinable."
+        root_cause = " ".join(cleaned) if cleaned else "Sin causa raíz determinable."
     # Seguridad: quitar un prefijo "ROOT CAUSE:" redundante si quedó.
     root_cause = re.sub(r"^\s*root cause\s*:?\s*", "", root_cause, flags=re.IGNORECASE).strip() or root_cause
-    if not kubectl_cmd:
-        kubectl_cmd = _DEFAULT_KUBECTL
+    # Salvaguarda de CALIDAD: el modelo a veces divaga en modo tutorial (markdown,
+    # listas, bloques de código). Limpiar y truncar a 2-3 frases concisas.
+    root_cause = _concise(root_cause)
+    kubectl_cmd = sanitize_kubectl(kubectl_cmd) if kubectl_cmd else _DEFAULT_KUBECTL
     return root_cause, kubectl_cmd
+
+
+def _concise(text: str, max_sentences: int = 3, max_chars: int = 320) -> str:
+    """Limpia markdown/listas/código y trunca a unas pocas frases (anti-tutorial)."""
+    s = re.sub(r"```.*?```", " ", text, flags=re.DOTALL).replace("```", " ")
+    s = re.sub(r"[*`#]", "", s)                          # markdown bold/code/headers
+    # marcadores de lista en CUALQUIER posición (no solo a inicio de línea, porque
+    # el texto puede venir ya unido en una sola línea): "1. " "2) " y viñetas.
+    s = re.sub(r"(^|\s)\d+[.)]\s+", " ", s)
+    s = re.sub(r"(^|\s)[-•]\s+", " ", s)
+    s = re.sub(r"(?i)^\s*(an[aá]lisis|analysis)\b[:\s]*", "", s)  # preámbulo
+    s = re.sub(r"\s+", " ", s).strip()
+    parts = re.split(r"(?<=[.!?])\s+", s)
+    out = " ".join(parts[:max_sentences]).strip()
+    return (out[:max_chars].rstrip() or s[:max_chars]).strip()
+
+
+def sanitize_kubectl(cmd: str) -> str:
+    """Convierte el kubectl propuesto en un comando válido y de una sola línea.
+
+    - '-n a, b, c' (multi-namespace, inválido) -> '-n a' (el primario).
+    - corta la cola de pipes/redirecciones (| grep | awk, >, etc.).
+    - recursos cluster-scoped (node/nodes/pv) no llevan -n.
+    """
+    cmd = (cmd or "").strip()
+    # un solo comando: cortar en el primer pipe/redirección
+    cmd = re.split(r"\s*[|>;]", cmd, maxsplit=1)[0].strip()
+    # -n con lista separada por comas -> primer namespace
+    cmd = re.sub(r"(-n\s+)([A-Za-z0-9-]+)\s*,[\sA-Za-z0-9,-]*", r"\1\2", cmd)
+    # recursos no-namespaced: quitar -n
+    if re.search(r"\b(node|nodes|pv|persistentvolume|persistentvolumes|namespace|namespaces|ns)\b", cmd):
+        cmd = re.sub(r"\s+-n\s+\S+", "", cmd)
+    return re.sub(r"\s+", " ", cmd).strip() or _DEFAULT_KUBECTL
 
 
 @dataclass

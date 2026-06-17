@@ -150,12 +150,13 @@ class AutoRemediation:
         kubectl_cmd = diagnosis.kubectl_command
 
         # Pasos de investigación del trace si es modo hybrid/react
+        from src.diagnostics.ollama_rca import sanitize_kubectl
         investigation_steps = []
         for step in diagnosis.react_trace:
             if step.thought:
                 investigation_steps.append(f"THOUGHT: {step.thought[:120]}")
             if step.action:
-                investigation_steps.append(f"ACTION: {step.action}")
+                investigation_steps.append(f"ACTION: {sanitize_kubectl(step.action)}")
 
         risk = risk_score(kubectl_cmd)
         fp = self._circuit.fingerprint(namespaces, root_cause)

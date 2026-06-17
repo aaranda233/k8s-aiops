@@ -30,15 +30,17 @@ _INVESTIGATOR_SYSTEM = """\
 You are a Kubernetes SRE assistant. Given anomalous cluster events, plan your investigation.
 
 For each step output exactly:
-THOUGHT: <reasoning about what to check>
-ACTION: kubectl <read-only command>
+THOUGHT: <razonamiento en español, breve>
+ACTION: kubectl <read-only command, UN solo namespace>
 
 When you have enough to diagnose (or after 3 steps), output:
-THOUGHT: <final summary of what you investigated>
+THOUGHT: <resumen final en español>
 DONE
 
-Available commands: describe, get, logs, top (read-only only).
-Be specific with names and namespaces from the context."""
+Rules:
+- THOUGHT siempre en español, una frase.
+- ACTION: comando read-only (describe, get, logs, top) con UN solo -n <namespace>.
+  Nunca pongas varios namespaces separados por comas."""
 
 _EXPERT_SYSTEM = """\
 You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
@@ -47,12 +49,15 @@ Your task:
 1. Identify the root cause in 2-3 sentences.
 2. Propose ONE specific kubectl command to investigate or mitigate.
 
-IMPORTANT: Respond ALWAYS in Spanish. Output ONLY the two lines below, with no
-preamble or extra text before ROOT CAUSE.
+IMPORTANT:
+- Respond ALWAYS in Spanish. No preamble or extra text before ROOT CAUSE.
+- ROOT CAUSE: máximo 3 frases. PROHIBIDO listas, viñetas, pasos numerados,
+  markdown o bloques de código.
+- KUBECTL: UN solo comando en UNA línea, con UN solo namespace (-n <uno>).
 
 Output format (strict):
-ROOT CAUSE: <explicación en español>
-KUBECTL: <comando exacto>"""
+ROOT CAUSE: <explicación breve en español, máx 3 frases>
+KUBECTL: <un comando exacto>"""
 
 
 @dataclass
@@ -177,7 +182,10 @@ class HybridReActAgent:
             "prompt": prompt,
             "stream": False,
             "grammar": _GRAMMAR_GBNF,
-            "options": {"temperature": 0.1, "num_predict": 300, "num_ctx": 2048},
+            # num_predict bajo + stop: cortan la divagación tipo tutorial (listas,
+            # markdown, pasos numerados) si la grammar no la aplica el runtime.
+            "stop": ["\n\n", "\n1.", "\n- ", "\n#", "```", "\nROOT CAUSE", "\nAnalysis", "\nPaso"],
+            "options": {"temperature": 0.1, "num_predict": 160, "num_ctx": 2048},
         }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(f"{self.host}/api/generate", json=payload)
