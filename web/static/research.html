@@ -903,6 +903,27 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
         el suyo.
       </p>
     </div>
+
+    <div class="finding-box" style="margin-top:24px;">
+      <div class="fb-title">Grounding semántico: del lenguaje natural al namespace</div>
+      <p>
+        El matching exacto solo funciona si tecleas el nombre del namespace. Para entender
+        <em>"¿qué le pasa a la base de datos?"</em> sin escribir <code>postgresql</code>, el chat mapea la pregunta al
+        namespace por <strong>similitud de embeddings</strong> (<code>nomic-embed-text</code> vía Ollama). Cada namespace se
+        describe por <strong>lo que ejecuta</strong>, derivado de las imágenes de sus pods (<code>postgres → "base de datos SQL"</code>,
+        <code>nginx → "servidor web"</code>, <code>redis → "cache"</code>); la pregunta se recorta a su sintagma
+        (<em>"base de datos"</em>) y se elige el más cercano <strong>solo si supera umbral 0.50 y gana al 2º por 0.05</strong>;
+        si no, cae al matching exacto. Orden: nombre exacto → semántico → palabra clave → triaje global. El resultado es
+        <strong>determinista</strong> (el modelo solo recupera, no decide).
+      </p>
+      <p style="margin-top:10px;">
+        Iteración guiada por medición: con nombres pelados y la pregunta completa fallaba (entre 35 namespaces ganaba
+        <code>default</code> por el ruido; postgresql ni en el top-6). Con descripción enriquecida + pregunta recortada +
+        umbral/margen, <em>"base de datos"</em> → <code>postgresql</code> con <strong>0.746</strong> (margen 0.167), y los
+        casos ambiguos (dashboard, cache) caen por debajo del margen y degradan con seguridad. Los embeddings aportan el
+        <em>significado</em>; la ingeniería determinista lo hace fiable.
+      </p>
+    </div>
   </div>
 
   <!-- ── PRÓXIMOS PASOS ── -->
