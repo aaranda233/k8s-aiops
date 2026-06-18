@@ -36,6 +36,7 @@ _PLACEHOLDER = re.compile(r"<[^>]+>")
 _HEALTHY_STATUSES = {"Running", "Completed", "Succeeded"}
 _TRIAGE_CMD = "kubectl get pods -A"
 _MAX_PROBLEMS_SHOWN = 25
+_MAX_CONFIRM_STEPS = 3  # comandos read-only para confirmar la causa antes de concluir
 
 # Prioridad de severidad para auto-profundizar en el peor pod primero.
 _SEVERITY = {
@@ -307,13 +308,22 @@ class ClusterChatAgent:
         datos reales (p. ej. `get secret` muestra si falta el secret del rol).
         """
         suggested = _suggested_command(transcript, culprit, "")
-        if suggested and _is_readonly(suggested) \
-                and not any(a == suggested for (_t, a, _o) in transcript):
-            yield {"type": "thought", "text": "Ejecuto el comando sugerido para confirmar la causa…"}
-            yield {"type": "action", "command": suggested}
-            out = self._run_tool(suggested)
+        # Mini-bucle acotado: ejecuta hasta _MAX_CONFIRM_STEPS comandos de SOLO
+        # LECTURA para confirmar la causa con datos reales y seguir diagnosticando.
+        ran = 0
+        for cmd in _confirmation_commands(transcript, culprit):
+            if ran >= _MAX_CONFIRM_STEPS:
+                break
+            if any(a == cmd for (_t, a, _o) in transcript):
+                continue
+            if ran == 0:
+                yield {"type": "thought",
+                       "text": "Confirmo la causa con comandos de solo lectura…"}
+            yield {"type": "action", "command": cmd}
+            out = self._run_tool(cmd)
             yield {"type": "observation", "text": out[:1500]}
-            transcript.append((f"Resultado de «{suggested}»", suggested, out))
+            transcript.append((f"Confirmación: «{cmd}»", cmd, out))
+            ran += 1
 
         yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
         try:
@@ -503,11 +513,9 @@ def _is_readonly(cmd: str) -> bool:
     return len(parts) >= 2 and parts[0] == "kubectl" and parts[1].lower() in _READONLY_VERBS
 
 
-def _suggested_command(transcript: list[tuple[str, str, str]],
-                       culprit: dict | None, root_cause: str) -> str:
-    """Comando kubectl DETERMINISTA dirigido al pod culpable (vía command_builder)."""
-    if not culprit:
-        return ""
+def _culprit_evidence(transcript: list[tuple[str, str, str]],
+                      culprit: dict) -> tuple[str, str, str]:
+    """Evidencia (texto), namespace y nombre del pod culpable a partir del transcript."""
     ns = culprit.get("ns", "")
     name = culprit.get("name", "")
     drill = " ".join(
@@ -515,10 +523,48 @@ def _suggested_command(transcript: list[tuple[str, str, str]],
         if action and ("describe" in action or "logs" in action)
     )
     evidence = f"{ns} Pod/{name} {culprit.get('status', '')} {drill}"
+    return evidence, ns, name
+
+
+def _suggested_command(transcript: list[tuple[str, str, str]],
+                       culprit: dict | None, root_cause: str) -> str:
+    """Comando kubectl DETERMINISTA dirigido al pod culpable (vía command_builder)."""
+    if not culprit:
+        return ""
+    evidence, ns, _ = _culprit_evidence(transcript, culprit)
     cmd = build_command(evidence, ns, root_cause=root_cause)
     if not cmd or "get events --all-namespaces" in cmd:
         return ""
     return cmd
+
+
+def _confirmation_commands(transcript: list[tuple[str, str, str]],
+                           culprit: dict | None) -> list[str]:
+    """Secuencia DETERMINISTA de comandos de SOLO LECTURA para confirmar la causa.
+
+    Primero el comando específico de la intención (command_builder); luego
+    describe del pod, logs de la instancia anterior y eventos del namespace.
+    Sin duplicados, todos read-only.
+    """
+    if not culprit:
+        return []
+    evidence, ns, name = _culprit_evidence(transcript, culprit)
+    cands: list[str] = []
+    primary = build_command(evidence, ns)
+    if primary:
+        cands.append(primary)
+    if name and ns:
+        cands.append(f"kubectl describe pod {name} -n {ns}")
+        cands.append(f"kubectl logs {name} -n {ns} --tail=50 --previous")
+    if ns:
+        cands.append(f"kubectl get events -n {ns} --sort-by=.lastTimestamp")
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in cands:
+        if c and _is_readonly(c) and "get events --all-namespaces" not in c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 
 def _name_focus(question: str, rows: list[dict]) -> tuple[str | None, list[dict]]:

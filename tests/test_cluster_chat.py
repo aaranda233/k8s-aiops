@@ -502,3 +502,20 @@ def test_is_readonly():
     assert _cc._is_readonly("kubectl describe pod x -n y") is True
     assert _cc._is_readonly("kubectl rollout restart deployment/x -n y") is False
     assert _cc._is_readonly("kubectl delete pod x") is False
+
+
+@pytest.mark.unit
+def test_confirmation_commands_readonly_and_bounded():
+    culprit = {"ns": "postgresql", "name": "postgresql-0", "status": "Running (errores en logs)"}
+    transcript = [("t", "kubectl logs postgresql-0 -n postgresql --tail=50",
+                   'FATAL: role "x" does not exist')]
+    cmds = _cc._confirmation_commands(transcript, culprit)
+    assert cmds, "debe proponer al menos un comando"
+    assert all(_cc._is_readonly(c) for c in cmds)          # todos read-only
+    assert len(cmds) == len(set(cmds))                     # sin duplicados
+    assert all("postgresql" in c for c in cmds)            # dirigidos al ns
+
+
+@pytest.mark.unit
+def test_confirmation_commands_empty_without_culprit():
+    assert _cc._confirmation_commands([], None) == []
