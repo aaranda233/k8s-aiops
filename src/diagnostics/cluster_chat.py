@@ -29,6 +29,10 @@ import httpx
 
 from src.diagnostics.command_builder import build_command, explain_command
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
+from src.diagnostics.semantic_ground import NamespaceGrounder
+
+# Grounding semántico de la pregunta → namespace (cuando no hay match exacto).
+_GROUNDER = NamespaceGrounder()
 
 _PLACEHOLDER = re.compile(r"<[^>]+>")
 
@@ -152,13 +156,23 @@ class ClusterChatAgent:
         # parser?" → todos los pods cuyo nombre contiene 'parser'. Si la pregunta
         # no acota nada, se diagnostica el problema más grave del cluster.
         all_rows = _parse_pod_rows(pods_output)
-        ns_focus = _mentioned_namespace(question, _namespaces_in(pods_output))
+        cluster_namespaces = _namespaces_in(pods_output)
+        ns_focus = _mentioned_namespace(question, cluster_namespaces)
+        grounded = False
+        if not ns_focus:
+            # Sin nombre exacto → grounding semántico ("la base de datos" → postgresql).
+            g = _GROUNDER.ground(question, cluster_namespaces)
+            if g:
+                ns_focus, grounded = g, True
         drill_target = None
         focused = False  # ¿la pregunta acota a un namespace/nombre concreto?
         focus_summary: str | None = None  # resumen determinista del conjunto enfocado
         focus_pods: list[tuple[str, str]] = []  # (ns, name) del conjunto enfocado
         if ns_focus:
             focused = True
+            if grounded:
+                yield {"type": "thought", "step": step,
+                       "text": f"Por similitud, entiendo que preguntas por el namespace «{ns_focus}»."}
             scoped_cmd = f"kubectl get pods -n {ns_focus}"
             if scoped_cmd not in seen_actions:
                 step += 1
