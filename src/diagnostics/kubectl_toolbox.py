@@ -30,7 +30,7 @@ class ToolResult:
         return self.returncode == 0 and self.error is None
 
 
-def execute(raw_command: str) -> ToolResult:
+def execute(raw_command: str, max_lines: int = _MAX_OUTPUT_LINES) -> ToolResult:
     raw_command = raw_command.strip()
 
     try:
@@ -68,9 +68,9 @@ def execute(raw_command: str) -> ToolResult:
         )
         stdout = proc.stdout or ""
         lines = stdout.splitlines()
-        if len(lines) > _MAX_OUTPUT_LINES:
-            stdout = "\n".join(lines[:_MAX_OUTPUT_LINES])
-            stdout += f"\n... [truncados {len(lines) - _MAX_OUTPUT_LINES} líneas]"
+        if len(lines) > max_lines:
+            stdout = "\n".join(lines[:max_lines])
+            stdout += f"\n... [truncados {len(lines) - max_lines} líneas]"
 
         return ToolResult(
             command=raw_command,

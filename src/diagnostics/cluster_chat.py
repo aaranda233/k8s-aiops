@@ -131,7 +131,10 @@ class ClusterChatAgent:
         step += 1
         yield {"type": "thought", "step": step, "text": "Reviso el estado de todos los pods del cluster…"}
         yield {"type": "action", "step": step, "command": _TRIAGE_CMD}
-        pods_output = self._run_tool(_TRIAGE_CMD)
+        # Triage SIN truncar: el cluster puede tener >150 pods y el foco
+        # (namespace/nombre) necesita la lista completa. Al usuario solo se le
+        # muestra el resumen (digest), así que el volumen interno no importa.
+        pods_output = self._run_tool(_TRIAGE_CMD, max_lines=10000)
         seen_actions.add(_TRIAGE_CMD)
         digest = _cluster_digest(pods_output)
         yield {"type": "observation", "step": step, "text": digest}
@@ -322,10 +325,10 @@ class ClusterChatAgent:
                 steps.append(ev)
         return {"steps": steps, "answer": answer}
 
-    def _run_tool(self, action: str) -> str:
+    def _run_tool(self, action: str, max_lines: int = 150) -> str:
         if self.dry_run:
             return f"[dry-run] Ejecutaría: {action}"
-        result = kubectl_execute(action)  # solo lectura garantizada
+        result = kubectl_execute(action, max_lines=max_lines)  # solo lectura garantizada
         if result.error and not result.stdout:
             return f"Error: {result.error}"
         return result.stdout or f"(sin salida, exit {result.returncode})"

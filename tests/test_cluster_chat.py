@@ -87,7 +87,7 @@ def test_parse_answer_takes_priority_over_loose_kubectl():
     assert "kubectl logs" in ans
 
 
-def _agent(responses, tool=lambda a: f"[obs: {a}]", synth="Conclusión del experto."):
+def _agent(responses, tool=lambda a, **k: f"[obs: {a}]", synth="Conclusión del experto."):
     """responses = lo que devuelve el INVESTIGADOR; synth = lo que devuelve el EXPERTO."""
     agent = ClusterChatAgent(max_steps=4)
     it = iter(responses)
@@ -141,7 +141,7 @@ def test_max_steps_forces_expert_synthesis():
         counter["n"] += 1
         return f"THOUGHT: sigo\nACTION: kubectl get pods -n ns{counter['n']}"
     agent._call = call
-    agent._run_tool = lambda a: "obs"
+    agent._run_tool = lambda a, **k: "obs"
     events = list(agent.chat_iter("?"))
     assert events[-1]["type"] == "answer"
     assert events[-1]["text"] == "Síntesis tras agotar pasos."
@@ -165,7 +165,7 @@ def test_actions_go_through_readonly_toolbox():
     # Si el modelo propusiera un delete, el toolbox lo rechaza
     captured = {}
     original = cluster_chat.kubectl_execute
-    def spy(cmd):
+    def spy(cmd, **k):
         captured["cmd"] = cmd
         return original(cmd)  # toolbox real → rechaza delete
     cluster_chat.kubectl_execute = spy
@@ -188,7 +188,7 @@ def test_model_error_emits_error_event():
     # El triage determinista ocurre antes de llamar al modelo; cuando el modelo
     # falla en la fase de profundización debe emitirse un evento de error.
     agent = ClusterChatAgent(max_steps=2)
-    agent._run_tool = lambda a: "(sin pods)"
+    agent._run_tool = lambda a, **k: "(sin pods)"
     def boom(msgs, model=None):
         raise RuntimeError("ollama caído")
     agent._call = boom
@@ -213,7 +213,7 @@ def test_placeholder_command_is_rejected_not_executed():
             return "Diagnóstico final."
         return next(responses)
     agent._call = call
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return "salida real"
     agent._run_tool = tool
@@ -287,7 +287,7 @@ def test_triage_is_deterministic_first_action():
     agent = ClusterChatAgent(max_steps=3)
     agent._call = lambda msgs, model=None: "Diagnóstico." if model == agent.expert_model \
         else "THOUGHT: ya\nANSWER: listo"
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_SAMPLE
     agent._run_tool = tool
@@ -305,7 +305,7 @@ def test_no_dithering_auto_drills_when_model_wont_act():
             return "El proxy vllm está en CrashLoopBackOff."
         return "THOUGHT: necesito mirar los pods"  # nunca emite ACTION
     agent._call = call
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_SAMPLE if a == "kubectl get pods -A" else "Events: Back-off restarting"
     agent._run_tool = tool
@@ -321,7 +321,7 @@ def test_scoped_question_queries_mentioned_namespace():
     agent = ClusterChatAgent(max_steps=3)
     agent._call = lambda msgs, model=None: "Respuesta." if model == agent.expert_model \
         else "THOUGHT: ya\nANSWER: listo"
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_SAMPLE
     agent._run_tool = tool
@@ -335,7 +335,7 @@ def test_no_scoped_query_without_namespace_mention():
     agent = ClusterChatAgent(max_steps=3)
     agent._call = lambda msgs, model=None: "Respuesta." if model == agent.expert_model \
         else "THOUGHT: ya\nANSWER: listo"
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_SAMPLE
     agent._run_tool = tool
@@ -374,7 +374,7 @@ def test_chat_healthy_focus_answers_deterministically_without_expert():
             return "EL EXPERTO NO DEBERIA HABLAR AQUI"
         return "THOUGHT: ya\nANSWER: listo"
     agent._call = call
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_WITH_PARSERS
     agent._run_tool = tool
@@ -402,7 +402,7 @@ def test_focused_question_skips_model_drill_loop():
         investigator_calls.append(msgs)  # NO debería ocurrir con foco
         return "THOUGHT: el parser está roto\nACTION: kubectl logs parser -n default"
     agent._call = call
-    def tool(a):
+    def tool(a, **k):
         tool_calls.append(a)
         return _PODS_WITH_PARSERS
     agent._run_tool = tool
@@ -422,7 +422,7 @@ def test_synthesis_receives_failures_in_evidence():
             return "Diagnóstico final."
         return "THOUGHT: ya tengo la causa\nANSWER: listo"
     agent._call = call
-    agent._run_tool = lambda a: _PODS_SAMPLE
+    agent._run_tool = lambda a, **k: _PODS_SAMPLE
     list(agent.chat_iter("¿qué pasa en el cluster?"))
     assert "CrashLoopBackOff" in captured["evidence"]
     assert "oauth2-proxy-vllm" in captured["evidence"]
@@ -439,7 +439,7 @@ def test_synthesis_uses_expert_model():
             return "diagnóstico final"
         return "THOUGHT: miro\nACTION: kubectl get pods"
     agent._call = call
-    agent._run_tool = lambda a: "obs"
+    agent._run_tool = lambda a, **k: "obs"
     events = list(agent.chat_iter("?"))
     assert "experto" in used  # se invocó al experto para la síntesis
     assert events[-1]["text"] == "diagnóstico final"
