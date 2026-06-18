@@ -305,7 +305,8 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           benignos ya no inundan.
           <br><br><strong>Comandos kubectl deterministas</strong> (catálogo intención→comando + corrección de namespace):
           NS-ok 33%→<strong>85.7%</strong>, Verb-ok 41%→<strong>92.9%</strong> sobre 210 muestras. Cada comando incluye una
-          <strong>explicación en lenguaje natural</strong> de qué hace (determinista, sin modelo). Ver sección 07.
+          <strong>explicación en lenguaje natural</strong> de qué hace (determinista, sin modelo), y cada incidente se
+          <strong>clasifica App / Plataforma</strong> con badge y filtro en la bandeja. Ver sección 07.
         </div>
       </div>
     </div>
@@ -854,6 +855,22 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           con su explicación: <em>"Lista los secrets en postgresql para comprobar si falta el secret con las credenciales que el pod no encuentra"</em>.
         </div>
       </div>
+    </div>
+
+    <div class="finding-box" style="margin-top:24px;">
+      <div class="fb-title">Clasificación App / Plataforma (sin separar los flujos)</div>
+      <p>
+        Los incidentes llegan de dos fuentes — eventos de control-plane (ciclo de vida del pod: OOMKilled,
+        Evicted, ImagePullBackOff…) y logs de aplicación (p. ej. <code>FATAL: role does not exist</code>).
+        En vez de <strong>separarlos en dos pipelines</strong> — que fragmentaría una misma causa vista desde dos
+        ángulos (<code>CrashLoopBackOff</code> + el stack trace de la app son el <em>mismo</em> incidente) y perdería la
+        correlación que hace fuerte a la RCA — cada incidente se <strong>etiqueta por dueño</strong>:
+        <strong style="color:#c084fc">Plataforma</strong> (nodo/recursos/storage/red/imagen, dueño SRE) o
+        <strong style="color:#60a5fa">App</strong> (config/credenciales/probes/endpoints, dueño desarrollo).
+        La bandeja muestra un badge y un filtro (Todos / App / Plataforma); se mantiene un <strong>solo store</strong>,
+        así que se preservan la correlación eventos+logs y la deduplicación. La lección de tesis: la
+        <strong>correlación multi-fuente</strong> aporta más que la separación.
+      </p>
     </div>
   </div>
 

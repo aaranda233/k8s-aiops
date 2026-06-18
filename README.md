@@ -62,6 +62,8 @@ Ejecutar el sistema en continuo sobre un clúster real (~15 namespaces) destapó
 
   Además, cada comando lleva una **explicación en lenguaje natural** de qué hace y qué mirar (determinista, sin modelo): `kubectl get secret -n postgresql` → *"Lista los secrets en postgresql para comprobar si falta el secret con las credenciales que el pod no encuentra"*.
 
+- **Clasificación App / Plataforma** — cada incidente se etiqueta por dueño: **App** (config/credenciales/salud de la app) o **Plataforma** (nodo/recursos/almacenamiento/red/imagen), con badge y filtro en la bandeja. No se separan los flujos: se mantiene un solo store para preservar la **correlación eventos+logs** y la deduplicación.
+
 - **Evidencia al SLM por plantillas, anti-deriva con fallback determinista, warm-up de novedad y deduplicación de incidentes.** Detalle en [RESEARCH.md §17](./RESEARCH.md).
 
 ---

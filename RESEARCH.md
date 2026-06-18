@@ -951,7 +951,16 @@ The evidence is further filtered to the **culprit namespace** so a single root c
 
 The remaining ≈14% of NS-ok is the ceiling, not a miss: node-pressure scenarios resolve to `describe node`, which is cluster-scoped and *correctly* carries no namespace. As with the root-cause fallback, command quality is now independent of model variance.
 
-### 17.8 Result
+### 17.8 Incident classification — App vs Platform
+
+Operating against a multi-tenant cluster, incidents come from two sources — control-plane events (pod lifecycle: OOMKilled, Evicted, ImagePullBackOff…) and application logs (e.g. a database `FATAL: role does not exist`). Rather than **splitting** these into two pipelines — which would fragment a single root cause seen from two angles (`CrashLoopBackOff` + the app's stack trace are the *same* incident) and lose the cross-source correlation that makes the RCA strong — each incident is **classified and tagged** by owner:
+
+- **Platform** (infra/SRE): node pressure, OOM, image pull, PVC/storage, NetworkPolicy, scheduling.
+- **App** (developers): config/CrashLoop, missing secret/role, failing probes, missing endpoints.
+
+`classify_category()` derives the label deterministically from the detected intent. The incident console shows a per-incident badge and a filter bar (All / App / Platform with counts) for triage; a single incident store is kept, so correlation and deduplication are preserved. This keeps the door open to per-category routing (e.g. a distinct Teams channel for App vs Platform) without any architectural split. The thesis-relevant point is that **multi-source correlation** (events + logs in one RCA) is more valuable than source separation.
+
+### 17.9 Result
 
 Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
 
