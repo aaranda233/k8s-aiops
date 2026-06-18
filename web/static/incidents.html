@@ -62,6 +62,13 @@
   .r0{background:rgba(63,185,80,.12);color:var(--ok)} .r1{background:rgba(79,143,247,.12);color:var(--accent)}
   .r2{background:rgba(210,153,34,.12);color:var(--warn)} .r3{background:rgba(248,81,73,.12);color:var(--error)}
   .recur { font-family:var(--mono); font-size:11.5px; color:#fbbf24; background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.3); border-radius:6px; padding:1px 7px; }
+  .catbadge { font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:.5px; border-radius:6px; padding:2px 8px; }
+  .catbadge.app { color:#60a5fa; background:rgba(96,165,250,.12); border:1px solid rgba(96,165,250,.3); }
+  .catbadge.platform { color:#c084fc; background:rgba(192,132,252,.12); border:1px solid rgba(192,132,252,.3); }
+  .filterbar { display:flex; gap:8px; margin-bottom:14px; }
+  .filterbtn { font-size:12px; color:var(--muted); background:var(--rail); border:1px solid var(--border-soft); border-radius:8px; padding:6px 14px; cursor:pointer; }
+  .filterbtn.active { color:var(--text); border-color:var(--blue); background:rgba(96,165,250,.1); }
+  .filterbtn:hover { color:var(--text); }
   .score { margin-left:auto; font-family:var(--mono); font-size:12.5px; color:var(--muted); }
   .section { margin-top:15px; }
   .section .label { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted2); margin-bottom:6px; font-weight:600; }
@@ -101,6 +108,11 @@
     <button class="demobtn auto" onclick="demo('auto')"><svg class="icon" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg> Automática</button>
     <button class="demobtn human" onclick="demo('human')"><svg class="icon" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2a8 8 0 0 1-7-4l-2.5-4"/></svg> Requiere aprobación</button>
     <span id="demomsg" class="demomsg"></span>
+  </div>
+  <div class="filterbar" id="filterbar">
+    <button class="filterbtn active" data-cat="all" onclick="setFilter('all')">Todos</button>
+    <button class="filterbtn" data-cat="app" onclick="setFilter('app')">App</button>
+    <button class="filterbtn" data-cat="platform" onclick="setFilter('platform')">Plataforma</button>
   </div>
   <div id="list"><div class="empty"><div class="spinner"></div>Cargando incidencias…</div></div>
 </main>
@@ -162,6 +174,7 @@ function card(i){
   <div class="card ${pending?'pending':''} ${i.id===pathId?'highlight':''}" data-inc="${i.id}">
     <div class="card-head">
       <span class="ns">${esc(i.namespaces.join(", "))}</span>
+      <span class="catbadge ${(i.category||'app')}">${(i.category||'app')==='platform'?'Plataforma':'App'}</span>
       <span class="badge ${STATUS_CLASS[i.status]||''}">${STATUS_LABEL[i.status]||i.status}</span>
       <span class="risk r${i.risk_level}">L${i.risk_level} · ${RISK_LABEL[i.risk_level]||''}</span>
       <span class="id">${i.id}</span>
@@ -186,19 +199,39 @@ function card(i){
     </div>
   </div>`;
 }
+let allItems=[];
+let catFilter="all";
+function setFilter(c){
+  catFilter=c;
+  document.querySelectorAll(".filterbtn").forEach(b=>b.classList.toggle("active", b.dataset.cat===c));
+  renderList();
+}
+function renderList(){
+  const list=document.getElementById("list");
+  const items = catFilter==="all" ? allItems : allItems.filter(i=>(i.category||"app")===catFilter);
+  if(!allItems.length){
+    list.innerHTML=`<div class="empty">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
+      <span>Sin incidencias. El sistema avisará por Teams cuando detecte una anomalía.</span></div>`;
+    return;
+  }
+  list.innerHTML = items.length
+    ? items.map(card).join("")
+    : `<div class="empty"><span>Sin incidencias en esta categoría.</span></div>`;
+}
+function renderFilterCounts(){
+  const app=allItems.filter(i=>(i.category||"app")==="app").length;
+  const plat=allItems.filter(i=>(i.category||"app")==="platform").length;
+  const set=(cat,base,n)=>{const b=document.querySelector(`.filterbtn[data-cat="${cat}"]`); if(b) b.textContent=`${base} (${n})`;};
+  set("all","Todos",allItems.length); set("app","App",app); set("platform","Plataforma",plat);
+}
 async function load(){
   try {
     const data=await (await fetch("/api/incidents")).json();
-    const items=data.incidents||[];
-    renderStats(items);
-    const list=document.getElementById("list");
-    if(!items.length){
-      list.innerHTML=`<div class="empty">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
-        <span>Sin incidencias. El sistema avisará por Teams cuando detecte una anomalía.</span></div>`;
-      return;
-    }
-    list.innerHTML=items.map(card).join("");
+    allItems=data.incidents||[];
+    renderStats(allItems);
+    renderFilterCounts();
+    renderList();
   } catch(e){ document.getElementById("list").innerHTML=`<div class="empty">Error al cargar incidencias.</div>`; }
 }
 async function demo(mode){

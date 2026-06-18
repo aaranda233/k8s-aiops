@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from src.diagnostics.command_builder import build_command, build_remediation, explain_command
+from src.diagnostics.command_builder import (
+    build_command,
+    build_remediation,
+    classify_category,
+    explain_command,
+)
 
 if TYPE_CHECKING:
     pass
@@ -335,6 +340,7 @@ class DiagnosisResult:
     remediation_command: str = ""  # acción reversible propuesta (shadow); "" si manual
     command_explanation: str = ""      # qué hace el comando de investigación
     remediation_explanation: str = ""  # qué hace el comando de remediación
+    category: str = "app"              # 'app' (código/config) | 'platform' (infra)
 
 
 class OllamaRCA:
@@ -400,6 +406,7 @@ class OllamaRCA:
             remediation_command=remediation,
             command_explanation=explain_command(kubectl_cmd),
             remediation_explanation=explain_command(remediation),
+            category=classify_category(logs_text, root_cause),
         )
 
     @staticmethod

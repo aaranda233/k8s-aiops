@@ -199,6 +199,21 @@ _INTENTS: list[dict] = [
 ]
 
 
+# Clasificación por dueño/origen: plataforma (infra) vs app (código/config).
+_PLATFORM_INTENTS = {"node_pressure", "oom", "image", "image_auth", "pvc",
+                     "network", "pending_cpu"}
+_APP_INTENTS = {"crash_secret", "crash_config", "probe", "endpoints"}
+
+
+def classify_category(evidence: str, root_cause: str = "") -> str:
+    """Clasifica el incidente en 'platform' (infra: nodo/recursos/storage/red/imagen)
+    o 'app' (código/config/credenciales/salud de la app). Default 'app'."""
+    intent = detect_intent(f"{root_cause}\n{evidence}")
+    if intent is not None and intent["name"] in _PLATFORM_INTENTS:
+        return "platform"
+    return "app"
+
+
 def detect_intent(text: str) -> dict | None:
     low = (text or "").lower()
     for intent in _INTENTS:

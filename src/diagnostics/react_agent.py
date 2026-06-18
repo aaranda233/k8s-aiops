@@ -9,7 +9,12 @@ from dataclasses import dataclass
 
 import httpx
 
-from src.diagnostics.command_builder import build_command, build_remediation, explain_command
+from src.diagnostics.command_builder import (
+    build_command,
+    build_remediation,
+    classify_category,
+    explain_command,
+)
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import (
     DiagnosisResult,
@@ -157,6 +162,7 @@ class ReActAgent:
             remediation_command=remediation,
             command_explanation=explain_command(kubectl_cmd),
             remediation_explanation=explain_command(remediation),
+            category=classify_category(logs_text, root_cause),
         )
 
     def _call_llm(self, messages: list[dict]) -> str:

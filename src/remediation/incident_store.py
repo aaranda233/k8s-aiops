@@ -45,6 +45,7 @@ class Incident:
     remediation_command: str = ""      # acción reversible propuesta (shadow); "" si manual
     command_explanation: str = ""      # qué hace el comando de investigación (lenguaje natural)
     remediation_explanation: str = ""  # qué hace el comando de remediación
+    category: str = "app"              # 'app' (código/config) | 'platform' (infra)
     occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
     last_seen: float = 0.0             # última vez que se observó el mismo problema
 
