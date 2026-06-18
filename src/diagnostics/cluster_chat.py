@@ -549,13 +549,18 @@ def _confirmation_commands(transcript: list[tuple[str, str, str]],
     if not culprit:
         return []
     evidence, ns, name = _culprit_evidence(transcript, culprit)
+    # `logs --previous` solo aplica a pods que han REINICIADO (CrashLoop/Error); en
+    # un pod Running no hay instancia anterior → kubectl da BadRequest (ruido que
+    # despista al modelo). En ese caso los logs actuales ya se capturaron antes.
+    running = (culprit.get("status", "") or "").lower().startswith("running")
     cands: list[str] = []
     primary = build_command(evidence, ns)
     if primary:
         cands.append(primary)
     if name and ns:
         cands.append(f"kubectl describe pod {name} -n {ns}")
-        cands.append(f"kubectl logs {name} -n {ns} --tail=50 --previous")
+        if not running:
+            cands.append(f"kubectl logs {name} -n {ns} --tail=50 --previous")
     if ns:
         cands.append(f"kubectl get events -n {ns} --sort-by=.lastTimestamp")
     seen: set[str] = set()
