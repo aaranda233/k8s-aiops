@@ -474,3 +474,23 @@ def test_suggested_command_targets_culprit():
 @pytest.mark.unit
 def test_suggested_command_empty_without_culprit():
     assert _cc._suggested_command([], None, "x") == ""
+
+
+# ── Pod Running pero con errores en logs ────────────────────────────────────
+
+@pytest.mark.unit
+def test_has_log_errors_strong_marker():
+    assert _cc._has_log_errors('FATAL: role "x" does not exist') is True
+    assert _cc._has_log_errors("Traceback (most recent call last):") is True
+
+
+@pytest.mark.unit
+def test_has_log_errors_soft_needs_three():
+    assert _cc._has_log_errors("ERROR algo") is False
+    assert _cc._has_log_errors("ERROR a\nERROR b\nERROR c") is True
+
+
+@pytest.mark.unit
+def test_has_log_errors_clean_logs():
+    clean = "notice: nginx start worker process\nGET /healthz 200"
+    assert _cc._has_log_errors(clean) is False

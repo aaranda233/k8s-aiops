@@ -151,6 +151,7 @@ class ClusterChatAgent:
         drill_target = None
         focused = False  # ¿la pregunta acota a un namespace/nombre concreto?
         focus_summary: str | None = None  # resumen determinista del conjunto enfocado
+        focus_pods: list[tuple[str, str]] = []  # (ns, name) del conjunto enfocado
         if ns_focus:
             focused = True
             scoped_cmd = f"kubectl get pods -n {ns_focus}"
@@ -162,6 +163,7 @@ class ClusterChatAgent:
                 focus_summary = _scoped_summary(ns_focus, scoped_out)
                 yield {"type": "observation", "step": step, "text": focus_summary[:1500]}
                 transcript.append((f"Pods del namespace {ns_focus}", scoped_cmd, focus_summary))
+                focus_pods = [(ns_focus, r["name"]) for r in _parse_pod_rows(scoped_out)]
                 scoped_problems = extract_problem_pods(scoped_out)
                 if scoped_problems:
                     drill_target = _top_problem(scoped_problems)
@@ -180,6 +182,7 @@ class ClusterChatAgent:
                 yield {"type": "observation", "step": step, "text": focus_summary}
                 transcript.append(
                     (f"Pods que coinciden con '{name_kw}'", f"filtro: nombre contiene '{name_kw}'", focus_summary))
+                focus_pods = [(r["ns"], r["name"]) for r in matched if r["name"]]
                 matched_problems = [r for r in matched if _is_problem(r)]
                 if matched_problems:
                     drill_target = _top_problem(matched_problems)
@@ -202,6 +205,28 @@ class ClusterChatAgent:
                 obs = self._run_tool(cmd)
                 yield {"type": "observation", "step": step, "text": obs}
                 transcript.append((f"Detalle de {top['name']}", cmd, obs))
+
+        # ── Pod "Running pero ardiendo": un pod sano por STATUS puede estar
+        # logueando FATAL/Traceback (fallo de aplicación). Si el foco no tiene
+        # problema por estado, revisamos los LOGS antes de declararlo sano —
+        # justo el caso de postgresql (Running 1/1 pero "FATAL: role ... does not exist").
+        if focused and drill_target is None and focus_pods:
+            yield {"type": "thought",
+                   "text": "Los pods están Running; reviso sus logs por errores de aplicación…"}
+            for ns, name in focus_pods[:3]:
+                cmd = f"kubectl logs {name} -n {ns} --tail=50"
+                if cmd in seen_actions:
+                    continue
+                step += 1
+                seen_actions.add(cmd)
+                yield {"type": "action", "step": step, "command": cmd}
+                logs = self._run_tool(cmd)
+                yield {"type": "observation", "step": step, "text": logs[:1500]}
+                transcript.append((f"Logs de {name}", cmd, logs))
+                if _has_log_errors(logs):
+                    drill_target = {"ns": ns, "name": name,
+                                    "status": "Running (errores en logs)"}
+                    break
 
         # Si la pregunta está enfocada, la evidencia determinista ya es completa.
         if focused:
@@ -416,6 +441,26 @@ _STOPWORDS = {
 
 def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+# Señales de fallo de aplicación dentro de un pod "Running" (logs).
+_STRONG_LOG_ERR = re.compile(
+    r"\b(FATAL|CRITICAL|PANIC)\b|Traceback|panic:|does not exist|"
+    r"connection refused|OOM|segmentation fault", re.IGNORECASE)
+_SOFT_LOG_ERR = re.compile(r"\bERROR\b|\[error\]|\bException\b", re.IGNORECASE)
+
+
+def _has_log_errors(logs: str) -> bool:
+    """True si los logs muestran un fallo de aplicación real (no ruido aislado).
+
+    Un marcador fuerte (FATAL/Traceback/'does not exist'…) basta; los blandos
+    (ERROR/Exception) requieren ≥3 para evitar falsos positivos en apps sanas.
+    """
+    if not logs:
+        return False
+    if _STRONG_LOG_ERR.search(logs):
+        return True
+    return len(_SOFT_LOG_ERR.findall(logs)) >= 3
 
 
 def _strip_invented_commands(text: str) -> str:
