@@ -110,7 +110,7 @@ _INTENTS: list[dict] = [
     {
         "name": "node_pressure",
         "kw": ["node was low", "diskpressure", "disk pressure", "memorypressure",
-               "memory pressure", "evicted", "node.kubernetes.io"],
+               "memory pressure", "evicted"],
         "verb": "describe",
         "investigate": lambda ev, ns: (
             f"kubectl describe node {extract_node(ev)}" if extract_node(ev)
