@@ -20,15 +20,55 @@ NO decide el control: solo se usa para recuperar, no para generar.
 import json
 import math
 import os
+import re
 import subprocess
 
 import httpx
 
 _EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 _OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-_THRESHOLD = float(os.getenv("GROUNDING_THRESHOLD", "0.45"))
-_MARGIN = float(os.getenv("GROUNDING_MARGIN", "0.03"))
+_THRESHOLD = float(os.getenv("GROUNDING_THRESHOLD", "0.50"))
+_MARGIN = float(os.getenv("GROUNDING_MARGIN", "0.05"))
 _ENABLED = os.getenv("GROUNDING_ENABLED", "true").lower() != "false"
+
+# Léxico imagen → tipo legible: enriquece la descripción del namespace para que la
+# similitud semántica funcione ("base de datos" ≈ "PostgreSQL base de datos SQL").
+_TYPE_LEXICON = {
+    "postgres": "PostgreSQL base de datos SQL relacional",
+    "postgresql": "PostgreSQL base de datos SQL relacional",
+    "mysql": "MySQL base de datos SQL",
+    "mariadb": "MariaDB base de datos SQL",
+    "mongo": "MongoDB base de datos NoSQL",
+    "redis": "Redis cache en memoria",
+    "nginx": "servidor web nginx proxy",
+    "httpd": "servidor web Apache",
+    "grafana": "Grafana paneles dashboards observabilidad",
+    "prometheus": "Prometheus métricas monitorización",
+    "argocd": "ArgoCD GitOps despliegue continuo",
+    "rabbitmq": "RabbitMQ cola de mensajes",
+    "kafka": "Kafka streaming de eventos",
+    "curl": "job tarea programada curl",
+    "busybox": "job utilitario",
+    "oauth2-proxy": "proxy de autenticación OAuth",
+}
+
+# Prefijos de pregunta a recortar para quedarnos con el sintagma de la entidad.
+_Q_PREFIX = re.compile(
+    r"^\s*(qué le pasa a|que le pasa a|qué pasa con|que pasa con|qué hay de|que hay de|"
+    r"cómo están?|como estan?|cómo va|como va|estado del?|dime|muéstrame|muestrame|"
+    r"ver|revisa|revísame)\s+",
+    re.IGNORECASE,
+)
+_Q_ARTICLE = re.compile(r"^(el|la|los|las|un|una|mi|mis)\s+", re.IGNORECASE)
+
+
+def _query_phrase(question: str) -> str:
+    """Recorta la pregunta al sintagma de la entidad: '¿qué le pasa a la base de
+    datos?' → 'base de datos' (quita interrogativos, prefijos y artículos)."""
+    q = (question or "").strip().strip("¿?¡!.").strip()
+    q = _Q_PREFIX.sub("", q)
+    q = _Q_ARTICLE.sub("", q)
+    return q.strip() or (question or "").strip()
 
 
 def _embed(text: str) -> list[float] | None:
@@ -84,7 +124,14 @@ class NamespaceGrounder:
                 img = c.get("image", "")
                 if img:
                     toks.add(_image_base(img))
-        return {ns: f"namespace {ns}: {' '.join(sorted(t))}" for ns, t in agg.items() if t}
+        out: dict[str, str] = {}
+        for ns, toks in agg.items():
+            if not toks:
+                continue
+            imgs = " ".join(sorted(toks))
+            types = " ".join(_TYPE_LEXICON.get(b, "") for b in sorted(toks)).strip()
+            out[ns] = f"namespace {ns}: {imgs} {types}".strip()
+        return out
 
     def _build(self) -> None:
         self._built = True
@@ -107,7 +154,7 @@ class NamespaceGrounder:
         cands = [ns for ns in self._emb if ns in allowed]
         if not cands:
             return None
-        q_emb = _embed("search_query: " + question)
+        q_emb = _embed("search_query: " + _query_phrase(question))
         if not q_emb:
             return None
         scored = sorted(((_cosine(q_emb, self._emb[ns]), ns) for ns in cands), reverse=True)
