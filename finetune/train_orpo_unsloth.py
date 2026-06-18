@@ -18,6 +18,8 @@ Uso:
 
 from __future__ import annotations
 
+# ruff: noqa: I001  (orden de imports intencional: unsloth debe ir antes que transformers)
+
 # Unsloth DEBE importarse antes que transformers/trl para aplicar sus parches.
 from unsloth import FastLanguageModel  # noqa: E402  (import-order intencional)
 
