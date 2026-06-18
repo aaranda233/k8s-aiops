@@ -458,12 +458,22 @@ def _namespaces_in(pods_output: str) -> set[str]:
 
 
 def _mentioned_namespace(question: str, namespaces: set[str]) -> str | None:
-    """Devuelve el namespace real mencionado en la pregunta (el más largo si varios)."""
+    """Namespace SUJETO de la pregunta: el mencionado ANTES (no el más largo).
+
+    La pregunta auto-generada es "¿Qué le pasa a <ns>? <root_cause>", y el
+    root_cause puede mencionar OTROS namespaces. El sujeto es el que aparece
+    primero; se desempata por longitud (nombres solapados) a igual posición.
+    """
     q = question.lower()
     best = None
+    best_pos = None
     for ns in namespaces:
-        if re.search(rf"\b{re.escape(ns.lower())}\b", q) and (best is None or len(ns) > len(best)):
-            best = ns
+        m = re.search(rf"\b{re.escape(ns.lower())}\b", q)
+        if not m:
+            continue
+        pos = m.start()
+        if best is None or pos < best_pos or (pos == best_pos and len(ns) > len(best)):
+            best, best_pos = ns, pos
     return best
 
 
@@ -589,17 +599,20 @@ def _confirmation_commands(transcript: list[tuple[str, str, str]],
     if not culprit:
         return []
     evidence, ns, name = _culprit_evidence(transcript, culprit)
-    # `logs --previous` solo aplica a pods que han REINICIADO (CrashLoop/Error); en
-    # un pod Running no hay instancia anterior → kubectl da BadRequest (ruido que
-    # despista al modelo). En ese caso los logs actuales ya se capturaron antes.
-    running = (culprit.get("status", "") or "").lower().startswith("running")
+    # `logs --previous` solo aplica a pods que han REINICIADO (restarts > 0). En un
+    # pod Running o en un Job que corrió una vez (restarts=0) no hay instancia
+    # anterior → kubectl da BadRequest, ruido que despista al modelo.
+    try:
+        restarts = int(culprit.get("restarts", 0) or 0)
+    except (TypeError, ValueError):
+        restarts = 0
     cands: list[str] = []
     primary = build_command(evidence, ns)
     if primary:
         cands.append(primary)
     if name and ns:
         cands.append(f"kubectl describe pod {name} -n {ns}")
-        if not running:
+        if restarts > 0:
             cands.append(f"kubectl logs {name} -n {ns} --tail=50 --previous")
     if ns:
         cands.append(f"kubectl get events -n {ns} --sort-by=.lastTimestamp")

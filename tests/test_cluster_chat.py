@@ -519,3 +519,25 @@ def test_confirmation_commands_readonly_and_bounded():
 @pytest.mark.unit
 def test_confirmation_commands_empty_without_culprit():
     assert _cc._confirmation_commands([], None) == []
+
+
+@pytest.mark.unit
+def test_mentioned_namespace_prefers_subject_not_longest():
+    # El sujeto es postgresql (primero), aunque banca-conection sea mas largo
+    # y aparezca en el root_cause pegado a la pregunta.
+    q = "¿Qué le pasa a postgresql? El secret no existe en el namespace banca-conection"
+    nss = {"postgresql", "banca-conection", "default"}
+    assert _cc._mentioned_namespace(q, nss) == "postgresql"
+
+
+@pytest.mark.unit
+def test_mentioned_namespace_direct():
+    assert _cc._mentioned_namespace("estado de banca-conection", {"banca-conection", "postgresql"}) == "banca-conection"
+
+
+@pytest.mark.unit
+def test_confirmation_skips_previous_for_jobs_without_restarts():
+    culprit = {"ns": "banca-conection", "name": "banca-sync-1-x", "status": "Error", "restarts": 0}
+    transcript = [("t", "kubectl logs banca-sync-1-x -n banca-conection --tail=50", "exit 7")]
+    cmds = _cc._confirmation_commands(transcript, culprit)
+    assert not any("--previous" in c for c in cmds)  # Job sin reinicios: sin --previous
