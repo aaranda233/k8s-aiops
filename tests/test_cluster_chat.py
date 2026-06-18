@@ -7,6 +7,7 @@ y CRÍTICO: que toda acción pasa por el toolbox read-only.
 
 import pytest
 
+import src.diagnostics.cluster_chat as _cc
 from src.diagnostics.cluster_chat import (
     ClusterChatAgent,
     _cluster_digest,
@@ -443,3 +444,33 @@ def test_synthesis_uses_expert_model():
     events = list(agent.chat_iter("?"))
     assert "experto" in used  # se invocó al experto para la síntesis
     assert events[-1]["text"] == "diagnóstico final"
+
+
+# ── Routing de la respuesta por command_builder ─────────────────────────────
+
+
+@pytest.mark.unit
+def test_strip_invented_commands_removes_kubectl_and_code():
+    txt = "La causa es X.\n```\nkubectl exec -it foo -- sh\n```\nkubectl set image deploy/x y=z\nFin."
+    out = _cc._strip_invented_commands(txt)
+    assert "kubectl" not in out
+    assert "La causa es X." in out and "Fin." in out
+
+
+@pytest.mark.unit
+def test_suggested_command_targets_culprit():
+    culprit = {"ns": "aiops-demo", "name": "inventory-api-64b5b587c9-4dlnb",
+               "status": "CrashLoopBackOff"}
+    transcript = [
+        ("t", "kubectl describe pod inventory-api-64b5b587c9-4dlnb -n aiops-demo",
+         "Liveness probe failed: HTTP probe failed with statuscode: 404\nBack-off restarting failed container"),
+    ]
+    cmd = _cc._suggested_command(transcript, culprit, "CrashLoop por probe 404")
+    assert cmd.startswith("kubectl ")
+    assert "aiops-demo" in cmd
+    assert "get events --all-namespaces" not in cmd
+
+
+@pytest.mark.unit
+def test_suggested_command_empty_without_culprit():
+    assert _cc._suggested_command([], None, "x") == ""

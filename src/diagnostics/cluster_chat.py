@@ -27,6 +27,7 @@ from collections.abc import Iterator
 
 import httpx
 
+from src.diagnostics.command_builder import build_command, explain_command
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 
 _PLACEHOLDER = re.compile(r"<[^>]+>")
@@ -94,9 +95,9 @@ Rules:
 - If the triage summary lists pods with problems, name the most critical one
   (e.g. CrashLoopBackOff / Error) as the root cause and explain it using the
   describe/logs evidence of that pod.
-- You MAY suggest a fix, but present it as a recommendation for the operator.
-  Never claim a cause you cannot see in the evidence. Do not invent kubectl
-  commands that modify the cluster as if they were verified solutions.
+- Do NOT write kubectl commands in your answer. The system appends a verified,
+  deterministic command separately. Explain the root cause in prose only.
+  Never claim a cause you cannot see in the evidence.
 - If the triage summary says there are NO pods with problems, state that the
   cluster appears healthy — do not fabricate a failure."""
 
@@ -207,7 +208,7 @@ class ClusterChatAgent:
                 yield {"type": "answer", "text": _healthy_answer(focus_summary)}
                 return
             # Hay un fallo en el conjunto enfocado → el experto lo explica.
-            yield from self._final_answer(question, transcript, focused)
+            yield from self._final_answer(question, transcript, focused, culprit=drill_target)
             return
 
         messages = [
@@ -265,21 +266,21 @@ class ClusterChatAgent:
             )})
 
         # Agotados los pasos → el experto sintetiza con la evidencia acumulada.
-        yield from self._final_answer(question, transcript, focused)
+        yield from self._final_answer(question, transcript, focused, culprit=drill_target)
 
     def _final_answer(self, question: str, transcript: list[tuple[str, str, str]],
-                      focused: bool = False) -> Iterator[dict]:
+                      focused: bool = False, culprit: dict | None = None) -> Iterator[dict]:
         """El modelo experto (fine-tuneado) concluye a partir de la evidencia."""
         yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
         try:
-            answer = self._synthesize(question, transcript, focused)
+            answer = self._synthesize(question, transcript, focused, culprit)
         except Exception as e:
             yield {"type": "error", "text": f"Error en la síntesis: {e}"}
             return
         yield {"type": "answer", "text": answer}
 
     def _synthesize(self, question: str, transcript: list[tuple[str, str, str]],
-                    focused: bool = False) -> str:
+                    focused: bool = False, culprit: dict | None = None) -> str:
         parts = []
         for _thought, action, observation in transcript:
             if _is_broad_pod_listing(action):
@@ -298,10 +299,16 @@ class ClusterChatAgent:
                 f"Pregunta del operador: {question}\n\n"
                 f"Evidencia recogida del cluster (kubectl read-only):\n{evidence}\n\n"
                 f"Responde a la pregunta de forma clara en español. Si hay un fallo, "
-                f"explica la causa raíz concreta y cómo solucionarlo."
+                f"explica la causa raíz concreta (sin escribir comandos kubectl)."
             )},
         ]
-        return self._call(messages, model=self.expert_model)
+        prose = _strip_invented_commands(self._call(messages, model=self.expert_model))
+        # Routing por command_builder: el comando sugerido es DETERMINISTA (dirigido
+        # al pod culpable, namespace correcto), no el que invente el modelo.
+        cmd = _suggested_command(transcript, culprit, prose)
+        if cmd:
+            prose += f"\n\nComando sugerido (verificado): {cmd}\n↳ {explain_command(cmd)}"
+        return prose
 
     def _call(self, messages: list[dict], model: str | None = None) -> str:
         payload = {
@@ -404,6 +411,40 @@ _STOPWORDS = {
 
 def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+def _strip_invented_commands(text: str) -> str:
+    """Quita bloques de código y comandos kubectl inventados por el modelo.
+
+    El comando lo añade el sistema de forma determinista (command_builder); la
+    prosa del modelo debe explicar la causa, no proponer comandos alucinados.
+    """
+    text = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+    kept = []
+    for ln in text.splitlines():
+        s = ln.strip().lstrip("$").strip()
+        if s.lower().startswith("kubectl "):
+            continue
+        kept.append(ln)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _suggested_command(transcript: list[tuple[str, str, str]],
+                       culprit: dict | None, root_cause: str) -> str:
+    """Comando kubectl DETERMINISTA dirigido al pod culpable (vía command_builder)."""
+    if not culprit:
+        return ""
+    ns = culprit.get("ns", "")
+    name = culprit.get("name", "")
+    drill = " ".join(
+        obs for (_t, action, obs) in transcript
+        if action and ("describe" in action or "logs" in action)
+    )
+    evidence = f"{ns} Pod/{name} {culprit.get('status', '')} {drill}"
+    cmd = build_command(evidence, ns, root_cause=root_cause)
+    if not cmd or "get events --all-namespaces" in cmd:
+        return ""
+    return cmd
 
 
 def _name_focus(question: str, rows: list[dict]) -> tuple[str | None, list[dict]]:
