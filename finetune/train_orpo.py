@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
                    help="Dropout LoRA. Más bajo que SFT v2 (0.10): L_SFT ya regulariza el formato")
     p.add_argument("--no-gguf",      action="store_true",
                    help="Saltar cuantización GGUF (solo guardar adaptadores LoRA)")
+    p.add_argument("--target-modules",
+                   default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+                   help="Módulos LoRA (coma-sep). Gemma 4 envuelve las proyecciones en "
+                        "Gemma4ClippableLinear → usar los internos: "
+                        "q_proj.linear,k_proj.linear,v_proj.linear,o_proj.linear,"
+                        "gate_proj.linear,up_proj.linear,down_proj.linear")
     return p.parse_args()
 
 
@@ -156,8 +162,7 @@ def train(args: argparse.Namespace) -> None:
         r              = args.lora_r,
         lora_alpha     = args.lora_alpha,
         lora_dropout   = args.lora_dropout,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
+        target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()],
         bias           = "none",
         task_type      = "CAUSAL_LM",
     )
