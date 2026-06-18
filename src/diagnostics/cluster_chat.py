@@ -165,6 +165,11 @@ class ClusterChatAgent:
                 scoped_problems = extract_problem_pods(scoped_out)
                 if scoped_problems:
                     drill_target = _top_problem(scoped_problems)
+                    # `get pods -n X` no trae columna NAMESPACE → el ns queda vacío.
+                    # Lo fijamos al foco para que el drill (describe/logs) y el
+                    # comando sugerido apunten al namespace correcto, no a default.
+                    if drill_target and not drill_target.get("ns"):
+                        drill_target["ns"] = ns_focus
         else:
             name_kw, matched = _name_focus(question, all_rows)
             if matched:
