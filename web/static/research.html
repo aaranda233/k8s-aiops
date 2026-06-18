@@ -304,7 +304,8 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           y deduplicación de incidentes. En vivo: solo dispara el problema real (postgresql); los namespaces
           benignos ya no inundan.
           <br><br><strong>Comandos kubectl deterministas</strong> (catálogo intención→comando + corrección de namespace):
-          NS-ok 33%→<strong>85.7%</strong>, Verb-ok 41%→<strong>92.9%</strong> sobre 210 muestras. Ver sección 07.
+          NS-ok 33%→<strong>85.7%</strong>, Verb-ok 41%→<strong>92.9%</strong> sobre 210 muestras. Cada comando incluye una
+          <strong>explicación en lenguaje natural</strong> de qué hace (determinista, sin modelo). Ver sección 07.
         </div>
       </div>
     </div>
@@ -837,7 +838,8 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           <strong style="color:var(--text)">1.</strong> Extrae el recurso real de la evidencia (pod/pvc/nodo/servicio/workload).<br>
           <strong style="color:var(--text)">2.</strong> Catálogo intención→comando con el verbo correcto (OOM→<code>describe pod</code>, pvc→<code>describe pvc</code>, nodo→<code>describe node</code> sin <code>-n</code>, red→<code>get networkpolicy</code>, rol/secret→<code>get secret</code>, crashloop→<code>logs --previous</code>).<br>
           <strong style="color:var(--text)">3.</strong> Fuerza el <code>-n</code> al namespace culpable; descarta comandos frágiles.<br>
-          <strong style="color:var(--text)">4.</strong> Dos niveles: investigar + remediar reversible (<code>rollout restart</code>) etiquetado por riesgo, en shadow.
+          <strong style="color:var(--text)">4.</strong> Dos niveles: investigar + remediar reversible (<code>rollout restart</code>) etiquetado por riesgo, en shadow.<br>
+          <strong style="color:var(--text)">5.</strong> Cada comando lleva una <strong>explicación en lenguaje natural</strong> de qué hace y qué mirar (determinista, parseando el comando — sin modelo).
         </div>
       </div>
       <div class="grammar-card">
@@ -848,7 +850,8 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           El ≈14% restante de NS-ok es el <strong style="color:var(--text)">techo</strong>, no un fallo:
           los escenarios de nodo resuelven a <code>describe node</code>, que es cluster-scoped y
           correctamente <strong>no lleva namespace</strong>. En vivo: el incidente de postgresql propone
-          <code style="color:var(--cyan)">kubectl get secret -n postgresql</code> — dirigido y relevante a la causa.
+          <code style="color:var(--cyan)">kubectl get secret -n postgresql</code> — dirigido y relevante a la causa,
+          con su explicación: <em>"Lista los secrets en postgresql para comprobar si falta el secret con las credenciales que el pod no encuentra"</em>.
         </div>
       </div>
     </div>

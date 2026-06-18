@@ -60,6 +60,8 @@ Ejecutar el sistema en continuo sobre un clúster real (~15 namespaces) destapó
 
   *(el ≈14% restante de NS-ok es el techo: los escenarios de nodo usan `describe node`, cluster-scoped, que correctamente no lleva namespace).*
 
+  Además, cada comando lleva una **explicación en lenguaje natural** de qué hace y qué mirar (determinista, sin modelo): `kubectl get secret -n postgresql` → *"Lista los secrets en postgresql para comprobar si falta el secret con las credenciales que el pod no encuentra"*.
+
 - **Evidencia al SLM por plantillas, anti-deriva con fallback determinista, warm-up de novedad y deduplicación de incidentes.** Detalle en [RESEARCH.md §17](./RESEARCH.md).
 
 ---
