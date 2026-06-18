@@ -100,7 +100,11 @@ Rules:
   deterministic command separately. Explain the root cause in prose only.
   Never claim a cause you cannot see in the evidence.
 - If the triage summary says there are NO pods with problems, state that the
-  cluster appears healthy — do not fabricate a failure."""
+  cluster appears healthy — do not fabricate a failure.
+- If the evidence highlights CONFIRMED error log lines (FATAL / Traceback /
+  "does not exist" …), the application IS failing even if the pod STATUS is
+  Running/Ready. Explain that application-level failure and its cause; do NOT
+  conclude the pod is healthy just because describe/events look clean."""
 
 
 class ClusterChatAgent:
@@ -348,11 +352,19 @@ class ClusterChatAgent:
                 parts.append(f"$ {action}\n{observation[:1500]}")
         evidence = "\n\n".join(parts) or "(sin comandos ejecutados)"
 
+        # Ancla anti-dilución: si hubo errores fuertes en los logs, se destacan para
+        # que el modelo débil no los ignore al ver describe/events "limpios".
+        anchor = ""
+        strong = _strong_error_lines(transcript)
+        if strong:
+            anchor = ("\n\nSÍNTOMA CONFIRMADO (la app FALLA aunque el pod esté Running; "
+                      "NO lo ignores):\n" + "\n".join(f"  {ln}" for ln in strong))
+
         messages = [
             {"role": "system", "content": _SYNTH_SYSTEM},
             {"role": "user", "content": (
                 f"Pregunta del operador: {question}\n\n"
-                f"Evidencia recogida del cluster (kubectl read-only):\n{evidence}\n\n"
+                f"Evidencia recogida del cluster (kubectl read-only):\n{evidence}{anchor}\n\n"
                 f"Responde a la pregunta de forma clara en español. Si hay un fallo, "
                 f"explica la causa raíz concreta (sin escribir comandos kubectl)."
             )},
@@ -474,6 +486,21 @@ _STRONG_LOG_ERR = re.compile(
     r"\b(FATAL|CRITICAL|PANIC)\b|Traceback|panic:|does not exist|"
     r"connection refused|OOM|segmentation fault", re.IGNORECASE)
 _SOFT_LOG_ERR = re.compile(r"\bERROR\b|\[error\]|\bException\b", re.IGNORECASE)
+
+
+def _strong_error_lines(transcript: list[tuple[str, str, str]], limit: int = 5) -> list[str]:
+    """Líneas de log con error fuerte (FATAL/Traceback/…) — el síntoma a no ignorar."""
+    out: list[str] = []
+    for _t, action, obs in transcript:
+        if not action or "logs" not in action:
+            continue
+        for ln in (obs or "").splitlines():
+            s = ln.strip()
+            if s and _STRONG_LOG_ERR.search(s) and s not in out:
+                out.append(s)
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 def _has_log_errors(logs: str) -> bool:
