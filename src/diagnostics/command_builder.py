@@ -273,6 +273,92 @@ def build_command(evidence: str, namespace: str, root_cause: str = "",
     return _DEFAULT
 
 
+_NAME_AFTER_RE = re.compile(
+    r"\b(?:pods?|pvc|persistentvolumeclaim|nodes?|endpoints|svc|service)\s+(\S+)",
+    re.IGNORECASE,
+)
+_TARGET_RE = re.compile(r"\b((?:deployment|statefulset|daemonset)/\S+)", re.IGNORECASE)
+
+_GENERIC_BY_VERB = {
+    "describe": "Muestra el detalle y los eventos del recurso indicado.",
+    "get": "Lista el recurso indicado y su estado.",
+    "logs": "Muestra los logs del recurso indicado.",
+    "top": "Muestra el consumo de CPU/memoria del recurso indicado.",
+}
+
+
+def _ns_of(cmd: str) -> str | None:
+    m = re.search(r"-n\s+(\S+)", cmd)
+    return m.group(1) if m else None
+
+
+def _name_after_kind(cmd: str) -> str | None:
+    m = _NAME_AFTER_RE.search(cmd)
+    if not m:
+        return None
+    name = m.group(1)
+    return None if name.startswith("-") else name
+
+
+def explain_command(cmd: str) -> str:
+    """Explica en español qué hace un comando kubectl (determinista, sin modelo).
+
+    Parsea verbo/recurso/nombre/namespace y mapea a una frase que dice qué muestra
+    y qué buscar. Vacío si no es un comando kubectl.
+    """
+    cmd = (cmd or "").strip()
+    low = cmd.lower()
+    if not low.startswith("kubectl"):
+        return ""
+
+    ns = _ns_of(cmd)
+    nsx = f" en «{ns}»" if ns else ""
+    name = _name_after_kind(cmd)
+
+    if "rollout restart" in low:
+        m = _TARGET_RE.search(cmd)
+        target = m.group(1) if m else "el workload"
+        return (f"Reinicia de forma controlada {target}{nsx} "
+                f"(rolling restart: recrea los pods uno a uno, es reversible).")
+    if "describe pod" in low:
+        if name:
+            return (f"Muestra el estado y los últimos eventos del pod «{name}»{nsx}: "
+                    f"reinicios, OOMKilled y motivos de fallo.")
+        return f"Muestra el estado y los eventos de los pods{nsx} para ver cuál falla y por qué."
+    if "describe pvc" in low or "describe persistentvolumeclaim" in low:
+        if name:
+            return (f"Muestra el detalle del PersistentVolumeClaim «{name}»{nsx} "
+                    f"y por qué no se vincula a un volumen.")
+        return f"Muestra los PersistentVolumeClaims{nsx} y su estado de vinculación."
+    if "describe node" in low:
+        if name:
+            return (f"Muestra los recursos, la presión (CPU/memoria/disco) y las "
+                    f"condiciones del nodo «{name}».")
+        return "Muestra el estado y la presión de recursos de los nodos del cluster."
+    if "get secret" in low:
+        return (f"Lista los secrets{nsx} para comprobar si falta el secret con las "
+                f"credenciales o claves que el pod no encuentra.")
+    if "get networkpolicy" in low:
+        return f"Lista las NetworkPolicies{nsx} que podrían estar bloqueando el tráfico de red."
+    if "get endpoints" in low:
+        if name:
+            return f"Comprueba si el service «{name}»{nsx} tiene endpoints (pods listos detrás)."
+        return f"Comprueba qué services{nsx} se han quedado sin endpoints (sin pods listos)."
+    if low.startswith("kubectl logs"):
+        prev = " de la instancia anterior (la que crasheó)" if "--previous" in low else ""
+        if name:
+            return f"Muestra los logs{prev} del pod «{name}»{nsx}."
+        return f"Muestra los logs{prev} de los pods{nsx}."
+    if "get events" in low:
+        return "Lista los eventos recientes del cluster ordenados por fecha para ver qué ha pasado."
+    if "get pods" in low:
+        return f"Lista los pods{nsx} con su estado (Running/CrashLoop/Pending…)."
+
+    parts = cmd.split()
+    verb = parts[1].lower() if len(parts) > 1 else ""
+    return _GENERIC_BY_VERB.get(verb, "Ejecuta el comando de diagnóstico indicado.")
+
+
 def build_remediation(evidence: str, namespace: str, root_cause: str = "") -> str:
     """Acción de remediación reversible (rollout restart) si aplica; si no, ''.
 

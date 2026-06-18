@@ -68,6 +68,8 @@
   .rc { background:var(--panel2); border-radius:9px; padding:11px 14px; font-size:14px; line-height:1.5; }
   .cmd { font-family:var(--mono); font-size:12.5px; background:var(--rail); color:#7ee0c0; padding:11px 14px;
       border-radius:9px; overflow-x:auto; border:1px solid var(--border-soft); }
+  .cmd-help { font-size:11.5px; color:var(--muted); margin-top:5px; line-height:1.5; padding-left:2px; }
+  .cmd-help::before { content:'↳ '; color:var(--dim); }
   .invest { list-style:none; font-size:12.5px; color:var(--muted); font-family:var(--mono); }
   .invest li { padding:3px 0 3px 16px; position:relative; }
   .invest li::before { content:""; position:absolute; left:2px; top:9px; width:5px; height:5px; border-radius:50%; background:var(--teal); }
@@ -168,8 +170,8 @@ function card(i){
     </div>
     ${invest?`<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
-    <div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div></div>
-    ${i.remediation_command?`<div class="section"><div class="label">Remediar (reversible · shadow)</div><div class="cmd">${esc(i.remediation_command)}</div></div>`:""}
+    <div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>
+    ${i.remediation_command?`<div class="section"><div class="label">Remediar (reversible · shadow)</div><div class="cmd">${esc(i.remediation_command)}</div>${i.remediation_explanation?`<div class="cmd-help">${esc(i.remediation_explanation)}</div>`:""}</div>`:""}
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>

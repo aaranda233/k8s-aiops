@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from src.diagnostics.command_builder import build_command, build_remediation
+from src.diagnostics.command_builder import build_command, build_remediation, explain_command
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import (
     DiagnosisResult,
@@ -138,6 +138,8 @@ class HybridReActAgent:
             mode="hybrid",
             prompt_user=initial_context,
             remediation_command=remediation,
+            command_explanation=explain_command(kubectl_cmd),
+            remediation_explanation=explain_command(remediation),
         )
 
     def _investigate(self, initial_context: str) -> list[InvestigationStep]:

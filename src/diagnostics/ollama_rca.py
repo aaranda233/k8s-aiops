@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from src.diagnostics.command_builder import build_command, build_remediation
+from src.diagnostics.command_builder import build_command, build_remediation, explain_command
 
 if TYPE_CHECKING:
     pass
@@ -333,6 +333,8 @@ class DiagnosisResult:
     mode: str = "single_shot"
     prompt_user: str = ""   # input exacto que recibió el modelo (para el dataset de feedback)
     remediation_command: str = ""  # acción reversible propuesta (shadow); "" si manual
+    command_explanation: str = ""      # qué hace el comando de investigación
+    remediation_explanation: str = ""  # qué hace el comando de remediación
 
 
 class OllamaRCA:
@@ -396,6 +398,8 @@ class OllamaRCA:
             model_version=scored_window.model_version,
             prompt_user=user_msg,
             remediation_command=remediation,
+            command_explanation=explain_command(kubectl_cmd),
+            remediation_explanation=explain_command(remediation),
         )
 
     @staticmethod
