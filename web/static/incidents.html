@@ -168,7 +168,8 @@ function card(i){
     </div>
     ${invest?`<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
-    <div class="section"><div class="label">Acción propuesta</div><div class="cmd">${esc(i.kubectl_cmd)}</div></div>
+    <div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div></div>
+    ${i.remediation_command?`<div class="section"><div class="label">Remediar (reversible · shadow)</div><div class="cmd">${esc(i.remediation_command)}</div></div>`:""}
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>

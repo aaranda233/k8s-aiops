@@ -42,6 +42,7 @@ class Incident:
     updated_at: float = 0.0
     prompt_user: str = ""              # prompt/eventos de entrada del SLM (para reentrenar)
     human_correction: str = ""         # corrección humana opcional (root_cause + kubectl)
+    remediation_command: str = ""      # acción reversible propuesta (shadow); "" si manual
     occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
     last_seen: float = 0.0             # última vez que se observó el mismo problema
 

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.diagnostics.command_builder import build_command, build_remediation
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import (
     DiagnosisResult,
@@ -120,6 +121,9 @@ class HybridReActAgent:
         # Anti-deriva: si el experto divaga/se disculpa, fallback determinista
         # derivado de la plantilla de error dominante (nunca "sin causa" si hay errores).
         root_cause = ensure_meaningful_root_cause(root_cause, w)
+        # Comando dirigido + remediación reversible (deterministas, namespace correcto).
+        kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
+        remediation = build_remediation(logs_text, primary, root_cause)
 
         return DiagnosisResult(
             window_index=w.index,
@@ -133,6 +137,7 @@ class HybridReActAgent:
             react_trace=investigation_steps,
             mode="hybrid",
             prompt_user=initial_context,
+            remediation_command=remediation,
         )
 
     def _investigate(self, initial_context: str) -> list[InvestigationStep]:

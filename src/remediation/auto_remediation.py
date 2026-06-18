@@ -206,6 +206,7 @@ class AutoRemediation:
             investigation=investigation_steps,
             status=STATUS_PENDING,
             prompt_user=getattr(diagnosis, "prompt_user", ""),
+            remediation_command=getattr(diagnosis, "remediation_command", ""),
         )
         self.incidents.add(incident)
 

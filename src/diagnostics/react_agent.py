@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.diagnostics.command_builder import build_command, build_remediation
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import (
     DiagnosisResult,
@@ -138,6 +139,8 @@ class ReActAgent:
 
         # Anti-deriva: fallback determinista desde la plantilla de error dominante.
         root_cause = ensure_meaningful_root_cause(root_cause, w)
+        kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
+        remediation = build_remediation(logs_text, primary, root_cause)
 
         return DiagnosisResult(
             window_index=w.index,
@@ -151,6 +154,7 @@ class ReActAgent:
             react_trace=trace,
             mode="react",
             prompt_user=initial_context,
+            remediation_command=remediation,
         )
 
     def _call_llm(self, messages: list[dict]) -> str:

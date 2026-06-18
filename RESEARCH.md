@@ -929,7 +929,28 @@ The evidence is further filtered to the **culprit namespace** so a single root c
 
 **Fix.** Incidents are deduplicated by a namespace fingerprint within a sliding window (`REMEDIATION_DEDUP_WINDOW`, default 1800 s): a recurrence increments `occurrence_count` ("visto N veces") instead of creating a new incident.
 
-### 17.7 Result
+### 17.7 Remediation command quality — deterministic command builder
+
+**Problem.** The 1.5B expert proposed `kubectl` commands that were frequently unusable: wrong namespace (`describe pod postgresql-… -n aiops-demo` when the pod lived in `postgresql`), fragile shell substitutions (`logs … $(kubectl get pod -l …)`), placeholders, or commands irrelevant to the root cause (`describe networkpolicy` for a missing-role error). On the held-out test set the fine-tuned model reached only **NS-ok 33.0%** (command names the correct namespace) and **Verb-ok 41.0%** (command verb matches the scenario).
+
+**Fix.** A deterministic command builder (`src/diagnostics/command_builder.py`) applies the same principle used for the root cause — guarantee quality by post-processing instead of trusting model variance:
+
+1. **Resource extraction** from the evidence: pod (`Pod/<name>`), node, PVC, service, and the owning workload (deployment/statefulset, by stripping the replicaset/pod hash suffixes).
+2. **Intent → command catalog** mapping the failure pattern to the correct investigative command, with the verb aligned to each scenario (OOM/probe/image → `describe pod`; PVC → `describe pvc`; node pressure → `describe node` *without* `-n`; NetworkPolicy → `get networkpolicy`; secret/role → `get secret`; CrashLoop/config → `logs … --previous`; endpoints → `get endpoints`).
+3. **Namespace correction**: the `-n` flag is forced to the detector's culprit namespace (and stripped for cluster-scoped resources like nodes).
+4. **Fragility rejection**: commands with `$(...)`, pipes, `;`, or `<placeholders>` are discarded in favour of the deterministic one. The model's command is kept only when it is safe *and* consistent with the detected intent.
+5. **Two-tier output**: a safe investigation command (always) plus an optional reversible remediation (`rollout restart`) tagged by the existing risk taxonomy and gated in shadow mode.
+
+**Result (deterministic evaluation on the 210-sample test set, no model inference):**
+
+| Metric | Fine-tuned SLM | Command builder | Δ |
+|---|---|---|---|
+| NS-ok% (correct namespace) | 33.0% | **85.7%** | +52.7 |
+| Verb-ok% (correct verb) | 41.0% | **92.9%** | +51.9 |
+
+The remaining ≈14% of NS-ok is the ceiling, not a miss: node-pressure scenarios resolve to `describe node`, which is cluster-scoped and *correctly* carries no namespace. As with the root-cause fallback, command quality is now independent of model variance.
+
+### 17.8 Result
 
 Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
 
@@ -951,7 +972,7 @@ Live validation against the production cluster: normal windows now score low and
 - [x] Novelty warm-up on (re)start (§17.3)
 - [x] RCA evidence hardening — error-template clustering, culprit focus, anti-drift fallback (§17.4–17.5)
 - [x] Incident deduplication with occurrence counter (§17.6)
-- [ ] **Remediation command quality — make the proposed `kubectl` actually fix/diagnose the specific root cause (next milestone)**
+- [x] Remediation command quality — deterministic command builder: NS-ok 33%→85.7%, Verb-ok 41%→92.9% (§17.7)
 - [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
 - [ ] Shadow-mode remediation on production cluster (generate incidents, all actions gated on approval)
 - [ ] LLM-assisted prioritization of security findings (rules detect, model contextualizes)

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from src.diagnostics.command_builder import build_command, build_remediation
+
 if TYPE_CHECKING:
     pass
 
@@ -330,6 +332,7 @@ class DiagnosisResult:
     react_trace: list = field(default_factory=list)
     mode: str = "single_shot"
     prompt_user: str = ""   # input exacto que recibió el modelo (para el dataset de feedback)
+    remediation_command: str = ""  # acción reversible propuesta (shadow); "" si manual
 
 
 class OllamaRCA:
@@ -381,6 +384,8 @@ class OllamaRCA:
         text = resp.json()["message"]["content"].strip()
         root_cause, kubectl_cmd = parse_diagnosis(text)
         root_cause = ensure_meaningful_root_cause(root_cause, w)
+        kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
+        remediation = build_remediation(logs_text, primary, root_cause)
 
         return DiagnosisResult(
             window_index=w.index,
@@ -390,6 +395,7 @@ class OllamaRCA:
             kubectl_command=kubectl_cmd,
             model_version=scored_window.model_version,
             prompt_user=user_msg,
+            remediation_command=remediation,
         )
 
     @staticmethod
