@@ -960,7 +960,24 @@ Operating against a multi-tenant cluster, incidents come from two sources — co
 
 `classify_category()` derives the label deterministically from the detected intent. The incident console shows a per-incident badge and a filter bar (All / App / Platform with counts) for triage; a single incident store is kept, so correlation and deduplication are preserved. This keeps the door open to per-category routing (e.g. a distinct Teams channel for App vs Platform) without any architectural split. The thesis-relevant point is that **multi-source correlation** (events + logs in one RCA) is more valuable than source separation.
 
-### 17.9 Result
+### 17.9 Ablation — is the vanilla investigator still needed?
+
+After the deterministic improvements (evidence clustering, namespace focus, command builder), it is fair to ask whether the two-phase hybrid still earns its cost over a single-shot expert. We re-ran the held-out 210-sample test set comparing **single-shot ORPO** vs the **hybrid** (vanilla investigator → ORPO synthesiser), both grammar-constrained so the only difference is the vanilla's investigation:
+
+| Metric | Single-shot ORPO | Hybrid (vanilla+ORPO) | Winner |
+|---|---|---|---|
+| **Keyword%** (identifies the right failure) | 78.6% | **92.4%** | hybrid **+13.8** |
+| Parse% (format) | 100.0% | 98.6% | ≈ |
+| ROUGE-L | 18.3% | 5.9% | single-shot |
+| NS-ok% (raw model command) | 92.4% | 74.3% | single-shot* |
+| Verb-ok% (raw model command) | 67.6% | 41.9% | single-shot* |
+| Latency mean / p95 | 0.81s / 1.08s | 2.15s / 4.60s | single-shot (2.6×) |
+
+**Verdict: keep the hybrid.** The vanilla's investigation buys **+13.8 points of Keyword%** — i.e. it identifies the correct failure ~14% more often, which is the single most important metric for root-cause analysis (the same mechanism that unlocked `network_policy_block` 0% → 73.3% in §10.3). The cost is 2.6× latency, which is acceptable for a pipeline that runs reactively (once per anomaly), not in a hot path.
+
+The honest caveats: (i) the `NS-ok%`/`Verb-ok%` columns favour single-shot but are **moot in production** — they measure the *raw model command*, which the deterministic command builder (§17.7) overrides for both modes (to 85.7%/92.9%); (ii) ROUGE-L favours single-shot, but it is a weak surface-overlap metric and the hybrid's prose diverges because it integrates investigation notes — Keyword% is the meaningful diagnostic signal. The decision is closer than the original numbers suggested, but Keyword% is decisive and settles it with data rather than assumption.
+
+### 17.10 Result
 
 Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
 
