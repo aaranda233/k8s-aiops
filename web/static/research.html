@@ -886,6 +886,15 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
         (command_builder) con su explicación. Queda coherente con la <strong>señal de severidad por namespace</strong>
         del detector, que ya marcaba ese namespace "callado pero ardiendo".
       </p>
+      <p style="margin-top:10px;">
+        Antes de concluir, el chat ejecuta un <strong>mini-bucle acotado (≤3 pasos, solo lectura)</strong> para confirmar
+        la causa con datos reales (comando de la intención → <code>describe pod</code> → <code>events</code>;
+        <code>logs --previous</code> solo si el pod reinició). <strong>La remediación nunca se auto-ejecuta.</strong>
+        Dos lecciones: el siguiente comando se elige de forma <strong>determinista, no por el modelo</strong> (dejarlo
+        elegir reintroducía bucles de basura); y <strong>más evidencia no siempre mejora</strong> — el <code>describe</code>/<code>events</code>
+        "limpios" hacían que el 1.5B <em>ignorara</em> el <code>FATAL</code> y dijera "sano", así que se <strong>ancla</strong>
+        la síntesis al síntoma confirmado. El determinismo lleva el peso; el modelo solo redacta.
+      </p>
     </div>
   </div>
 
