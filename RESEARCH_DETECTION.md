@@ -7,7 +7,7 @@
 
 ## Abstract
 
-This document describes the first two layers of the K8s-AIOps pipeline: event collection from the Kubernetes API and unsupervised anomaly detection using Isolation Forest. The system ingests a continuous stream of Kubernetes events, abstracts them into log templates via online log parsing (Drain3), aggregates templates into fixed-width time windows, and applies a periodically retrained Isolation Forest to score each window. Windows whose anomaly score exceeds a configurable threshold are routed to the fine-tuned SLM described in RESEARCH.md. The entire detection path runs without labeled data.
+This document describes the first two layers of the K8s-AIOps pipeline: event collection from the Kubernetes API and unsupervised anomaly detection using Isolation Forest. The system ingests a continuous stream of Kubernetes events, abstracts them into log templates via online log parsing (Drain3), aggregates templates into fixed-width time windows, and scores each window **per namespace** with a three-signal ensemble — a periodically retrained Isolation Forest (absolute `decision_function` score), a log-severity signal, and a template-novelty signal. The window score is the maximum over its namespaces and the deviating namespace is recorded as the culprit. Windows whose anomaly score exceeds a configurable threshold are routed to the fine-tuned SLM described in RESEARCH.md. The entire detection path runs without labeled data.
 
 ---
 
@@ -188,6 +188,8 @@ f_normalized[j] = f[j] / Σ f[k]
 
 This normalization is critical: a busy window with 500 events and a quiet window with 20 events should be compared by their _distribution_ of templates, not by raw counts.
 
+The window also keeps the per-template counts **broken down by namespace** (`ns_cluster_counts`). The Isolation Forest is trained and scored on these **per-namespace** vectors (one row per `(window, namespace)`), so detection localizes to the service that actually deviates rather than to the cluster as a whole (§4.1).
+
 ---
 
 ## 4. Layer 2b — Isolation Forest Anomaly Detection
@@ -201,24 +203,37 @@ Isolation Forest (Liu et al., 2008) is an ensemble anomaly detection method base
 3. The isolation depth of a point is the average number of splits required to isolate it across all trees.
 4. Shallow isolation depth → anomaly (easy to isolate). Deep → normal (hard to isolate).
 
-The raw score from scikit-learn's `score_samples()` is negative: more negative = more anomalous. The pipeline normalizes this to [0, 1]:
+**Absolute scoring (revised).** An earlier version normalized the raw `score_samples()` output **min-max within the current history buffer**. That made the score *relative*: the least-normal window of the moment was always mapped to ≈1.0, even when every window was perfectly normal — the dominant cause of an "anomaly flood" on a busy cluster. The detector now derives an **absolute** anomaly score from scikit-learn's `decision_function` (which is calibrated by `contamination`, so `d ≥ 0` is inside the normal manifold and `d < 0` is anomalous):
 
 ```
-score = clip(1 - (raw_score - min_score) / (max_score - min_score), 0, 1)
+d = model.decision_function(x)          # ≥ 0 normal, < 0 anomalous
+if_score = 0           if d ≥ 0
+         = clip(-d / d_scale, 0, 1)    otherwise
 ```
 
-where `min_score` and `max_score` are computed across all windows in the current history buffer. A score of 1.0 is the most anomalous window seen; 0.0 is the most normal.
+where `d_scale = max(-min(decision_function(X_train)), 0.05)` is fixed at training time (the depth of the worst normal training point). A normal window now scores low and *varied* instead of saturating to 1.0.
+
+**Three-signal ensemble, scored per namespace.** Isolation Forest alone only sees the *template distribution*. Two complementary signals cover its blind spots, and **all three are computed per namespace** so a healthy namespace cannot drag the whole window into anomaly:
+
+| Signal | Detects | Definition (per namespace) |
+|--------|---------|----------------------------|
+| **Isolation Forest** | unusual template distribution | `if_score` above, on the namespace's per-template vector |
+| **Severity** | a service whose logs are mostly errors | mapped error ratio `err/total` (FATAL/ERROR/CRITICAL), thresholds 0.25→0.70 |
+| **Novelty** | a burst of never-before-seen templates | ratio of logs whose `cluster_id ∉ trained_ids`, thresholds 0.15→0.50 |
+
+The unit of analysis is therefore `(namespace, window)`. Each namespace `ns` in the window gets `s(ns) = max(if, severity, novelty·warmup)`; the **window score is `max` over namespaces** and the namespace achieving it is recorded as the **culprit** (`ScoredWindow.culprit_namespace`), which becomes the focus of the downstream RCA. A single-namespace window reduces exactly to the previous whole-window behaviour. `warmup` is a ramp (default 20 windows) that damps *only* novelty right after a cold start — when the parser and model are empty, everything is "new" and novelty is uninformative.
 
 ### 4.2 Configuration
 
 | Parameter | Default | Rationale |
 |-----------|---------|-----------|
 | `n_estimators` | 200 | More trees → more stable scores. 200 is sufficient for feature spaces of ~50-200 templates |
-| `contamination` | 0.05 | Assumes 5% of time windows are anomalous. Affects the internal threshold used during `fit()`, not our normalized scoring |
-| `threshold` | 0.80 | Normalized score above which a window triggers an alert |
+| `contamination` | 0.05 | Assumes 5% of training rows are anomalous. Calibrates `decision_function`, which the **absolute** `if_score` is derived from |
+| `threshold` | 0.80 | Anomaly score above which a (namespace, window) triggers an alert |
 | `bootstrap_windows` | 10 | Minimum windows before first model fit |
 | `rolling_window_size` | 50 | Size of the sliding history buffer for retraining |
 | `retrain_every_n` | 5 | Retrain after every 5 new windows |
+| `novelty_warmup_windows` | 20 | Windows after (re)start during which the novelty signal is ramped 0→1 (cold start = everything is "new") |
 
 ### 4.3 Three-Phase Operation
 
@@ -230,15 +245,20 @@ In live mode, the historical snapshot pre-loaded at startup typically covers thi
 
 #### Phase 2 — Detection
 
-Each new window W is vectorized using the **current** model's feature set (the set of Drain3 cluster IDs seen at last training time). New cluster IDs discovered after the last retraining are silently ignored until the next retrain:
+Each new window W is scored **per namespace**, using the **current** model's feature set (the Drain3 cluster IDs seen at last training time). New cluster IDs discovered after the last retraining are silently ignored by the IF until the next retrain — but caught immediately by the novelty signal:
 
 ```python
-X_all = vectorize(history + [W], feature_ids=trained_cluster_ids)
-raw_scores = model.score_samples(X_all)
-score_W = normalize(raw_scores[-1], context=raw_scores)
+for ns in W.namespaces:
+    vec      = vectorize(W.ns_cluster_counts[ns], feature_ids=trained_cluster_ids)
+    if_score = if_anom(model.decision_function(vec))      # absolute, vs training
+    sev      = severity(W, ns)                            # local error ratio
+    nov      = novelty(W, ns) * warmup_factor()           # unseen-template ratio
+    s[ns]    = max(if_score, sev, nov)
+score_W  = max(s.values())          # window score
+culprit  = argmax(s)                # namespace to focus the RCA on
 ```
 
-The normalization is context-dependent: the same raw score can map to different normalized values depending on the score distribution of the history buffer. This is intentional — it makes the threshold `0.80` meaningful relative to recent observed behavior.
+The score is **absolute** (referenced to the training distribution, not the current buffer), so a quiet, well-behaved cluster produces low scores and only a genuinely anomalous namespace crosses the `0.80` threshold.
 
 #### Phase 3 — Periodic Retraining
 
@@ -264,7 +284,7 @@ The Drain3 template set grows monotonically as new log patterns are encountered.
 | After 1 hour | ~50-100 | 50-100 dims |
 | Steady state | ~100-200 | 100-200 dims |
 
-New templates discovered after a model training are excluded from the current model's feature set but recorded in `_all_cluster_ids`. On the next retrain, they are incorporated. This means a burst of entirely new log types — such as a new microservice deployment — may temporarily evade detection until the next retrain cycle.
+New templates discovered after a model training are excluded from the current model's feature set but recorded in `_all_cluster_ids`. On the next retrain, they are incorporated. By itself the IF would let a burst of entirely new log types — a new deployment, a crash printing unseen stack traces — evade detection until the next retrain cycle. The **novelty signal** (§4.1) closes exactly this gap: it fires on the ratio of logs whose `cluster_id` is not yet in the trained set, so an inrush of unseen templates is flagged immediately, then hands back to the IF/severity signals once the next retrain incorporates them. The **warm-up ramp** prevents the symmetric failure mode — right after a cold (re)start *every* template is unseen, so novelty is damped for the first `novelty_warmup_windows` windows while the baseline matures.
 
 ### 4.5 PCA Visualization
 
@@ -301,10 +321,10 @@ WindowBuilder.feed(parsed, timestamp)
 AnomalyDetector.process(window)
     │
     │  Bootstrap (first 10 windows): accumulate → fit IF → ready
-    │  Detection: vectorize → score_samples → normalize → ScoredWindow
-    │  Retrain (every 5 windows): fit new IF on last 50 windows
+    │  Detection: per-namespace vectorize → max(IF_abs, severity, novelty) → ScoredWindow
+    │  Retrain (every 5 windows): fit new IF (per-namespace rows) on last 50 windows
     ▼
-ScoredWindow {score ∈ [0,1], is_anomaly, pca_x, pca_y}
+ScoredWindow {score ∈ [0,1], is_anomaly, culprit_namespace, pca_x, pca_y}
     │
     ├── score < 0.80 → log to UI, continue
     │
@@ -373,7 +393,7 @@ A lower similarity threshold creates more clusters (higher granularity, more fea
 | Autoencoder | Captures complex patterns | Requires more data, GPU preferred |
 | Static rules | Interpretable, zero false negatives for known patterns | No coverage of unknown patterns, requires expert maintenance |
 
-Isolation Forest was chosen for its balance of simplicity, speed, and effectiveness on high-dimensional sparse feature vectors — which is exactly the representation produced by Drain3 template frequency counts.
+Isolation Forest was chosen for its balance of simplicity, speed, and effectiveness on high-dimensional sparse feature vectors — which is exactly the representation produced by Drain3 template frequency counts. The two classic IF weaknesses are addressed directly: **drift sensitivity** by sliding-window retraining (§4.3) plus the novelty signal and warm-up (§4.4); and the **relative-scoring artifact** (the main cause of false positives) by switching from min-max-within-batch to the **absolute `decision_function`** score (§4.1). Streaming/online IF variants (iForestASD, Robust Random Cut Forest, Half-Space Trees) and Extended Isolation Forest were considered: they improve score *quality* or *online adaptation* but do not address the cold-start / per-namespace-attribution problems that dominated in practice, and add cost on a CPU-only deployment. They remain candidate future work for the IF sub-signal.
 
 ### 7.5 Rolling Retraining Strategy
 
@@ -387,9 +407,10 @@ During validation against a real Kubernetes cluster (the same cluster used for d
 
 - **Bootstrap time:** ~10 minutes wall-clock (10 × 60s windows)
 - **Template saturation:** ~80 distinct Drain3 templates after 30 minutes, growing slowly thereafter
-- **False positive rate:** ~3-5% of windows flagged without an observable incident (consistent with `contamination=0.05`)
 - **Detection latency:** < 60s (one window period) from incident onset to alert
 - **Retraining cost:** < 50ms per cycle (50 windows × ~150 features)
+
+**Before vs. after the per-namespace / absolute-scoring hardening (§4):** the early relative-normalization design flagged almost every busy window (~15 namespaces, 200–600 events) at score 1.000 — an unusable false-positive flood. After the change, normal windows score low and *varied* (observed 0.0–0.5) and the only sustained alerts correspond to the cluster's genuine persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (`argocd`, `aeat-retenciones`) no longer fire.
 
 ---
 
@@ -399,6 +420,9 @@ During validation against a real Kubernetes cluster (the same cluster used for d
 - [ ] Comparison of Drain3 sim_th values: 0.3, 0.4, 0.5, 0.6 — effect on template count and detection rate
 - [ ] Overlapping windows (stride < window_size) to reduce boundary split artifacts
 - [ ] Weighted feature vectors: giving higher weight to Warning events vs. Normal events
-- [ ] Per-namespace anomaly scoring (current implementation scores cluster-wide windows)
-- [ ] Persistence of trained IF model across restarts (currently re-bootstraps on every start)
-- [ ] Alert deduplication: suppress repeat alerts for the same incident within a cooldown period
+- [x] Per-namespace anomaly scoring with single-culprit attribution (§4.1, §4.3)
+- [x] Absolute IF scoring via `decision_function` — eliminates the relative-normalization false-positive flood (§4.1)
+- [x] Novelty signal + warm-up — catches unseen-template bursts and damps the cold-start flood (§4.4)
+- [x] Alert deduplication: recurring same-namespace incidents increment a counter instead of new alerts
+- [ ] Persistence of trained IF model + Drain3 vocabulary across restarts (currently re-bootstraps on every start)
+- [ ] Streaming IF variant (RRCF / Half-Space Trees) or Extended IF for the distribution sub-signal
