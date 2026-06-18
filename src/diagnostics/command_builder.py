@@ -346,8 +346,11 @@ def explain_command(cmd: str) -> str:
         return f"Comprueba qué services{nsx} se han quedado sin endpoints (sin pods listos)."
     if low.startswith("kubectl logs"):
         prev = " de la instancia anterior (la que crasheó)" if "--previous" in low else ""
-        if name:
-            return f"Muestra los logs{prev} del pod «{name}»{nsx}."
+        # 'kubectl logs <pod>' lleva el nombre directo (sin keyword de tipo).
+        m = re.match(r"kubectl\s+logs\s+(?:pod/)?([^\s-]\S*)", cmd, re.IGNORECASE)
+        pod = m.group(1) if m else None
+        if pod:
+            return f"Muestra los logs{prev} del pod «{pod}»{nsx}."
         return f"Muestra los logs{prev} de los pods{nsx}."
     if "get events" in low:
         return "Lista los eventos recientes del cluster ordenados por fecha para ver qué ha pasado."
