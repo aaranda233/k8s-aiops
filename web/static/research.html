@@ -872,6 +872,21 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
         <strong>correlación multi-fuente</strong> aporta más que la separación.
       </p>
     </div>
+
+    <div class="finding-box" style="margin-top:24px;">
+      <div class="fb-title">Chat: detectar pods "Running pero ardiendo"</div>
+      <p>
+        Un pod puede estar <code>Running 1/1</code> y aun así su aplicación loguear <code>FATAL</code> —
+        justo el caso de PostgreSQL (<code>role "$(POSTGRES_USER)" does not exist</code>). La investigación
+        conversacional miraba solo el <strong>STATUS del pod</strong> y lo declaraba sano. Ahora, si el conjunto
+        enfocado no tiene fallo por estado, <strong>revisa los logs</strong> de sus pods y lo trata como culpable si
+        encuentra señales fuertes (<code>FATAL</code> / <code>Traceback</code> / <code>does not exist</code> / panic /
+        OOM) o ≥3 <code>ERROR</code> — umbral que evita falsos positivos en apps sanas. Además, la respuesta del chat
+        ya no inventa comandos: el experto solo explica la causa y el sistema añade un <strong>comando verificado</strong>
+        (command_builder) con su explicación. Queda coherente con la <strong>señal de severidad por namespace</strong>
+        del detector, que ya marcaba ese namespace "callado pero ardiendo".
+      </p>
+    </div>
   </div>
 
   <!-- ── PRÓXIMOS PASOS ── -->

@@ -977,7 +977,15 @@ After the deterministic improvements (evidence clustering, namespace focus, comm
 
 The honest caveats: (i) the `NS-ok%`/`Verb-ok%` columns favour single-shot but are **moot in production** — they measure the *raw model command*, which the deterministic command builder (§17.7) overrides for both modes (to 85.7%/92.9%); (ii) ROUGE-L favours single-shot, but it is a weak surface-overlap metric and the hybrid's prose diverges because it integrates investigation notes — Keyword% is the meaningful diagnostic signal. The decision is closer than the original numbers suggested, but Keyword% is decisive and settles it with data rather than assumption.
 
-### 17.10 Result
+### 17.10 Chat investigation — "running but on fire" detection and verified commands
+
+The conversational investigation agent (§14.3) was hardened to match the rest of the system:
+
+- **Read-only execution via the kubernetes-configured `kubectl`.** The agent shells out to `kubectl` (read-only verbs only, enforced by `kubectl_toolbox`). On a host with cluster credentials (`~/.kube/config`) but no binary, this failed silently; the binary is provided and the triage output is no longer truncated (a >150-pod cluster was dropping namespaces, so focusing on e.g. `postgresql` found nothing).
+- **Verified commands instead of hallucinated ones.** The synthesiser (ORPO) is asked to explain the cause in prose only; any `kubectl` it invents is stripped, and the system appends a deterministic command from the command builder (§17.7) targeted at the culprit pod, with its plain-language explanation.
+- **"Running but on fire" detection.** A pod can be `Running 1/1` while its application logs `FATAL` — exactly the PostgreSQL case (`role "$(POSTGRES_USER)" does not exist`). The deterministic harness previously declared such a focused pod healthy because it only inspected pod **status**. It now, when the focused set has no status-level problem, **reads the pods' logs** and treats the pod as the culprit if it finds strong error markers (`FATAL`/`Traceback`/`does not exist`/`panic`/OOM) or ≥3 soft `ERROR` lines (the threshold avoids false positives on healthy apps). The expert then diagnoses the real application-level cause. This makes the chat consistent with the detector's per-namespace **severity signal**, which already flags a quiet-but-erroring namespace.
+
+### 17.11 Result
 
 Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
 
