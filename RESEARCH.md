@@ -882,7 +882,58 @@ the accumulated feedback warrants it (and a GPU is available).
 
 ---
 
-## 17. Pending / Future Work
+## 17. Detection & RCA Quality Hardening
+
+Running the system continuously against a live multi-tenant cluster (≈15 namespaces, 200–600 log events per 60 s window) surfaced quality problems that synthetic benchmarks never exposed: an "anomaly flood" where almost every window scored 1.000, diagnoses that were generic or drifted into tutorial-style prose, and duplicate incidents for the same recurring problem. This section documents the fixes, each validated live.
+
+### 17.1 Per-namespace scoring — the unit of analysis is `(namespace, window)`, not `window`
+
+**Problem.** The detector scored the *whole window* — the template distribution of the entire cluster aggregated together. In a busy cluster any single window mixes ~15 namespaces and 30–60 templates, so the aggregate always looked "unusual" and nearly every window was flagged. A healthy namespace dragged the whole window into anomaly, and the resulting alert listed all ~15 namespaces with no clear culprit.
+
+**Fix.** `WindowData` now tracks `ns_cluster_counts: dict[str, dict[int,int]]` — the template distribution *per namespace*. The three detection signals are computed per namespace (`severity_by_namespace`, `novelty_by_namespace`, and an Isolation Forest scored on per-namespace vectors). The window score is the **maximum over namespaces**, and the namespace achieving it is recorded as `ScoredWindow.culprit_namespace`. A healthy namespace can no longer drag the window, and every alert/incident is attributed to a single culprit. A single-namespace window reduces exactly to the old behaviour (backward compatible).
+
+### 17.2 Absolute Isolation Forest score — the real cause of the flood
+
+**Problem.** The IF anomaly score was normalised **min-max within the current batch** (history + new window). That makes the score *relative*: the least-normal sample of the moment is always mapped to ≈1.0, even when everything is perfectly normal. This — not the model — was the dominant driver of the flood.
+
+**Fix.** The score is now **absolute**, derived from `IsolationForest.decision_function` (calibrated by `contamination`): `d ≥ 0` (inside the normal manifold) → 0; only the anomalous side scales, against a reference fixed at training time. A normal window now scores low and *varied* (observed 0.0–0.51) instead of saturating to 1.000. This is the single change that turned "every window is an anomaly" into "only genuinely anomalous namespaces fire".
+
+### 17.3 Novelty warm-up after every (re)start
+
+**Problem.** After a cold start the Drain3 parser and the IF model begin empty, so *every* template is "new" and the novelty signal saturates for a while, flooding alerts on startup.
+
+**Fix.** A linear warm-up ramp (`NOVELTY_WARMUP_WINDOWS`, default 20) damps **only** the novelty signal for the first windows after bootstrap; severity (real errors) and IF are untouched, so genuine problems still fire immediately. Novelty is reintroduced gradually as the baseline matures.
+
+### 17.4 RCA evidence — error-template clustering
+
+**Problem.** The SLM received up to 40 near-identical raw error lines, which diluted the signal and consumed the `num_ctx=2048` budget, yielding generic diagnoses or "no determinable cause".
+
+**Fix.** Error logs are grouped by `(namespace, Drain3 template)`, counted, and ranked by frequency, sending **one line per pattern plus a real example** instead of dozens of duplicates:
+
+```
+12× [postgresql] FATAL: role "<*>" does not exist
+     e.g. FATAL: role "$(POSTGRES_USER)" does not exist
+```
+
+The evidence is further filtered to the **culprit namespace** so a single root cause is presented, not a cluster-wide mix.
+
+### 17.5 Anti-drift guardrails and deterministic fallback
+
+**Problem.** The 1.5B expert occasionally drifted into tutorial mode ("Here are some additional steps… Step 4:") or apologised ("Lo siento, parece que falta información"), producing unusable diagnoses.
+
+**Fix.** Drift/apology markers are detected and, when the model output is unusable, the root cause is **synthesised deterministically from the dominant error template** — e.g. *"El namespace «postgresql» acumula 11 errores recurrentes del tipo: «FATAL: role <\*> does not exist»."* The system therefore never shows "no determinable cause" when real errors exist; diagnosis quality becomes independent of model variance. `stop` sequences were also added to the single-shot path.
+
+### 17.6 Incident deduplication
+
+**Problem.** A persistent problem (same namespaces) created one incident per detection window, flooding the incident list.
+
+**Fix.** Incidents are deduplicated by a namespace fingerprint within a sliding window (`REMEDIATION_DEDUP_WINDOW`, default 1800 s): a recurrence increments `occurrence_count` ("visto N veces") instead of creating a new incident.
+
+### 17.7 Result
+
+Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
+
+## 18. Pending / Future Work
 
 - [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
@@ -895,6 +946,12 @@ the accumulated feedback warrants it (and a GPU is available).
 - [x] Conversational read-only investigation agent ("chat with the cluster")
 - [x] Live cluster topology (graph + electrical-panel views)
 - [x] Rule-based security posture scanner (10 checks, read-only)
+- [x] Per-namespace anomaly scoring with single-culprit attribution (§17.1)
+- [x] Absolute Isolation Forest score — eliminates the relative-normalisation anomaly flood (§17.2)
+- [x] Novelty warm-up on (re)start (§17.3)
+- [x] RCA evidence hardening — error-template clustering, culprit focus, anti-drift fallback (§17.4–17.5)
+- [x] Incident deduplication with occurrence counter (§17.6)
+- [ ] **Remediation command quality — make the proposed `kubectl` actually fix/diagnose the specific root cause (next milestone)**
 - [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
 - [ ] Shadow-mode remediation on production cluster (generate incidents, all actions gated on approval)
 - [ ] LLM-assisted prioritization of security findings (rules detect, model contextualizes)

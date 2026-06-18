@@ -288,7 +288,22 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     <div class="cl-header">
       <div>
         <div class="cl-title">Novedades — v2</div>
-        <div class="cl-subtitle">Últimas actualizaciones del experimento · 2026-06-02</div>
+        <div class="cl-subtitle">Últimas actualizaciones del experimento · 2026-06-18</div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-18</div>
+      <div class="cl-body">
+        <span class="cl-tag exp">Producción</span>
+        <div class="cl-text">
+          <strong>Endurecimiento de detección y RCA en clúster real — fin del "flood".</strong>
+          Scoring <strong>por namespace</strong> (culpable = argmax) + score IF <strong>absoluto</strong>
+          (decision_function en vez de min-max relativo). Evidencia al SLM agrupada por plantilla,
+          enfocada al culpable, con fallback determinista anti-deriva. Warm-up de novedad en cada arranque
+          y deduplicación de incidentes. En vivo: solo dispara el problema real (postgresql); los namespaces
+          benignos ya no inundan. Ver sección 07.
+        </div>
       </div>
     </div>
 
@@ -725,9 +740,89 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     </div>
   </div>
 
+  <!-- ── DETECCIÓN EN PRODUCCIÓN ── -->
+  <div class="section">
+    <div class="section-title"><span>07</span> Endurecimiento en producción</div>
+    <h2>De "todo es anomalía" a señalar solo el servicio que falla</h2>
+    <p class="subtitle">
+      Ejecutar el sistema en continuo contra un clúster real (~15 namespaces, 200–600 eventos por ventana de 60 s)
+      destapó problemas que los benchmarks sintéticos nunca mostraron: un <strong>flood de anomalías</strong>
+      (casi toda ventana puntuaba 1.000), diagnósticos genéricos y divagantes, e incidentes duplicados.
+    </p>
+
+    <div class="finding-box">
+      <div class="fb-title">Causa raíz del flood — dos errores combinados</div>
+      <p>
+        <strong>1) Normalización relativa.</strong> El score de Isolation Forest se normalizaba <strong>min-max dentro del
+        batch</strong>, lo que fuerza a ≈1.0 a la ventana "menos normal" del momento aunque sea perfectamente normal.
+        <strong>2) Ventana global.</strong> Se puntuaba el clúster <strong>entero junto</strong>, así que un namespace sano
+        arrastraba a toda la ventana y la alerta listaba ~15 namespaces sin culpable claro.
+      </p>
+    </div>
+
+    <div class="grammar-grid">
+      <div class="grammar-card">
+        <h4>Antes <span class="arrow down">▼ flood</span></h4>
+        <div class="train-stat"><span class="ts-key">Ventanas grandes</span><span class="ts-val bad">≈ todas 1.000</span></div>
+        <div class="train-stat"><span class="ts-key">Culpable</span><span class="ts-val bad">~15 namespaces</span></div>
+        <div class="train-stat"><span class="ts-key">Diagnóstico</span><span class="ts-val bad">genérico / tutorial</span></div>
+        <div class="train-stat"><span class="ts-key">Incidentes</span><span class="ts-val bad">1 por ventana</span></div>
+      </div>
+      <div class="grammar-card">
+        <h4>Después <span class="arrow up">▲ enfocado</span></h4>
+        <div class="train-stat"><span class="ts-key">Ventanas normales</span><span class="ts-val good">score 0.0–0.5 variado</span></div>
+        <div class="train-stat"><span class="ts-key">Culpable</span><span class="ts-val good">1 namespace (argmax)</span></div>
+        <div class="train-stat"><span class="ts-key">Diagnóstico</span><span class="ts-val good">específico + fallback</span></div>
+        <div class="train-stat"><span class="ts-key">Incidentes</span><span class="ts-val good">deduplicados (×N)</span></div>
+      </div>
+    </div>
+
+    <div class="steps" style="margin-top:24px;">
+      <div class="step-card">
+        <div class="step-num s1">1</div>
+        <div class="step-body">
+          <div class="step-title">Scoring por namespace</div>
+          <div class="step-desc">La unidad de análisis pasa a ser <code>(namespace, ventana)</code>. Cada namespace se puntúa por separado (IF, severidad, novedad); el score de la ventana es el máximo y el <strong>culpable es el argmax</strong>. Un namespace sano ya no arrastra a la ventana.</div>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num s2">2</div>
+        <div class="step-body">
+          <div class="step-title">Score IF absoluto (decision_function)</div>
+          <div class="step-desc">Se sustituye la normalización min-max por una referencia <strong>absoluta</strong> calibrada por contamination: <code>d≥0</code> (normal) → 0; solo el lado anómalo escala. Una ventana normal puntúa bajo en vez de saturar. <strong>Este fue el cambio que mató el flood.</strong></div>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num s3">3</div>
+        <div class="step-body">
+          <div class="step-title">Evidencia al SLM por plantillas</div>
+          <div class="step-desc">Los logs de error se agrupan por <code>(namespace, plantilla Drain3)</code> con frecuencia + ejemplo real (<code>12× FATAL: role &lt;*&gt; does not exist</code>), filtrados al culpable. Señal densa → diagnóstico específico. Anti-deriva: si el modelo divaga, se sintetiza la causa desde la plantilla dominante.</div>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num s4">4</div>
+        <div class="step-body">
+          <div class="step-title">Warm-up de novedad + deduplicación</div>
+          <div class="step-desc">Tras cada arranque, la novedad se amortigua mientras el baseline madura (todo es "nuevo" en frío). Y un problema recurrente incrementa un contador ("visto N veces") en vez de crear incidentes nuevos.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding-box" style="margin-top:24px;">
+      <div class="fb-title">Validación en vivo</div>
+      <p>
+        En el clúster de producción, las ventanas normales puntúan bajo y variado; las <strong>únicas</strong> alertas
+        son el problema real persistente (<code style="color:var(--cyan)">PostgreSQL: role "$(POSTGRES_USER)" does not exist</code>,
+        severidad = 1.00), atribuido correctamente al namespace <code>postgresql</code>. Los namespaces benignos de alto
+        volumen (<code>argocd</code>, <code>aeat-retenciones</code>) ya no disparan. El flujo de alertas del dashboard y la
+        lista de incidencias deduplicada <strong>cuentan la misma historia</strong>.
+      </p>
+    </div>
+  </div>
+
   <!-- ── PRÓXIMOS PASOS ── -->
   <div class="section">
-    <div class="section-title"><span>07</span> Próximos pasos</div>
+    <div class="section-title"><span>08</span> Próximos pasos</div>
     <h2>Camino hacia un modelo que combine estructura y conocimiento</h2>
     <p class="subtitle">Los experimentos fallidos revelan exactamente qué hay que cambiar.</p>
 
