@@ -542,14 +542,27 @@ def _is_readonly(cmd: str) -> bool:
 
 def _culprit_evidence(transcript: list[tuple[str, str, str]],
                       culprit: dict) -> tuple[str, str, str]:
-    """Evidencia (texto), namespace y nombre del pod culpable a partir del transcript."""
+    """Evidencia (texto), namespace y nombre del pod culpable a partir del transcript.
+
+    Para clasificar la INTENCIÓN del comando se usan los logs completos y SOLO la
+    sección «Events:» del `describe` (las razones reales: Liveness probe failed,
+    OOMKilling, FailedMount…). Se excluye el boilerplate del describe (Tolerations,
+    Volumes/kube-api-access) porque contiene palabras como "secret" que disparan
+    intenciones equivocadas.
+    """
     ns = culprit.get("ns", "")
     name = culprit.get("name", "")
-    drill = " ".join(
-        obs for (_t, action, obs) in transcript
-        if action and ("describe" in action or "logs" in action)
-    )
-    evidence = f"{ns} Pod/{name} {culprit.get('status', '')} {drill}"
+    parts: list[str] = []
+    for _t, action, obs in transcript:
+        if not action or not obs:
+            continue
+        if "logs" in action:
+            parts.append(obs)
+        elif "describe" in action:
+            idx = obs.find("Events:")
+            if idx != -1:
+                parts.append(obs[idx:])
+    evidence = f"{ns} Pod/{name} {culprit.get('status', '')} " + " ".join(parts)
     return evidence, ns, name
 
 
