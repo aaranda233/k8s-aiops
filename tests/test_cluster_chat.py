@@ -494,3 +494,11 @@ def test_has_log_errors_soft_needs_three():
 def test_has_log_errors_clean_logs():
     clean = "notice: nginx start worker process\nGET /healthz 200"
     assert _cc._has_log_errors(clean) is False
+
+
+@pytest.mark.unit
+def test_is_readonly():
+    assert _cc._is_readonly("kubectl get secret -n postgresql") is True
+    assert _cc._is_readonly("kubectl describe pod x -n y") is True
+    assert _cc._is_readonly("kubectl rollout restart deployment/x -n y") is False
+    assert _cc._is_readonly("kubectl delete pod x") is False

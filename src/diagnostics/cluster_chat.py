@@ -300,17 +300,32 @@ class ClusterChatAgent:
 
     def _final_answer(self, question: str, transcript: list[tuple[str, str, str]],
                       focused: bool = False, culprit: dict | None = None) -> Iterator[dict]:
-        """El modelo experto (fine-tuneado) concluye a partir de la evidencia."""
+        """El modelo experto (fine-tuneado) concluye a partir de la evidencia.
+
+        Antes de concluir, EJECUTA el comando sugerido (siempre read-only) y añade
+        su salida a la evidencia, para que el diagnóstico final esté confirmado con
+        datos reales (p. ej. `get secret` muestra si falta el secret del rol).
+        """
+        suggested = _suggested_command(transcript, culprit, "")
+        if suggested and _is_readonly(suggested) \
+                and not any(a == suggested for (_t, a, _o) in transcript):
+            yield {"type": "thought", "text": "Ejecuto el comando sugerido para confirmar la causa…"}
+            yield {"type": "action", "command": suggested}
+            out = self._run_tool(suggested)
+            yield {"type": "observation", "text": out[:1500]}
+            transcript.append((f"Resultado de «{suggested}»", suggested, out))
+
         yield {"type": "thought", "text": "Sintetizando diagnóstico…"}
         try:
-            answer = self._synthesize(question, transcript, focused, culprit)
+            answer = self._synthesize(question, transcript, focused, culprit, suggested)
         except Exception as e:
             yield {"type": "error", "text": f"Error en la síntesis: {e}"}
             return
         yield {"type": "answer", "text": answer}
 
     def _synthesize(self, question: str, transcript: list[tuple[str, str, str]],
-                    focused: bool = False, culprit: dict | None = None) -> str:
+                    focused: bool = False, culprit: dict | None = None,
+                    suggested_cmd: str | None = None) -> str:
         parts = []
         for _thought, action, observation in transcript:
             if _is_broad_pod_listing(action):
@@ -334,8 +349,9 @@ class ClusterChatAgent:
         ]
         prose = _strip_invented_commands(self._call(messages, model=self.expert_model))
         # Routing por command_builder: el comando sugerido es DETERMINISTA (dirigido
-        # al pod culpable, namespace correcto), no el que invente el modelo.
-        cmd = _suggested_command(transcript, culprit, prose)
+        # al pod culpable, namespace correcto), no el que invente el modelo. Si ya se
+        # ejecutó (suggested_cmd), se reutiliza el mismo para que coincida.
+        cmd = suggested_cmd if suggested_cmd is not None else _suggested_command(transcript, culprit, prose)
         if cmd:
             prose += f"\n\nComando sugerido (verificado): {cmd}\n↳ {explain_command(cmd)}"
         return prose
@@ -477,6 +493,15 @@ def _strip_invented_commands(text: str) -> str:
             continue
         kept.append(ln)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+_READONLY_VERBS = {"get", "describe", "logs", "top", "explain", "events"}
+
+
+def _is_readonly(cmd: str) -> bool:
+    """True si el comando es de SOLO LECTURA (seguro de auto-ejecutar)."""
+    parts = (cmd or "").split()
+    return len(parts) >= 2 and parts[0] == "kubectl" and parts[1].lower() in _READONLY_VERBS
 
 
 def _suggested_command(transcript: list[tuple[str, str, str]],
