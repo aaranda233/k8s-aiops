@@ -895,6 +895,13 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
         "limpios" hacían que el 1.5B <em>ignorara</em> el <code>FATAL</code> y dijera "sano", así que se <strong>ancla</strong>
         la síntesis al síntoma confirmado. El determinismo lleva el peso; el modelo solo redacta.
       </p>
+      <p style="margin-top:10px;">
+        Un matiz más: el comando se clasifica sobre los <strong>logs + solo la sección <code>Events:</code></strong> del
+        describe, no sobre el volcado completo. El boilerplate (<code>Mounts: /var/run/secrets/…</code>) colaba la palabra
+        "secret" y hacía que un CrashLoop por probe propusiera <code>get secret</code>; con la evidencia enfocada, el
+        CrashLoop da <code>logs --previous</code> y el error de rol de PostgreSQL da <code>get secret</code>, cada uno
+        el suyo.
+      </p>
     </div>
   </div>
 
