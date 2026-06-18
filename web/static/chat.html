@@ -137,11 +137,14 @@ function newAgentMsg(){
 }
 function add(parent,html){ const t=document.createElement("div"); t.innerHTML=html; parent.appendChild(t.firstElementChild); }
 
+// Id de conversación: memoria entre turnos (follow-ups, comandos) durante esta sesión.
+const CID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+
 function send(){
   const q=input.value.trim(); if(!q||streaming) return;
   addUser(q); input.value=""; streaming=true; btn.disabled=true; input.disabled=true;
   const box=newAgentMsg(); const steps=document.createElement("div"); box.appendChild(steps);
-  const es=new EventSource(`/api/chat/stream?q=${encodeURIComponent(q)}`);
+  const es=new EventSource(`/api/chat/stream?q=${encodeURIComponent(q)}&cid=${encodeURIComponent(CID)}`);
   es.onmessage=(e)=>{
     const ev=JSON.parse(e.data); const thinking=box.querySelector(".thinking");
     if(ev.type==="thought") add(steps,`<div class="step thought"><span class="ic">${I.thought}</span>${esc(ev.text)}</div>`);

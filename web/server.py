@@ -315,14 +315,17 @@ async def chat_page():
 
 
 @app.get("/api/chat/stream")
-async def chat_stream(q: str):
-    """Server-Sent Events: emite los pasos del agente conforme investiga."""
+async def chat_stream(q: str, cid: str = ""):
+    """Server-Sent Events: emite los pasos del agente conforme investiga.
+
+    `cid` = id de conversación (memoria entre turnos: follow-ups y comandos).
+    """
     def event_gen():
         if not q.strip():
             yield _sse({"type": "error", "text": "Pregunta vacía"})
             return
         try:
-            for event in chat_agent.chat_iter(q):
+            for event in chat_agent.chat_iter(q, conversation_id=cid or None):
                 yield _sse(event)
         except Exception as e:
             yield _sse({"type": "error", "text": str(e)})

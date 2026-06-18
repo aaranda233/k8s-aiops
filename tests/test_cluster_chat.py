@@ -541,3 +541,57 @@ def test_confirmation_skips_previous_for_jobs_without_restarts():
     transcript = [("t", "kubectl logs banca-sync-1-x -n banca-conection --tail=50", "exit 7")]
     cmds = _cc._confirmation_commands(transcript, culprit)
     assert not any("--previous" in c for c in cmds)  # Job sin reinicios: sin --previous
+
+
+# ── Enrutado de intención + memoria de conversación ─────────────────────────
+
+@pytest.mark.unit
+def test_classify_intent():
+    assert _cc._classify_intent("ejecuta kubectl get secret -n postgresql", False) == "command"
+    assert _cc._classify_intent("kubectl get pods -A", False) == "command"
+    assert _cc._classify_intent("¿qué le pasa a postgresql?", False) == "investigate"
+    assert _cc._classify_intent("¿y por qué?", True) == "followup"
+    assert _cc._classify_intent("y los secrets?", True) == "followup"
+    # sin contexto, un follow-up no tiene a qué referirse → investigate
+    assert _cc._classify_intent("¿y por qué?", False) == "investigate"
+
+
+@pytest.mark.unit
+def test_extract_kubectl():
+    assert _cc._extract_kubectl("ejecuta kubectl get secret -n postgresql") == "kubectl get secret -n postgresql"
+    assert _cc._extract_kubectl("kubectl describe pod x -n y.") == "kubectl describe pod x -n y"
+    assert _cc._extract_kubectl("no hay comando aquí") is None
+
+
+@pytest.mark.unit
+def test_command_turn_runs_readonly(monkeypatch):
+    agent = ClusterChatAgent(dry_run=False)
+    calls = []
+    agent._run_tool = lambda a, **k: calls.append(a) or "NAME  TYPE\npostgresql-credentials Opaque"
+    agent._call = lambda msgs, model=None: "Hay un secret postgresql-credentials con 3 claves."
+    session = {"transcript": [], "culprit": None, "ns_focus": None}
+    evs = list(agent._command_turn("ejecuta kubectl get secret -n postgresql", session))
+    assert calls == ["kubectl get secret -n postgresql"]   # ejecutó EXACTAMENTE el pedido
+    assert any(e["type"] == "answer" for e in evs)
+    assert not any(e.get("command") == "kubectl get pods -A" for e in evs)  # NO re-triajeó
+
+
+@pytest.mark.unit
+def test_command_turn_refuses_write(monkeypatch):
+    agent = ClusterChatAgent(dry_run=False)
+    ran = []
+    agent._run_tool = lambda a, **k: ran.append(a) or "x"
+    session = {"transcript": [], "culprit": None, "ns_focus": None}
+    evs = list(agent._command_turn("kubectl delete pod x -n y", session))
+    assert ran == []  # no ejecutó un comando de escritura
+    assert any("lectura" in e.get("text", "") for e in evs if e["type"] == "answer")
+
+
+@pytest.mark.unit
+def test_chat_iter_routes_command_without_triage(monkeypatch):
+    agent = ClusterChatAgent(dry_run=False)
+    triaged = []
+    agent._run_tool = lambda a, **k: triaged.append(a) or "out"
+    agent._call = lambda msgs, model=None: "interpretación"
+    list(agent.chat_iter("kubectl get secret -n postgresql", conversation_id="c1"))
+    assert triaged == ["kubectl get secret -n postgresql"]  # solo el comando, sin 'get pods -A'

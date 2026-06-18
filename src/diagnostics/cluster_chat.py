@@ -127,13 +127,40 @@ class ClusterChatAgent:
         self.timeout = timeout
         self.max_steps = max_steps
         self.dry_run = dry_run  # True = no ejecuta kubectl real (para demo/test)
+        # Memoria de conversación por sesión: {cid: {transcript, culprit, ns_focus}}
+        self._sessions: dict[str, dict] = {}
 
-    def chat_iter(self, question: str) -> Iterator[dict]:
+    def _session(self, conversation_id: str | None) -> dict:
+        if not conversation_id:
+            return {"transcript": [], "culprit": None, "ns_focus": None}
+        return self._sessions.setdefault(
+            conversation_id, {"transcript": [], "culprit": None, "ns_focus": None})
+
+    def chat_iter(self, question: str, conversation_id: str | None = None) -> Iterator[dict]:
+        """Enruta el mensaje según intención y mantiene contexto de conversación.
+
+        - command   → ejecuta un kubectl de SOLO LECTURA y lo interpreta (sin re-triaje).
+        - followup  → responde reusando la evidencia ya investigada (sin re-triaje).
+        - investigate (por defecto) → triaje + foco + diagnóstico completos.
+        """
+        session = self._session(conversation_id)
+        has_context = bool(session.get("transcript") or session.get("culprit"))
+        intent = _classify_intent(question, has_context)
+        if intent == "command":
+            yield from self._command_turn(question, session)
+            return
+        if intent == "followup":
+            yield from self._followup_turn(question, session)
+            return
+        yield from self._investigate(question, session)
+
+    def _investigate(self, question: str, session: dict) -> Iterator[dict]:
         """Generador ReAct híbrido: triage determinista + el base profundiza + el experto concluye.
 
         Eventos: {"type": "thought"|"action"|"observation"|"answer"|"error", ...}
         """
-        transcript: list[tuple[str, str, str]] = []  # (thought, action, observation)
+        session["transcript"] = []
+        transcript: list[tuple[str, str, str]] = session["transcript"]
         seen_actions: set[str] = set()
         step = 0
 
@@ -246,6 +273,10 @@ class ClusterChatAgent:
                     drill_target = {"ns": ns, "name": name,
                                     "status": "Running (errores en logs)"}
                     break
+
+        # Persistir el contexto de esta investigación para follow-ups posteriores.
+        session["culprit"] = drill_target
+        session["ns_focus"] = ns_focus
 
         # Si la pregunta está enfocada, la evidencia determinista ya es completa.
         if focused:
@@ -392,6 +423,42 @@ class ClusterChatAgent:
             prose += f"\n\nComando sugerido (verificado): {cmd}\n↳ {explain_command(cmd)}"
         return prose
 
+    def _command_turn(self, message: str, session: dict) -> Iterator[dict]:
+        """Ejecuta un kubectl de SOLO LECTURA que pide el operador y lo interpreta."""
+        cmd = _extract_kubectl(message)
+        if not cmd:
+            yield {"type": "answer", "text": "No detecté un comando kubectl válido en tu mensaje."}
+            return
+        if not _is_readonly(cmd):
+            yield {"type": "answer",
+                   "text": f"Solo ejecuto comandos de lectura. «{cmd}» modifica el cluster; "
+                           f"ejecútalo tú si procede."}
+            return
+        yield {"type": "action", "step": 1, "command": cmd}
+        out = self._run_tool(cmd, max_lines=200)
+        yield {"type": "observation", "step": 1, "text": out[:2000]}
+        session["transcript"].append(("Comando del operador", cmd, out))
+        try:
+            interp = _strip_invented_commands(self._call([
+                {"role": "system", "content": _CMD_INTERP_SYSTEM},
+                {"role": "user", "content": f"Comando: {cmd}\nSalida:\n{out[:1500]}\n\n"
+                                            f"Resume en 1-2 frases qué muestra, en español."},
+            ], model=self.expert_model))
+        except Exception:
+            interp = ""
+        yield {"type": "answer", "text": interp or "(salida mostrada arriba)"}
+
+    def _followup_turn(self, question: str, session: dict) -> Iterator[dict]:
+        """Responde reusando la evidencia ya investigada, sin re-triajear."""
+        yield {"type": "thought", "text": "Continúo con lo ya investigado…"}
+        try:
+            answer = self._synthesize(question, session.get("transcript", []),
+                                      focused=True, culprit=session.get("culprit"))
+        except Exception as e:
+            yield {"type": "error", "text": f"Error en la síntesis: {e}"}
+            return
+        yield {"type": "answer", "text": answer}
+
     def _call(self, messages: list[dict], model: str | None = None) -> str:
         payload = {
             "model": model or self.model,
@@ -510,6 +577,38 @@ _STRONG_LOG_ERR = re.compile(
     r"\b(FATAL|CRITICAL|PANIC)\b|Traceback|panic:|does not exist|"
     r"connection refused|OOM|segmentation fault", re.IGNORECASE)
 _SOFT_LOG_ERR = re.compile(r"\bERROR\b|\[error\]|\bException\b", re.IGNORECASE)
+
+
+_CMD_INTERP_SYSTEM = (
+    "Eres un SRE. Recibes un comando kubectl y su salida. Resume en 1-2 frases en "
+    "español qué muestra y si hay algo relevante. NO escribas comandos kubectl."
+)
+
+# Marcadores de follow-up (sin acentos; se comparan contra texto normalizado).
+_FOLLOWUP_MARKERS = (
+    "por que", "porque", "y eso", "y los", "y las", "y el", "y la", "explica",
+    "explicalo", "amplia", "mas detalle", "mas info", "detalla", "continua",
+    "y entonces", "y ahora", "y que mas", "profundiza", "y como",
+)
+_KUBECTL_VERB_RE = re.compile(r"\bkubectl\s+[a-z-]+", re.IGNORECASE)
+
+
+def _classify_intent(message: str, has_context: bool) -> str:
+    """command (kubectl explícito) | followup (referencia al contexto) | investigate."""
+    low = _strip_accents((message or "").lower())
+    if _KUBECTL_VERB_RE.search(message or ""):
+        return "command"
+    if has_context and any(m in low for m in _FOLLOWUP_MARKERS):
+        return "followup"
+    return "investigate"
+
+
+def _extract_kubectl(message: str) -> str | None:
+    """Extrae el comando 'kubectl …' del mensaje (hasta fin de línea)."""
+    m = re.search(r"kubectl\s+[^\n]*", message or "", re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(0).strip().rstrip(".?!").strip()
 
 
 def _strong_error_lines(transcript: list[tuple[str, str, str]], limit: int = 5) -> list[str]:
