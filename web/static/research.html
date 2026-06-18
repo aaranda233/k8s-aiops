@@ -302,7 +302,9 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           (decision_function en vez de min-max relativo). Evidencia al SLM agrupada por plantilla,
           enfocada al culpable, con fallback determinista anti-deriva. Warm-up de novedad en cada arranque
           y deduplicación de incidentes. En vivo: solo dispara el problema real (postgresql); los namespaces
-          benignos ya no inundan. Ver sección 07.
+          benignos ya no inundan.
+          <br><br><strong>Comandos kubectl deterministas</strong> (catálogo intención→comando + corrección de namespace):
+          NS-ok 33%→<strong>85.7%</strong>, Verb-ok 41%→<strong>92.9%</strong> sobre 210 muestras. Ver sección 07.
         </div>
       </div>
     </div>
@@ -817,6 +819,38 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
         volumen (<code>argocd</code>, <code>aeat-retenciones</code>) ya no disparan. El flujo de alertas del dashboard y la
         lista de incidencias deduplicada <strong>cuentan la misma historia</strong>.
       </p>
+    </div>
+
+    <h2 style="margin-top:40px;">Comandos kubectl que apuntan al recurso correcto</h2>
+    <p class="subtitle">
+      El SLM de 1.5B proponía comandos con <strong>namespace equivocado</strong>
+      (<code>describe pod … -n aiops-demo</code> cuando el pod está en <code>postgresql</code>),
+      substituciones frágiles (<code>$(kubectl get pod -l …)</code>) o irrelevantes a la causa
+      (<code>describe networkpolicy</code> para un error de rol). Mismo principio que con la causa raíz:
+      <strong>garantizar la calidad por post-proceso determinista</strong>.
+    </p>
+
+    <div class="grammar-grid">
+      <div class="grammar-card">
+        <h4>Constructor determinista de comandos</h4>
+        <div style="font-size:11px;color:var(--dim);line-height:1.7;padding:4px 0 10px;">
+          <strong style="color:var(--text)">1.</strong> Extrae el recurso real de la evidencia (pod/pvc/nodo/servicio/workload).<br>
+          <strong style="color:var(--text)">2.</strong> Catálogo intención→comando con el verbo correcto (OOM→<code>describe pod</code>, pvc→<code>describe pvc</code>, nodo→<code>describe node</code> sin <code>-n</code>, red→<code>get networkpolicy</code>, rol/secret→<code>get secret</code>, crashloop→<code>logs --previous</code>).<br>
+          <strong style="color:var(--text)">3.</strong> Fuerza el <code>-n</code> al namespace culpable; descarta comandos frágiles.<br>
+          <strong style="color:var(--text)">4.</strong> Dos niveles: investigar + remediar reversible (<code>rollout restart</code>) etiquetado por riesgo, en shadow.
+        </div>
+      </div>
+      <div class="grammar-card">
+        <h4>Resultado <span class="arrow up">▲ medido</span> <span style="font-size:10px;color:var(--dim)">210 muestras</span></h4>
+        <div class="train-stat"><span class="ts-key">NS-ok% (namespace)</span><span class="ts-val good">33.0% → 85.7%</span></div>
+        <div class="train-stat"><span class="ts-key">Verb-ok% (verbo)</span><span class="ts-val good">41.0% → 92.9%</span></div>
+        <div style="margin-top:12px;font-size:10.5px;color:var(--dim);line-height:1.6;padding:10px;background:rgba(63,185,80,.05);border:1px solid rgba(63,185,80,.15);border-radius:6px;">
+          El ≈14% restante de NS-ok es el <strong style="color:var(--text)">techo</strong>, no un fallo:
+          los escenarios de nodo resuelven a <code>describe node</code>, que es cluster-scoped y
+          correctamente <strong>no lleva namespace</strong>. En vivo: el incidente de postgresql propone
+          <code style="color:var(--cyan)">kubectl get secret -n postgresql</code> — dirigido y relevante a la causa.
+        </div>
+      </div>
     </div>
   </div>
 

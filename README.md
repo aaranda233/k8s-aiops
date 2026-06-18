@@ -46,6 +46,24 @@ Notificación pluggable: **Microsoft Teams** (principal) + email (fallback). Tea
 
 ---
 
+## Endurecimiento en producción
+
+Ejecutar el sistema en continuo sobre un clúster real (~15 namespaces) destapó fallos que los benchmarks sintéticos no mostraban. Todos resueltos por **post-proceso determinista** (calidad independiente de la varianza del modelo) y validados en vivo:
+
+- **Detección por namespace + score IF absoluto** — se puntúa cada `(namespace, ventana)` por separado (culpable = argmax) y el Isolation Forest usa `decision_function` (referencia absoluta) en vez de min-max relativo. Esto eliminó el *flood* de anomalías: las ventanas normales puntúan bajo y solo dispara el servicio que realmente falla.
+- **Comandos kubectl dirigidos** — un constructor determinista extrae el recurso de la evidencia, fuerza el namespace correcto, mapea la causa al comando adecuado (catálogo intención→comando) y descarta comandos frágiles:
+
+  | Métrica del comando | SLM (SFT) | Constructor determinista |
+  |---|:---:|:---:|
+  | **NS-ok%** (namespace correcto) | 33.0% | **85.7%** |
+  | **Verb-ok%** (verbo correcto) | 41.0% | **92.9%** |
+
+  *(el ≈14% restante de NS-ok es el techo: los escenarios de nodo usan `describe node`, cluster-scoped, que correctamente no lleva namespace).*
+
+- **Evidencia al SLM por plantillas, anti-deriva con fallback determinista, warm-up de novedad y deduplicación de incidentes.** Detalle en [RESEARCH.md §17](./RESEARCH.md).
+
+---
+
 ## Documentación
 
 | Documento | Descripción |
