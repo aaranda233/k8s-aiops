@@ -486,13 +486,12 @@ def _strip_invented_commands(text: str) -> str:
     prosa del modelo debe explicar la causa, no proponer comandos alucinados.
     """
     text = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
-    kept = []
-    for ln in text.splitlines():
-        s = ln.strip().lstrip("$").strip()
-        if s.lower().startswith("kubectl "):
-            continue
-        kept.append(ln)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    # Quitar comandos kubectl en CUALQUIER posición (línea suelta o inline), hasta
+    # el final de la frase/línea, para que el modelo no proponga acciones propias.
+    text = re.sub(r"\s*\bkubectl\s+[^\n.]*", "", text, flags=re.IGNORECASE)
+    kept = [ln for ln in text.splitlines() if ln.strip().lstrip("$").strip()]
+    out = re.sub(r"[ \t]{2,}", " ", "\n".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 _READONLY_VERBS = {"get", "describe", "logs", "top", "explain", "events"}
