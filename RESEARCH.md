@@ -1001,7 +1001,54 @@ This was an instructive measurement-driven iteration. With **bare** namespace na
 
 Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
 
-## 18. Pending / Future Work
+## 18. Model Capacity Experiment — Gemma 4 E2B + ORPO
+
+To test whether a newer, larger base model would raise the quality ceiling, we fine-tuned **Gemma 4 E2B** (Google, April 2026; ~2.3B nominal, edge-optimised Per-Layer Embeddings) with the **same ORPO recipe and dataset** (`dpo_dataset_v2.jsonl`, 1960 preference pairs) used for the production qwen model. The conclusion is nuanced and important for an on-premise system: **Gemma improves diagnostic quality but is not operationally viable on this stack.**
+
+### 18.1 Training — succeeded, but only after a corrected recipe
+
+The first run fine-tuned the **base** `gemma-4-E2B` (pretrained, *not* instruct). Loss fell to ~1.1 yet the model **echoed the prompt** instead of diagnosing — even on training examples. Root cause was threefold:
+
+1. **Base, not instruct.** The pretrained prior is "continue the text"; with weak LoRA supervision it never learned to switch into answer mode.
+2. **ChatML as plain text.** Gemma's tokenizer has no `<|im_start|>` special tokens and no chat template, so `apply_chat_template` fell back to literal ChatML markers — the prompt/completion boundary used for loss masking is blurred (qwen's `Qwen2.5-1.5B-Instruct` has ChatML as real special tokens, so masking is clean).
+3. **Prompt truncation.** Event prompts are long (median 956 tok, max 1457); training with `max_prompt_len=512` truncated **97%** of prompts.
+
+The corrected run — base **`unsloth/gemma-4-E2B-it`** (instruct, native chat template with `system` role) + native template + `max_prompt_len=1536` / `max_seq_len=1792` — trained cleanly: loss **15.2 → 1.26**, monotonic. Vanilla PEFT could not wrap Gemma's `Gemma4ClippableLinear` layers (flat loss); **Unsloth** was required for gradients to flow.
+
+### 18.2 Quality — Gemma wins on the one axis guardrails can't fix
+
+Evaluated on the same 210-sample held-out set (`eval/eval_gemma4_hf.py`, transformers, greedy, **no grammar** — GGUF/Ollama unavailable, see §18.3):
+
+| Metric | Gemma4-E2B-ORPO (no grammar) | qwen-1.5B-ORPO (+grammar) |
+|---|:---:|:---:|
+| Parse% | 97.6% | 100% |
+| **Keyword% (RCA quality)** | **92.4%** | 78.1% |
+| NS-ok% | 45.2% | 89.5% |
+| Verb-ok% | 57.1% | 56.7% |
+| ROUGE-L | 3.8% | 19.3% |
+
+The decisive metric is **Keyword%** (does the root cause name the real failure) — the only axis the deterministic `command_builder` (§17.7) cannot repair. Gemma reaches **92.4% vs 78.1% (+14.3 pts)**, and achieves 97.6% parse **without** grammar-constrained decoding. NS-ok is low only because this measures the *raw model* command; in production the command builder forces the namespace deterministically, equalising both models. ROUGE-L collapse indicates more divergent phrasing.
+
+### 18.3 Deployment — not viable on the on-premise CPU/Ollama stack
+
+Quality is not the blocker; **serving is**. Four independent attempts to run Gemma4 on the production stack failed:
+
+1. **Unsloth `save_pretrained_gguf`** → fails (`EOF when reading a line`): tries to build llama.cpp interactively, no stdin in container.
+2. **llama.cpp `convert_hf_to_gguf.py`** (server and a fresh `ggml-org` clone) → both a ~290-line stub with **no `gemma4` architecture** registered; cannot convert.
+3. **Ollama 0.24 `ollama create` from merged safetensors** → hangs at "gathering model components", never completes.
+4. **Ollama 0.24 running the *official* `unsloth/gemma-4-E2B-it-GGUF`** → `unable to load model`: the runtime does not support the gemma4 architecture (pull ≠ run).
+
+Additional on-prem constraint: the server has **15 GB RAM**. The fp32 merge (10.2 GB) is **OOM-killed** during load; bf16 (~5 GB) fits but is tight alongside other services. The only CPU-runnable 4-bit path (GGUF-Q4, ~1.5 GB) is blocked by (1)–(4); the alternative (`torchao int4` via transformers) means **abandoning Ollama** for a bespoke Python inference server — the opposite of a robust, boring pipeline.
+
+Measured CPU latency of the deployed qwen for reference: **~10 tok/s generation, 6–15 s per diagnosis** (Ollama, `num_gpu:0`, Q4). Gemma's true GGUF-Q4 CPU latency would be comparable per published benchmarks (E2B is edge-optimised, ~60 tok/s class), but cannot be realised on this stack.
+
+### 18.4 Verdict
+
+Gemma4-E2B-ORPO is a **real quality improvement (+14 pts RCA keyword)** but is **not operationally viable** on-premise: undeployable on the existing Ollama runtime, RAM-tight without a quantisation path that works, and carrying recurring operational complexity (Unsloth dependency, instruct/template/truncation pitfalls) that the closed-loop retraining cycle (§16) would inherit **every cycle**. For an autonomous self-retraining system, pipeline simplicity is a reliability property, not a convenience.
+
+**Decision: production stays on qwen-1.5B-ORPO + deterministic guardrails (Q4_K_M GGUF on Ollama)** — deployable, 986 MB, robust. The Gemma adapter and 16-bit merge are archived privately at `aaranda233/k8s-rca-orpo-gemma4-it` for revisitation when llama.cpp/Ollama gemma4 support and hardware mature. As a thesis result this is a clean comparative finding: *a larger, newer model lifts RCA quality, but a 1.5B SLM with deterministic guardrails is the cost-efficient, deployable choice on commodity CPU hardware.*
+
+## 19. Pending / Future Work
 
 - [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)

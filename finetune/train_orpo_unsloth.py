@@ -11,9 +11,9 @@ Notas Gemma 4:
     processor.tokenizer (GemmaTokenizer). ORPOTrainer necesita el de TEXTO.
 
 Uso:
-  python finetune/train_orpo_unsloth.py --base-model google/gemma-4-E2B \
+  python finetune/train_orpo_unsloth.py --base-model unsloth/gemma-4-E2B-it \
     --dataset dataset/output/dpo_dataset_v2.jsonl \
-    --output output/k8s-rca-orpo-gemma4 --epochs 3 --lr 2e-5
+    --output output/k8s-rca-orpo-gemma4-it --epochs 3 --lr 2e-5
 """
 
 from __future__ import annotations
@@ -32,16 +32,21 @@ from train_orpo import load_orpo_dataset  # noqa: E402  (reusa el loader del dat
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--base-model", default="google/gemma-4-E2B")
+    # Instruct (no el base pretrained): tiene chat_template nativa con rol system,
+    # igual que el qwen ORPO usó Qwen2.5-1.5B-Instruct. El base pretrained aprendía
+    # a repetir el prompt (echo) en vez de diagnosticar.
+    p.add_argument("--base-model", default="unsloth/gemma-4-E2B-it")
     p.add_argument("--dataset", default="dataset/output/dpo_dataset_v2.jsonl")
-    p.add_argument("--output", default="output/k8s-rca-orpo-gemma4")
+    p.add_argument("--output", default="output/k8s-rca-orpo-gemma4-it")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--grad-accum", type=int, default=16)
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--lambda-orpo", type=float, default=0.1)
-    p.add_argument("--max-seq-len", type=int, default=1024)
-    p.add_argument("--max-prompt-len", type=int, default=512)
+    # Prompts de eventos: mediana 933 tok, max 1457 con la plantilla nativa.
+    # 1536/1792 evita truncar (antes 512/1024 truncaba el 97% de los prompts).
+    p.add_argument("--max-seq-len", type=int, default=1792)
+    p.add_argument("--max-prompt-len", type=int, default=1536)
     p.add_argument("--lora-r", type=int, default=16)
     p.add_argument("--lora-alpha", type=int, default=32)
     return p.parse_args()

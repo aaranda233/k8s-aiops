@@ -306,11 +306,55 @@ La bajada de ROUGE-L (−13.4 pp) es el efecto esperado y deseable: el modelo h�
 
 ---
 
+## Experimento: Gemma 4 E2B + ORPO (capacidad vs viabilidad operativa)
+
+**Fecha:** 2026-06-18/19 · **Base:** `unsloth/gemma-4-E2B-it` (instruct) · **Receta:** misma ORPO + `dpo_dataset_v2.jsonl` (1960 pares) que el qwen de producción · **Eval:** transformers, greedy, **sin grammar** (GGUF/Ollama no disponibles para gemma4).
+
+Pregunta: ¿un modelo más nuevo y grande sube el techo de calidad? Respuesta: **sí en calidad, pero no es desplegable en el stack on-premise.**
+
+### Calidad — 210 muestras held-out
+
+| Métrica | **Gemma4-E2B-ORPO** (sin grammar) | qwen-1.5B-ORPO (+grammar) |
+|---------|:---:|:---:|
+| **Parse%** | 97.6% | 100% |
+| **Keyword% (calidad RCA)** | **92.4%** | 78.1% |
+| **NS-ok%** | 45.2% | 89.5% |
+| **Verb-ok%** | 57.1% | 56.7% |
+| **ROUGE-L** | 3.8% | 19.3% |
+
+> Gemma gana **+14.3 pts en Keyword%** — la única dimensión que el `command_builder` determinista NO puede arreglar — y logra 97.6% de formato **sin** grammar. El NS-ok bajo es del comando *crudo* del modelo; en producción el guardarraíl fuerza el namespace e iguala ambos modelos.
+
+### Entrenamiento
+
+- 1er intento (base **pretrained** `gemma-4-E2B`): loss→1.1 pero el modelo **repetía el prompt** (base no-instruct + ChatML como texto plano + truncado del 97% de prompts a 512 tok).
+- 2º intento corregido (base **instruct** + plantilla nativa + `max_prompt_len=1536`): loss **15.2→1.26**, aprende. PEFT vanilla no envuelve `Gemma4ClippableLinear` (loss plano) → **Unsloth obligatorio**.
+
+### Por qué NO es desplegable (4 bloqueos)
+
+1. Unsloth `save_pretrained_gguf` → `EOF` (intenta compilar llama.cpp interactivo).
+2. `convert_hf_to_gguf.py` (servidor + clon fresco de ggml-org) → stub de ~290 líneas **sin arquitectura gemma4**.
+3. `ollama create` desde safetensors → se cuelga en "gathering model components".
+4. Ollama 0.24 con el GGUF **oficial** → `unable to load model` (el runtime no soporta gemma4).
+- Además: servidor con **15 GB RAM** → el merge fp32 (10.2 GB) muere por **OOM** al cargar.
+
+### Latencia CPU (referencia)
+
+qwen-ORPO Q4 en CPU (`num_gpu:0`): **~10 tok/s gen, 6–15 s/diagnóstico**. La de Gemma-GGUF-Q4 sería comparable (E2B es edge-optimizado), pero **no se puede materializar** en este stack.
+
+### Veredicto
+
+Mejora real de calidad (+14 pts RCA) pero **inviable operativamente** on-premise (no despliega en Ollama, RAM justa sin ruta de cuantización funcional, complejidad recurrente en el loop de reentrenamiento). **Producción se queda en qwen-1.5B-ORPO + guardarraíles (Q4_K_M, 986 MB)**. Modelo archivado en HF privado `aaranda233/k8s-rca-orpo-gemma4-it` para revisitarlo cuando madure el tooling.
+
+---
+
 ## Artefactos
 
 | Archivo | Descripción |
 |---------|-------------|
 | `eval/test_set.jsonl` | 210 muestras ciegas (seed=99) |
+| `eval/results/eval_gemma4_orpo_it.json` | Resultados Gemma4-E2B-ORPO (210 muestras, transformers) |
+| `eval/eval_gemma4_hf.py` | Eval de Gemma4 vía transformers (sin Ollama/GGUF) |
+| `finetune/train_orpo_unsloth.py` | Entrenamiento ORPO con Unsloth (Gemma4) |
 | `eval/results/eval_20260601_154131.json` | Resultados SFT+Baseline por muestra |
 | `eval/results/eval_20260602_090116.json` | Resultados SFT+DPO+Baseline (3 modelos) |
 | `eval/results/eval_20260602_094119.json` | Resultados SFT+Baseline (confirmación) |
