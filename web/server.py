@@ -192,17 +192,20 @@ async def index():
 # Consola de incidencias — la decisión humana ocurre aquí
 # ------------------------------------------------------------------
 
+_NO_CACHE = {"Cache-Control": "no-store, max-age=0"}
+
+
 @app.get("/incidents", response_class=HTMLResponse)
 async def incidents_page():
     html_path = Path(__file__).parent / "static" / "incidents.html"
-    return HTMLResponse(html_path.read_text())
+    return HTMLResponse(html_path.read_text(), headers=_NO_CACHE)
 
 
 @app.get("/incidents/{incident_id}", response_class=HTMLResponse)
 async def incident_detail_page(incident_id: str):
     # La misma SPA resuelve el detalle por id en el cliente
     html_path = Path(__file__).parent / "static" / "incidents.html"
-    return HTMLResponse(html_path.read_text())
+    return HTMLResponse(html_path.read_text(), headers=_NO_CACHE)
 
 
 @app.get("/api/incidents")
