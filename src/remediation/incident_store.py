@@ -46,6 +46,8 @@ class Incident:
     command_explanation: str = ""      # qué hace el comando de investigación (lenguaje natural)
     remediation_explanation: str = ""  # qué hace el comando de remediación
     remediation_guidance: str = ""     # guía de solución (texto) cuando no hay comando seguro
+    remediation_plan: list = field(default_factory=list)  # plan multi-paso del grafo (si hit)
+    solution_source: str = "catalog"   # 'graph' | 'catalog' | 'escalated'
     category: str = "app"              # 'app' (código/config) | 'platform' (infra)
     occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
     last_seen: float = 0.0             # última vez que se observó el mismo problema

@@ -1,0 +1,370 @@
+"""
+Grafo de conocimiento de remediación.
+
+Memoria NO-paramétrica, estructurada y ejecutable: en vez de mapear
+`intent → UNA acción` (como el catálogo de command_builder), guarda por cada
+firma de problema un **plan multi-paso** (investigar → identificar → arreglar →
+verificar). Resuelve el caso real en que un solo comando no soluciona (p. ej.
+ingress: reiniciar haproxy no arregla un backend caído ni una NetworkPolicy).
+
+Diseño (capa abstracta + binding, estilo AST):
+  - Nodo = firma abstracta de problema (intent + clase de workload), PORTABLE.
+  - Arista = paso de remediación con plantilla de acción (placeholders {ns},
+    {pod}, {workload}, {service}, {pvc}, {node}), riesgo y origen.
+  - El binding (namespace/recurso reales) se resuelve en runtime con los
+    extractores deterministas de command_builder.
+
+La recuperación la hace CÓDIGO (detect_intent + lookup), no el SLM — así el
+modelo pequeño nunca carga el grafo en su contexto.
+
+Fase 1: store SQLite + semilla desde el catálogo + resolve con binding. El
+escalado a modelo grande (miss), la verificación por outcome y la consolidación
+ORPO se añaden en fases posteriores (add_provisional/mark_verified ya stubbeados).
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from src.diagnostics.command_builder import (
+    extract_node,
+    extract_pod,
+    extract_pvc,
+    extract_service,
+    extract_workload,
+    intent_for,
+)
+
+_DEFAULT_DB = os.getenv(
+    "AIOPS_GRAPH_DB", "data/graph/remediation_graph.db"
+)
+
+# Tipos de paso
+INVESTIGATE = "investigate"
+COMMAND = "command"      # acción de escritura reversible (shadow + aprobación)
+GUIDANCE = "guidance"    # acción manual (texto), sin comando seguro
+VERIFY = "verify"
+
+
+@dataclass
+class Step:
+    order: int
+    action_type: str
+    action: str            # comando kubectl ya enlazado, o texto de guía
+    explanation: str = ""
+    risk_level: int = 0    # 0 lectura · 1 reversible · 3 destructivo
+    source: str = "catalog"
+    verified: bool = False
+
+
+@dataclass
+class Plan:
+    intent: str
+    namespace: str
+    steps: list[Step] = field(default_factory=list)
+    source: str = "graph"
+
+    def to_dicts(self) -> list[dict]:
+        return [asdict(s) for s in self.steps]
+
+
+# ── Semilla: plan multi-paso por intención (capa abstracta) ──────────────────
+# Cada paso: (action_type, action_template, explanation, risk_level)
+# Las plantillas con {pod}/{workload}/{service}/{pvc}/{node} se descartan si el
+# recurso no se puede extraer de la evidencia (el plan conserva los pasos de {ns}).
+
+_SEED_PLANS: dict[str, dict] = {
+    "network": {
+        "namespace_class": "ingress-controller",
+        "steps": [
+            (INVESTIGATE, "kubectl get endpoints -n {ns}",
+             "¿El service tiene endpoints (backend Ready)? Si no, el fallo está en el "
+             "backend, no en el ingress.", 0),
+            (INVESTIGATE, "kubectl describe ingress -n {ns}",
+             "Revisa host/path/backend de la regla de Ingress por si está mal configurada.", 0),
+            (INVESTIGATE, "kubectl get networkpolicy -n {ns}",
+             "Comprueba si una NetworkPolicy está bloqueando el tráfico del namespace.", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Último recurso reversible: reinicia el controlador si su estado está colgado.", 1),
+        ],
+    },
+    "endpoints": {
+        "namespace_class": "service",
+        "steps": [
+            (INVESTIGATE, "kubectl get endpoints -n {ns}",
+             "¿Hay pods Ready detrás del service?", 0),
+            (INVESTIGATE, "kubectl describe pods -n {ns}",
+             "Revisa por qué los pods no están Ready (readiness/selector).", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Reinicia el backend para que vuelva a registrarse en el service.", 1),
+        ],
+    },
+    "crash_secret": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl get secret -n {ns}",
+             "¿Existe el secret con el rol/credenciales que la app no encuentra?", 0),
+            (GUIDANCE, "Crea o corrige el secret que falta (p. ej. el rol/usuario de la base "
+             "de datos) y aplícalo.", "", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Reinicia el workload para que recoja el secret corregido.", 1),
+        ],
+    },
+    "crash_config": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl logs {pod} -n {ns} --previous",
+             "Mira el log de la instancia que crasheó para ver el error de arranque.", 0),
+            (GUIDANCE, "Corrige el ConfigMap o la variable de entorno que provoca el crash.", "", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Reinicia el workload tras corregir la configuración.", 1),
+        ],
+    },
+    "oom": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
+             "Confirma OOMKilled y el límite de memoria del contenedor.", 0),
+            (GUIDANCE, "Sube resources.limits.memory del contenedor.", "", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Reinicia para aplicar el nuevo límite de memoria.", 1),
+        ],
+    },
+    "probe": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
+             "Revisa el evento de liveness/readiness probe.", 0),
+            (GUIDANCE, "Ajusta timeouts/umbral del probe o corrige el endpoint de salud.", "", 0),
+            (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             "Reinicia tras ajustar el probe.", 1),
+        ],
+    },
+    "image": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
+             "Mira el evento de pull para ver si es tag, registry o autenticación.", 0),
+            (GUIDANCE, "Verifica el nombre y el tag de la imagen y que exista en el registry; "
+             "corrígelo con `kubectl set image deploy/<workload> <contenedor>=<imagen:tag>`.", "", 0),
+        ],
+    },
+    "image_auth": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl get secret -n {ns}",
+             "¿Existe el secret de pull referenciado en imagePullSecrets?", 0),
+            (GUIDANCE, "(Re)crea el secret de pull con `kubectl create secret docker-registry` "
+             "y referéncialo en imagePullSecrets del deployment.", "", 0),
+        ],
+    },
+    "pvc": {
+        "namespace_class": "storage",
+        "steps": [
+            (INVESTIGATE, "kubectl describe pvc {pvc} -n {ns}",
+             "Mira por qué el PVC no se vincula a un volumen.", 0),
+            (GUIDANCE, "Revisa el StorageClass y que haya un PV disponible o aprovisionamiento "
+             "dinámico; crea o ajusta el PV/StorageClass.", "", 0),
+        ],
+    },
+    "node_pressure": {
+        "namespace_class": "node",
+        "steps": [
+            (INVESTIGATE, "kubectl describe node {node}",
+             "Revisa la presión de memoria/disco y las condiciones del nodo.", 0),
+            (GUIDANCE, "Libera recursos (elimina pods Evicted), reprograma cargas o añade "
+             "capacidad al cluster.", "", 0),
+        ],
+    },
+    "pending_cpu": {
+        "namespace_class": "app",
+        "steps": [
+            (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
+             "Mira por qué no se planifica (FailedScheduling / Insufficient cpu).", 0),
+            (GUIDANCE, "Reduce los requests de CPU del pod, libera capacidad (escala abajo un "
+             "vecino) o añade nodos al cluster.", "", 0),
+        ],
+    },
+}
+
+_PLACEHOLDER_RE = re.compile(r"\{[a-z_]+\}")
+
+
+def _bind(template: str, ns: str, evidence: str) -> str | None:
+    """Sustituye placeholders con recursos extraídos de la evidencia.
+
+    Devuelve None si queda algún placeholder sin resolver (el paso se descarta),
+    salvo {ns} que siempre debe poder resolverse para pasos namespaced.
+    """
+    out = template
+    repl = {
+        "{ns}": ns or "",
+        "{pod}": extract_pod(evidence) or "",
+        "{workload}": extract_workload(evidence) or "",
+        "{service}": extract_service(evidence) or "",
+        "{pvc}": extract_pvc(evidence) or "",
+        "{node}": extract_node(evidence) or "",
+    }
+    for k, v in repl.items():
+        if k in out:
+            if not v:
+                return None  # recurso necesario no disponible → descartar paso
+            out = out.replace(k, v)
+    if _PLACEHOLDER_RE.search(out):
+        return None
+    return re.sub(r"\s+", " ", out).strip()
+
+
+class RemediationGraph:
+    """Store SQLite del grafo de remediación (nodes + edges)."""
+
+    def __init__(self, db_path: str = _DEFAULT_DB):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent TEXT NOT NULL UNIQUE,
+                namespace_class TEXT DEFAULT '',
+                label TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                step_order INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                action_template TEXT NOT NULL,
+                explanation TEXT DEFAULT '',
+                risk_level INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'catalog',
+                verified INTEGER DEFAULT 0,
+                success_count INTEGER DEFAULT 0,
+                attempt_count INTEGER DEFAULT 0,
+                UNIQUE(node_id, step_order, source)
+            );
+            """
+        )
+        self._conn.commit()
+
+    def seed_from_catalog(self) -> None:
+        """Siembra el grafo desde el catálogo (idempotente). El grafo arranca
+        lleno con todo lo que el sistema ya sabía hacer → cero regresión."""
+        cur = self._conn.cursor()
+        for intent, spec in _SEED_PLANS.items():
+            cur.execute(
+                "INSERT OR IGNORE INTO nodes(intent, namespace_class, label) VALUES (?,?,?)",
+                (intent, spec.get("namespace_class", ""), intent),
+            )
+            row = cur.execute("SELECT id FROM nodes WHERE intent=?", (intent,)).fetchone()
+            node_id = row["id"]
+            for i, (atype, tmpl, expl, risk) in enumerate(spec["steps"]):
+                cur.execute(
+                    "INSERT OR IGNORE INTO edges(node_id, step_order, action_type, "
+                    "action_template, explanation, risk_level, source) VALUES (?,?,?,?,?,?,?)",
+                    (node_id, i, atype, tmpl, expl, risk, "catalog"),
+                )
+        self._conn.commit()
+
+    def resolve(self, evidence: str, namespace: str, root_cause: str = "") -> Plan | None:
+        """Devuelve un plan multi-paso para la firma del problema, o None (miss).
+
+        La intención se detecta con el detector determinista de command_builder
+        (mismo que el resto del sistema). El binding usa los extractores.
+        """
+        intent = intent_for(root_cause, evidence)
+        if intent is None:
+            return None
+        node = self._conn.execute(
+            "SELECT id FROM nodes WHERE intent=?", (intent["name"],)
+        ).fetchone()
+        if node is None:
+            return None
+        rows = self._conn.execute(
+            "SELECT * FROM edges WHERE node_id=? ORDER BY step_order", (node["id"],)
+        ).fetchall()
+        ns = (namespace or "").strip()
+        steps: list[Step] = []
+        order = 0
+        for r in rows:
+            if r["action_type"] == GUIDANCE:
+                action = r["action_template"]  # texto, sin binding
+            else:
+                action = _bind(r["action_template"], ns, evidence)
+                if action is None:
+                    continue  # recurso no disponible → descartar el paso
+            steps.append(Step(
+                order=order,
+                action_type=r["action_type"],
+                action=action,
+                explanation=r["explanation"],
+                risk_level=r["risk_level"],
+                source=r["source"],
+                verified=bool(r["verified"]),
+            ))
+            order += 1
+        if not steps:
+            return None
+        return Plan(intent=intent["name"], namespace=ns, steps=steps, source="graph")
+
+    def stats(self) -> dict:
+        n = self._conn.execute("SELECT COUNT(*) c FROM nodes").fetchone()["c"]
+        e = self._conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+        return {"nodes": n, "edges": e}
+
+    # ── Stubs para fases posteriores ────────────────────────────────────────
+
+    def add_provisional(self, intent: str, steps: list[Step],
+                        namespace_class: str = "") -> None:
+        """Fase 2: escribe un plan propuesto por el modelo grande (sin verificar)."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO nodes(intent, namespace_class, label) VALUES (?,?,?)",
+            (intent, namespace_class, intent),
+        )
+        node_id = cur.execute("SELECT id FROM nodes WHERE intent=?", (intent,)).fetchone()["id"]
+        base = cur.execute(
+            "SELECT COALESCE(MAX(step_order),-1)+1 o FROM edges WHERE node_id=?", (node_id,)
+        ).fetchone()["o"]
+        for j, s in enumerate(steps):
+            cur.execute(
+                "INSERT OR IGNORE INTO edges(node_id, step_order, action_type, "
+                "action_template, explanation, risk_level, source) VALUES (?,?,?,?,?,?,?)",
+                (node_id, base + j, s.action_type, s.action, s.explanation,
+                 s.risk_level, "escalated"),
+            )
+        self._conn.commit()
+
+    def mark_verified(self, intent: str, success: bool) -> None:
+        """Fase 3: marca las aristas del intent como verificadas por outcome."""
+        node = self._conn.execute("SELECT id FROM nodes WHERE intent=?", (intent,)).fetchone()
+        if node is None:
+            return
+        self._conn.execute(
+            "UPDATE edges SET attempt_count=attempt_count+1, "
+            "success_count=success_count+?, verified=CASE WHEN ? THEN 1 ELSE verified END "
+            "WHERE node_id=?",
+            (1 if success else 0, 1 if success else 0, node["id"]),
+        )
+        self._conn.commit()
+
+
+_GRAPH: RemediationGraph | None = None
+
+
+def get_graph() -> RemediationGraph:
+    """Singleton perezoso: crea el store y lo siembra del catálogo una vez."""
+    global _GRAPH
+    if _GRAPH is None:
+        _GRAPH = RemediationGraph()
+        _GRAPH.seed_from_catalog()
+    return _GRAPH

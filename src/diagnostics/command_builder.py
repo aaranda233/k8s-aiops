@@ -263,7 +263,7 @@ _APP_INTENTS = {"crash_secret", "crash_config", "probe", "endpoints"}
 def classify_category(evidence: str, root_cause: str = "") -> str:
     """Clasifica el incidente en 'platform' (infra: nodo/recursos/storage/red/imagen)
     o 'app' (código/config/credenciales/salud de la app). Default 'app'."""
-    intent = detect_intent(f"{root_cause}\n{evidence}")
+    intent = intent_for(root_cause, evidence)
     if intent is not None and intent["name"] in _PLATFORM_INTENTS:
         return "platform"
     return "app"
@@ -275,6 +275,17 @@ def detect_intent(text: str) -> dict | None:
         if any(kw in low for kw in intent["kw"]):
             return intent
     return None
+
+
+def intent_for(root_cause: str, evidence: str = "") -> dict | None:
+    """Detecta la intención priorizando el root_cause (conclusión específica del
+    modelo) sobre la evidencia ruidosa de una ventana multi-namespace.
+
+    Sin esto, una keyword genérica presente en los eventos de otros namespaces
+    (p. ej. 'connection refused' de un cliente) hace ganar a `network` sobre la
+    causa real (p. ej. crash_secret en PostgreSQL).
+    """
+    return detect_intent(root_cause) or detect_intent(f"{root_cause}\n{evidence}")
 
 
 # ── Validación del comando del modelo ───────────────────────────────────────
@@ -322,8 +333,7 @@ def build_command(evidence: str, namespace: str, root_cause: str = "",
     determinista del catálogo. Nunca devuelve placeholders ni comandos frágiles.
     """
     ns = (namespace or "").strip()
-    text = f"{root_cause}\n{evidence}"
-    intent = detect_intent(text)
+    intent = intent_for(root_cause, evidence)
 
     model_cmd = (model_cmd or "").strip()
     if model_cmd and _model_command_ok(model_cmd, intent):
@@ -438,7 +448,7 @@ def build_remediation(evidence: str, namespace: str, root_cause: str = "") -> st
     Shadow: nunca se ejecuta sin aprobación. Storage/red/nodo → remediación manual.
     """
     ns = (namespace or "").strip()
-    intent = detect_intent(f"{root_cause}\n{evidence}")
+    intent = intent_for(root_cause, evidence)
     if intent is None:
         return ""
     cmd = intent["remediate"](evidence, ns).strip()
@@ -455,5 +465,5 @@ def remediation_guidance(evidence: str, namespace: str, root_cause: str = "") ->
     """
     if build_remediation(evidence, namespace, root_cause):
         return ""
-    intent = detect_intent(f"{root_cause}\n{evidence}")
+    intent = intent_for(root_cause, evidence)
     return intent.get("guidance", "") if intent else ""

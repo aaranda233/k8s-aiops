@@ -16,6 +16,7 @@ from src.diagnostics.command_builder import (
     explain_command,
     remediation_guidance,
 )
+from src.remediation.remediation_graph import get_graph
 
 if TYPE_CHECKING:
     pass
@@ -342,6 +343,8 @@ class DiagnosisResult:
     command_explanation: str = ""      # qué hace el comando de investigación
     remediation_explanation: str = ""  # qué hace el comando de remediación
     remediation_guidance: str = ""     # guía de solución (texto) cuando no hay comando seguro
+    remediation_plan: list = field(default_factory=list)  # plan multi-paso del grafo (si hit)
+    solution_source: str = "catalog"   # 'graph' | 'catalog' | 'escalated'
     category: str = "app"              # 'app' (código/config) | 'platform' (infra)
 
 
@@ -396,6 +399,7 @@ class OllamaRCA:
         root_cause = ensure_meaningful_root_cause(root_cause, w)
         kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
         remediation = build_remediation(logs_text, primary, root_cause)
+        _plan = get_graph().resolve(logs_text, primary, root_cause)
 
         return DiagnosisResult(
             window_index=w.index,
@@ -409,6 +413,8 @@ class OllamaRCA:
             command_explanation=explain_command(kubectl_cmd),
             remediation_explanation=explain_command(remediation),
             remediation_guidance=remediation_guidance(logs_text, primary, root_cause),
+            remediation_plan=_plan.to_dicts() if _plan else [],
+            solution_source="graph" if _plan else "catalog",
             category=classify_category(logs_text, root_cause),
         )
 

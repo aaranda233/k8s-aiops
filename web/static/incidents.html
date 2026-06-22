@@ -82,6 +82,16 @@
   .sol-tag { font-size:10px; font-weight:400; color:var(--dim); border:1px solid var(--border-soft);
       border-radius:6px; padding:1px 6px; margin-left:7px; text-transform:none; letter-spacing:0; }
   .sol-tag.manual { color:var(--teal); border-color:var(--teal); }
+  ol.plan { list-style:none; counter-reset:none; display:flex; flex-direction:column; gap:9px; }
+  .plan-step { border-left:2px solid var(--border-soft); padding-left:11px; }
+  .step-h { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+  .step-num { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
+      border-radius:50%; background:var(--rail); color:var(--muted); font-size:11px; font-weight:600; }
+  .step-type { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+  .step-type.command { color:var(--teal); }
+  .step-type.guidance { color:var(--warn); }
+  .step-risk { font-size:10px; border:1px solid var(--border-soft); border-radius:5px; padding:0 5px; color:var(--muted); }
+  .step-risk.r1 { color:var(--warn); border-color:var(--warn); }
   .invest { list-style:none; font-size:12.5px; color:var(--muted); font-family:var(--mono); }
   .invest li { padding:3px 0 3px 16px; position:relative; }
   .invest li::before { content:""; position:absolute; left:2px; top:9px; width:5px; height:5px; border-radius:50%; background:var(--teal); }
@@ -166,6 +176,27 @@ function renderStats(items){
     <div class="stat"><div class="n" style="color:var(--ok)">${resolved}</div><div class="l">Resueltos</div></div>
     <div class="stat"><div class="n" style="color:var(--error)">${failed}</div><div class="l">Fallidos</div></div>`;
 }
+function solutionSection(i){
+  const plan = i.remediation_plan || [];
+  if (plan.length) {
+    const srcMap = {graph:"grafo", escalated:"escalado", catalog:"catálogo"};
+    const src = srcMap[i.solution_source] || "grafo";
+    const tlabel = {investigate:"Investigar", command:"Aplicar", guidance:"Manual", verify:"Verificar"};
+    const steps = plan.map((s,idx)=>{
+      const isCmd = s.action_type !== "guidance";
+      const body = isCmd ? `<div class="cmd">${esc(s.action)}</div>` : `<div class="guidance">${esc(s.action)}</div>`;
+      const expl = s.explanation ? `<div class="cmd-help">${esc(s.explanation)}</div>` : "";
+      const risk = (s.risk_level>0) ? `<span class="step-risk r${s.risk_level}">L${s.risk_level}</span>` : "";
+      return `<li class="plan-step"><div class="step-h"><span class="step-num">${idx+1}</span><span class="step-type ${s.action_type}">${tlabel[s.action_type]||s.action_type}</span>${risk}</div>${body}${expl}</li>`;
+    }).join("");
+    return `<div class="section"><div class="label">Solución <span class="sol-tag">plan · ${src} · shadow</span></div><ol class="plan">${steps}</ol></div>`;
+  }
+  if (i.remediation_command)
+    return `<div class="section"><div class="label">Solución <span class="sol-tag">shadow · requiere aprobación</span></div><div class="cmd">${esc(i.remediation_command)}</div>${i.remediation_explanation?`<div class="cmd-help">${esc(i.remediation_explanation)}</div>`:""}</div>`;
+  if (i.remediation_guidance)
+    return `<div class="section"><div class="label">Solución <span class="sol-tag manual">manual</span></div><div class="guidance">${esc(i.remediation_guidance)}</div></div>`;
+  return `<div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>`;
+}
 function card(i){
   const pending=i.status==="pending_approval";
   const invest=(i.investigation||[]).map(s=>`<li>${esc(s)}</li>`).join("");
@@ -188,11 +219,7 @@ function card(i){
     </div>
     ${invest?`<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
-    ${i.remediation_command
-        ? `<div class="section"><div class="label">Solución <span class="sol-tag">shadow · requiere aprobación</span></div><div class="cmd">${esc(i.remediation_command)}</div>${i.remediation_explanation?`<div class="cmd-help">${esc(i.remediation_explanation)}</div>`:""}</div>`
-        : (i.remediation_guidance
-            ? `<div class="section"><div class="label">Solución <span class="sol-tag manual">manual</span></div><div class="guidance">${esc(i.remediation_guidance)}</div></div>`
-            : `<div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>`)}
+    ${solutionSection(i)}
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
