@@ -23,6 +23,7 @@ from src.diagnostics.command_builder import (
     explain_command,
     remediation_guidance,
 )
+from src.diagnostics.escalation import resolve_with_escalation
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
 from src.diagnostics.ollama_rca import (
     DiagnosisResult,
@@ -32,7 +33,6 @@ from src.diagnostics.ollama_rca import (
     rca_namespaces_line,
     window_event_sample,
 )
-from src.remediation.remediation_graph import get_graph
 
 # GBNF grammar que fuerza ROOT CAUSE: ... \n KUBECTL: kubectl ... a nivel de token.
 # Elimina el fallo de formato independientemente del contexto extra que recibe el experto.
@@ -131,7 +131,7 @@ class HybridReActAgent:
         # Comando dirigido + remediación reversible (deterministas, namespace correcto).
         kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
         remediation = build_remediation(logs_text, primary, root_cause)
-        _plan = get_graph().resolve(logs_text, primary, root_cause)
+        _plan = resolve_with_escalation(logs_text, primary, root_cause)
 
         return DiagnosisResult(
             window_index=w.index,
@@ -150,7 +150,7 @@ class HybridReActAgent:
             remediation_explanation=explain_command(remediation),
             remediation_guidance=remediation_guidance(logs_text, primary, root_cause),
             remediation_plan=_plan.to_dicts() if _plan else [],
-            solution_source="graph" if _plan else "catalog",
+            solution_source=_plan.source if _plan else "catalog",
             category=classify_category(logs_text, root_cause),
         )
 

@@ -24,6 +24,8 @@ ORPO se añaden en fases posteriores (add_provisional/mark_verified ya stubbeado
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
 import sqlite3
@@ -219,6 +221,24 @@ def _bind(template: str, ns: str, evidence: str) -> str | None:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _embed_text(text: str) -> list[float] | None:
+    """Embedding (nomic-embed) del texto de firma; None si Ollama no disponible."""
+    try:
+        from src.diagnostics.semantic_ground import _embed
+        return _embed((text or "")[:1000])
+    except Exception:
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
 class RemediationGraph:
     """Store SQLite del grafo de remediación (nodes + edges)."""
 
@@ -236,7 +256,9 @@ class RemediationGraph:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 intent TEXT NOT NULL UNIQUE,
                 namespace_class TEXT DEFAULT '',
-                label TEXT DEFAULT ''
+                label TEXT DEFAULT '',
+                signature_text TEXT DEFAULT '',
+                embedding TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS edges (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,16 +303,24 @@ class RemediationGraph:
         La intención se detecta con el detector determinista de command_builder
         (mismo que el resto del sistema). El binding usa los extractores.
         """
+        # 1) clave determinista por intención (hits del catálogo).
+        node_id = None
+        intent_name = ""
         intent = intent_for(root_cause, evidence)
-        if intent is None:
-            return None
-        node = self._conn.execute(
-            "SELECT id FROM nodes WHERE intent=?", (intent["name"],)
-        ).fetchone()
-        if node is None:
+        if intent is not None:
+            row = self._conn.execute(
+                "SELECT id FROM nodes WHERE intent=?", (intent["name"],)
+            ).fetchone()
+            if row is not None:
+                node_id, intent_name = row["id"], intent["name"]
+        # 2) si no hay intención conocida, vecino más cercano por embedding
+        #    (nodos escalados de problemas novedosos).
+        if node_id is None:
+            node_id, intent_name = self._embedding_nearest(f"{root_cause}\n{evidence}")
+        if node_id is None:
             return None
         rows = self._conn.execute(
-            "SELECT * FROM edges WHERE node_id=? ORDER BY step_order", (node["id"],)
+            "SELECT * FROM edges WHERE node_id=? ORDER BY step_order", (node_id,)
         ).fetchall()
         ns = (namespace or "").strip()
         steps: list[Step] = []
@@ -314,24 +344,47 @@ class RemediationGraph:
             order += 1
         if not steps:
             return None
-        return Plan(intent=intent["name"], namespace=ns, steps=steps, source="graph")
+        return Plan(intent=intent_name, namespace=ns, steps=steps, source="graph")
+
+    def _embedding_nearest(self, query: str, threshold: float = 0.6) -> tuple:
+        """Vecino más cercano por embedding sobre nodos con embedding almacenado
+        (escalados). Devuelve (node_id, intent) o (None, '')."""
+        q = _embed_text(query)
+        if q is None:
+            return (None, "")
+        best_id, best_name, best = None, "", threshold
+        for row in self._conn.execute(
+            "SELECT id, intent, embedding FROM nodes WHERE embedding != ''"
+        ).fetchall():
+            try:
+                emb = json.loads(row["embedding"])
+            except (ValueError, TypeError):
+                continue
+            sc = _cosine(q, emb)
+            if sc >= best:
+                best, best_id, best_name = sc, row["id"], row["intent"]
+        return (best_id, best_name)
 
     def stats(self) -> dict:
         n = self._conn.execute("SELECT COUNT(*) c FROM nodes").fetchone()["c"]
         e = self._conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
         return {"nodes": n, "edges": e}
 
-    # ── Stubs para fases posteriores ────────────────────────────────────────
-
-    def add_provisional(self, intent: str, steps: list[Step],
+    def add_provisional(self, key: str, steps: list[Step], signature_text: str = "",
                         namespace_class: str = "") -> None:
-        """Fase 2: escribe un plan propuesto por el modelo grande (sin verificar)."""
+        """Fase 2: escribe un plan propuesto por el modelo grande (sin verificar),
+        con un embedding de su firma para poder reencontrarlo en futuros miss."""
+        if not steps:
+            return
+        emb = _embed_text(signature_text) if signature_text else None
+        emb_json = json.dumps(emb) if emb else ""
         cur = self._conn.cursor()
         cur.execute(
-            "INSERT OR IGNORE INTO nodes(intent, namespace_class, label) VALUES (?,?,?)",
-            (intent, namespace_class, intent),
+            "INSERT OR IGNORE INTO nodes(intent, namespace_class, label, signature_text, "
+            "embedding) VALUES (?,?,?,?,?)",
+            (key, namespace_class, key, signature_text[:500], emb_json),
         )
-        node_id = cur.execute("SELECT id FROM nodes WHERE intent=?", (intent,)).fetchone()["id"]
+        node_id = cur.execute("SELECT id FROM nodes WHERE intent=?", (key,)).fetchone()["id"]
         base = cur.execute(
             "SELECT COALESCE(MAX(step_order),-1)+1 o FROM edges WHERE node_id=?", (node_id,)
         ).fetchone()["o"]
