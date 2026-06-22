@@ -162,7 +162,8 @@ _INTENTS: list[dict] = [
                "image can't be pulled",
                # español
                "no se pudo descargar la imagen", "no se encuentra la imagen",
-               "etiqueta de la imagen", "descargar la imagen"],
+               "etiqueta de la imagen", "descargar la imagen", "imagen no existe",
+               "no existe la imagen", "tag incorrecto"],
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": lambda ev, ns: "",
@@ -186,9 +187,9 @@ _INTENTS: list[dict] = [
         "name": "crash_secret",
         "kw": ["secret", "role", "does not exist", "password", "authentication failed",
                "couldn't find key", "missing key",
-               # español
-               "rol", "no existe", "credencial", "contraseña", "no encuentra la clave",
-               "falta la clave", "secreto"],
+               # español (específicos: 'no existe' a secas chocaba con 'la imagen no existe')
+               "rol", "no existe el rol", "rol no existe", "credencial", "contraseña",
+               "no encuentra la clave", "falta la clave", "secreto"],
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get secret{_ns_flag(ns)}",
         "remediate": lambda ev, ns: "",

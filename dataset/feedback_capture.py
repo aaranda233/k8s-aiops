@@ -69,6 +69,9 @@ def build_example(incident: dict) -> dict | None:
         "label": label,
         "human_correction": correction,
         "source": "closed_loop",
+        # Procedencia del grafo (para consolidación verificada y atribución).
+        "solution_source": incident.get("solution_source", "catalog"),
+        "solution_key": incident.get("solution_key", ""),
     }
 
 
