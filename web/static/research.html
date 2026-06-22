@@ -968,6 +968,54 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     </div>
   </div>
 
+  <!-- ── 09 CAPACIDAD DEL MODELO ── -->
+  <div class="section">
+    <div class="section-title"><span>09</span> Capacidad del modelo</div>
+    <h2>¿Sube el techo un modelo mayor? Gemma 4 E2B + ORPO</h2>
+    <p class="subtitle">Misma receta ORPO y dataset que el qwen de producción, sobre Gemma 4 E2B (instruct, ~2.3B). Mejora la calidad del diagnóstico, pero no es desplegable on-premise.</p>
+
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th>Métrica</th>
+          <th>Gemma4-E2B-ORPO <span class="badge badge-pos">+calidad</span></th>
+          <th>qwen-1.5B-ORPO <span class="badge badge-pos">producción</span></th>
+          <th>Descripción</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="metric-name">Parse%</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:97.6%;background:var(--blue)"></div></div><span class="mid">97.6%</span></div></td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="best">100%</span></div></td>
+          <td>Gemma <em>sin</em> grammar; qwen con grammar forzada a nivel de token</td></tr>
+        <tr><td class="metric-name">Keyword% (calidad RCA)</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:92.4%;background:var(--green)"></div></div><span class="best">92.4%</span></div></td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:78.1%;background:var(--blue)"></div></div><span class="mid">78.1%</span></div></td>
+          <td>La única dimensión que los guardarraíles <strong>no</strong> pueden arreglar — Gemma gana <strong>+14 pts</strong></td></tr>
+        <tr><td class="metric-name">NS-ok%</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:45.2%;background:var(--red)"></div></div><span class="worst">45.2%</span></div></td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:89.5%;background:var(--green)"></div></div><span class="best">89.5%</span></div></td>
+          <td>Comando crudo del modelo; en producción el <code>command_builder</code> fuerza el namespace e iguala ambos</td></tr>
+        <tr><td class="metric-name">Verb-ok%</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:57.1%;background:var(--blue)"></div></div><span class="mid">57.1%</span></div></td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:56.7%;background:var(--blue)"></div></div><span class="mid">56.7%</span></div></td>
+          <td>Empate técnico</td></tr>
+        <tr><td class="metric-name">ROUGE-L</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:3.8%;background:var(--red)"></div></div><span class="worst">3.8%</span></div></td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:19.3%;background:var(--blue)"></div></div><span class="mid">19.3%</span></div></td>
+          <td>Prosa de Gemma más divergente de la referencia</td></tr>
+      </tbody>
+    </table>
+
+    <div class="finding-box">
+      <strong>Por qué no es desplegable on-premise.</strong> La calidad no es el problema; el <em>serving</em> sí. Cuatro intentos fallaron: la conversión a GGUF (el conversor de llama.cpp no registra la arquitectura <code>gemma4</code>), <code>ollama create</code> se cuelga en «gathering model components», y Ollama 0.24 no carga ni el GGUF <em>oficial</em> (<code>unable to load model</code>). Además, el servidor (15 GB RAM) sufre OOM al cargar el merge fp32 (10 GB), y la única cuantización 4-bit que correría en CPU está bloqueada. Esa fricción (Unsloth obligatorio, trampa base/instruct, plantilla sin ChatML nativo, truncado de prompts) sería <strong>recurrente</strong> en cada ciclo del bucle de reentrenamiento.
+    </div>
+
+    <div class="finding-box">
+      <strong>Veredicto.</strong> Gemma4-E2B-ORPO mejora el diagnóstico (<strong>+14 pts</strong> en Keyword%) pero es operativamente inviable en el stack CPU/Ollama. <strong>Producción se mantiene en qwen-1.5B-ORPO + guardarraíles deterministas (Q4_K_M, 986 MB)</strong>: desplegable, ligero y robusto. El modelo Gemma queda archivado para revisitarlo cuando madure el tooling. Conclusión de tesis: <em>un modelo mayor sube la calidad del RCA, pero un SLM de 1.5B con guardarraíles deterministas es la opción coste-eficiente y desplegable en hardware CPU de propósito general.</em>
+    </div>
+  </div>
+
 </div>
 
 <script>
