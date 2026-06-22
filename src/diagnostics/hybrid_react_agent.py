@@ -151,6 +151,7 @@ class HybridReActAgent:
             remediation_guidance=remediation_guidance(logs_text, primary, root_cause),
             remediation_plan=_plan.to_dicts() if _plan else [],
             solution_source=_plan.source if _plan else "catalog",
+            solution_key=_plan.intent if _plan else "",
             category=classify_category(logs_text, root_cause),
         )
 

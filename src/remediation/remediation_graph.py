@@ -411,6 +411,30 @@ class RemediationGraph:
         self._conn.commit()
 
 
+def verify_from_incident(graph: RemediationGraph, inc: dict) -> bool | None:
+    """Fase 3 — verificación por outcome (señal existente).
+
+    Cuando un incidente cuyo plan vino del grafo llega a un estado terminal,
+    marca su nodo como verificado (éxito) o registra el intento (fallo).
+    Devuelve True/False según la señal, o None si no aplica.
+    """
+    if inc.get("solution_source") not in ("graph", "escalated"):
+        return None
+    key = inc.get("solution_key")
+    if not key:
+        return None
+    status = inc.get("status")
+    resp = inc.get("response")
+    verified = inc.get("verified")
+    if status == "resolved" and (verified or resp == "approved"):
+        graph.mark_verified(key, True)
+        return True
+    if status == "failed" or resp == "rejected":
+        graph.mark_verified(key, False)
+        return False
+    return None
+
+
 _GRAPH: RemediationGraph | None = None
 
 

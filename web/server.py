@@ -44,7 +44,20 @@ if _log_file:
 # Con log durable (persistencia + dataset de aprendizaje) y captura de feedback.
 _incident_log = IncidentLog(os.getenv("AIOPS_INCIDENT_LOG", "data/incidents/incidents.jsonl"))
 incident_store = IncidentStore(incident_log=_incident_log)
-incident_store.set_feedback_hook(record_feedback)
+
+
+def _on_terminal(inc: dict) -> None:
+    """Hook de estado terminal: captura feedback (dataset) + verifica el grafo
+    por outcome (Fase 3) cuando el plan vino del grafo."""
+    record_feedback(inc)
+    try:
+        from src.remediation.remediation_graph import get_graph, verify_from_incident
+        verify_from_incident(get_graph(), inc)
+    except Exception:
+        pass
+
+
+incident_store.set_feedback_hook(_on_terminal)
 # Rehidratar la consola con los incidentes persistidos en arranques previos.
 for _snap in _incident_log.latest_incidents():
     try:

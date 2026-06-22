@@ -212,6 +212,7 @@ class AutoRemediation:
             remediation_guidance=getattr(diagnosis, "remediation_guidance", ""),
             remediation_plan=getattr(diagnosis, "remediation_plan", []),
             solution_source=getattr(diagnosis, "solution_source", "catalog"),
+            solution_key=getattr(diagnosis, "solution_key", ""),
             category=getattr(diagnosis, "category", "app"),
         )
         self.incidents.add(incident)

@@ -345,6 +345,7 @@ class DiagnosisResult:
     remediation_guidance: str = ""     # guía de solución (texto) cuando no hay comando seguro
     remediation_plan: list = field(default_factory=list)  # plan multi-paso del grafo (si hit)
     solution_source: str = "catalog"   # 'graph' | 'catalog' | 'escalated'
+    solution_key: str = ""             # clave del nodo del grafo (para verificación)
     category: str = "app"              # 'app' (código/config) | 'platform' (infra)
 
 
@@ -415,6 +416,7 @@ class OllamaRCA:
             remediation_guidance=remediation_guidance(logs_text, primary, root_cause),
             remediation_plan=_plan.to_dicts() if _plan else [],
             solution_source=_plan.source if _plan else "catalog",
+            solution_key=_plan.intent if _plan else "",
             category=classify_category(logs_text, root_cause),
         )
 

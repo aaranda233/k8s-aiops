@@ -11,6 +11,8 @@ from src.remediation.remediation_graph import (
     GUIDANCE,
     INVESTIGATE,
     RemediationGraph,
+    Step,
+    verify_from_incident,
 )
 
 
@@ -99,6 +101,41 @@ def test_root_cause_wins_over_noisy_evidence(graph):
 def test_miss_returns_none(graph):
     plan = graph.resolve("algo totalmente ajeno xyzqwerty", namespace="x", root_cause="")
     assert plan is None
+
+
+@pytest.mark.unit
+def test_mark_verified_updates_counts(graph):
+    graph.mark_verified("crash_secret", success=True)
+    node = graph._conn.execute("SELECT id FROM nodes WHERE intent=?", ("crash_secret",)).fetchone()
+    rows = graph._conn.execute(
+        "SELECT verified, success_count, attempt_count FROM edges WHERE node_id=?",
+        (node["id"],),
+    ).fetchall()
+    assert rows and all(r["verified"] == 1 for r in rows)
+    assert all(r["success_count"] == 1 and r["attempt_count"] == 1 for r in rows)
+
+
+@pytest.mark.unit
+def test_verify_from_incident_success(graph):
+    graph.add_provisional("escalated:abc", [Step(0, COMMAND, "kubectl get pods -n x")],
+                          signature_text="algo nuevo")
+    inc = {"solution_source": "escalated", "solution_key": "escalated:abc",
+           "status": "resolved", "response": "approved", "verified": None}
+    assert verify_from_incident(graph, inc) is True
+    node = graph._conn.execute("SELECT id FROM nodes WHERE intent=?", ("escalated:abc",)).fetchone()
+    r = graph._conn.execute("SELECT verified FROM edges WHERE node_id=?", (node["id"],)).fetchone()
+    assert r["verified"] == 1
+
+
+@pytest.mark.unit
+def test_verify_from_incident_failure_and_noop(graph):
+    # fallo → False
+    inc_fail = {"solution_source": "graph", "solution_key": "crash_secret",
+                "status": "failed", "response": None, "verified": None}
+    assert verify_from_incident(graph, inc_fail) is False
+    # catálogo (no del grafo) → no aplica
+    inc_cat = {"solution_source": "catalog", "solution_key": "", "status": "resolved"}
+    assert verify_from_incident(graph, inc_cat) is None
 
 
 @pytest.mark.unit
