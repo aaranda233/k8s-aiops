@@ -106,6 +106,9 @@ _INTENTS: list[dict] = [
             else f"kubectl describe pvc{_ns_flag(ns)}"
         ),
         "remediate": lambda ev, ns: "",  # storage → manual
+        "guidance": ("El volumen no se vincula: revisa el StorageClass y que exista un "
+                     "PV disponible o aprovisionamiento dinámico; crea o ajusta el "
+                     "PV/StorageClass."),
     },
     {
         "name": "node_pressure",
@@ -116,7 +119,9 @@ _INTENTS: list[dict] = [
             f"kubectl describe node {extract_node(ev)}" if extract_node(ev)
             else "kubectl describe nodes"
         ),
-        "remediate": lambda ev, ns: "",  # nodo → manual / escalado
+        "remediate": lambda ev, ns: "",  # nodo → manual / escalado (delete = L3 destructivo)
+        "guidance": ("El nodo está bajo de memoria/disco: libera recursos (elimina pods "
+                     "Evicted), reprograma cargas o añade capacidad al cluster."),
     },
     {
         "name": "network",
@@ -124,7 +129,9 @@ _INTENTS: list[dict] = [
                "i/o timeout", "no route to host"],
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get networkpolicy{_ns_flag(ns)}",
-        "remediate": lambda ev, ns: "",
+        "remediate": _restart,  # reiniciar el controlador/servicio afectado
+        "guidance": ("Reinicia los pods del controlador de ingress/servicio; si persiste, "
+                     "revisa las NetworkPolicies y la conectividad del namespace."),
     },
     {
         "name": "image_auth",
@@ -133,6 +140,9 @@ _INTENTS: list[dict] = [
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get secret{_ns_flag(ns)}",
         "remediate": lambda ev, ns: "",
+        "guidance": ("Fallo de autenticación con el registry: (re)crea el secret de pull "
+                     "con `kubectl create secret docker-registry` y referéncialo en "
+                     "imagePullSecrets del deployment."),
     },
     {
         "name": "image",
@@ -142,6 +152,9 @@ _INTENTS: list[dict] = [
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": lambda ev, ns: "",
+        "guidance": ("Verifica el nombre y el tag de la imagen y que exista en el "
+                     "registry; corrígelo con `kubectl set image deploy/<workload> "
+                     "<contenedor>=<imagen:tag>`."),
     },
     {
         "name": "oom",
@@ -149,6 +162,8 @@ _INTENTS: list[dict] = [
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": _restart,
+        "guidance": ("Sube el límite de memoria del contenedor (resources.limits.memory) "
+                     "y reinicia el workload."),
     },
     {
         "name": "crash_secret",
@@ -157,6 +172,8 @@ _INTENTS: list[dict] = [
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get secret{_ns_flag(ns)}",
         "remediate": lambda ev, ns: "",
+        "guidance": ("Falta un secret o una clave: crea o corrige el secret que la app no "
+                     "encuentra y reinicia el workload."),
     },
     {
         "name": "crash_config",
@@ -169,6 +186,8 @@ _INTENTS: list[dict] = [
             else f"kubectl logs{_ns_flag(ns)} --previous"
         ),
         "remediate": _restart,
+        "guidance": ("Corrige el ConfigMap o la variable de entorno que provoca el crash "
+                     "y reinicia el workload."),
     },
     {
         "name": "probe",
@@ -177,6 +196,8 @@ _INTENTS: list[dict] = [
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": _restart,
+        "guidance": ("Ajusta el liveness/readiness probe (timeouts/umbral) o corrige el "
+                     "endpoint de salud de la app."),
     },
     {
         "name": "endpoints",
@@ -186,7 +207,9 @@ _INTENTS: list[dict] = [
             f"kubectl get endpoints {extract_service(ev)}{_ns_flag(ns)}" if extract_service(ev)
             else f"kubectl get endpoints{_ns_flag(ns)}"
         ),
-        "remediate": lambda ev, ns: "",
+        "remediate": _restart,  # reiniciar el backend para que vuelva a registrarse
+        "guidance": ("Asegura que los pods detrás del service estén Ready (corrige "
+                     "readiness/selector) y reinícialos para que vuelvan a registrarse."),
     },
     {
         "name": "pending_cpu",
@@ -195,6 +218,8 @@ _INTENTS: list[dict] = [
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": lambda ev, ns: "",
+        "guidance": ("No hay CPU schedulable: reduce los requests de CPU del pod, libera "
+                     "capacidad (escala abajo un vecino) o añade nodos al cluster."),
     },
 ]
 
@@ -388,3 +413,17 @@ def build_remediation(evidence: str, namespace: str, root_cause: str = "") -> st
         return ""
     cmd = intent["remediate"](evidence, ns).strip()
     return re.sub(r"\s+", " ", cmd) if cmd else ""
+
+
+def remediation_guidance(evidence: str, namespace: str, root_cause: str = "") -> str:
+    """Guía de remediación en lenguaje natural cuando NO hay un comando resolutivo
+    seguro (reversible) que ofrecer — escenarios de config/credenciales/storage/
+    capacidad cuya solución requiere intervención humana.
+
+    Devuelve '' si ya existe comando de remediación (en ese caso manda el comando)
+    o si no se detecta intención.
+    """
+    if build_remediation(evidence, namespace, root_cause):
+        return ""
+    intent = detect_intent(f"{root_cause}\n{evidence}")
+    return intent.get("guidance", "") if intent else ""

@@ -10,9 +10,11 @@ import pytest
 
 from src.diagnostics.command_builder import (
     build_command,
+    build_remediation,
     extract_node,
     extract_pod,
     extract_pvc,
+    remediation_guidance,
 )
 
 # ── Extracción de recursos ──────────────────────────────────────────────────
@@ -109,3 +111,58 @@ def test_command_never_has_placeholders():
     cmd = build_command(ev, namespace="default", root_cause="causa desconocida")
     assert "<" not in cmd and ">" not in cmd
     assert cmd.startswith("kubectl ")
+
+
+# ── Remediación resolutiva (reversible) y guía de texto ─────────────────────
+
+@pytest.mark.unit
+def test_remediation_crash_config_is_reversible_restart():
+    ev = "default Pod/web-abc12345de-x4k2p CrashLoopBackOff: missing env var, exit code 1"
+    cmd = build_remediation(ev, namespace="default", root_cause="CrashLoop por configmap")
+    assert cmd == "kubectl rollout restart deployment/web -n default"
+    # con comando, no hay guía (manda el comando)
+    assert remediation_guidance(ev, "default", "CrashLoop por configmap") == ""
+
+
+@pytest.mark.unit
+def test_remediation_network_ingress_restarts_controller():
+    ev = ("haproxy-ingress Pod/haproxy-ingress-controller-abc123de-x4k2p "
+          "connection refused, traffic denied")
+    cmd = build_remediation(ev, namespace="haproxy-ingress", root_cause="fallo de red en el ingress")
+    assert cmd == "kubectl rollout restart deployment/haproxy-ingress-controller -n haproxy-ingress"
+
+
+@pytest.mark.unit
+def test_remediation_is_always_reversible_never_destructive():
+    """La acción ofrecida nunca debe ser un verbo destructivo (delete/drain/cordon)."""
+    for ev, ns, rc in [
+        ("default Pod/web-abc12345de-x4k2p OOMKilling out of memory", "default", "OOM"),
+        ("ns Pod/app-abc12345de-x4k2p readiness probe failed unhealthy", "ns", "probe"),
+    ]:
+        cmd = build_remediation(ev, ns, rc)
+        assert cmd.startswith("kubectl rollout restart ")
+        for bad in ("delete", "drain", "cordon", "taint", "exec"):
+            assert bad not in cmd
+
+
+@pytest.mark.unit
+def test_guidance_when_no_safe_command_pvc():
+    ev = "ml-abonos-api Pod/x FailedBinding PVC pvc-data pending: no volume"
+    assert build_remediation(ev, "ml-abonos-api", "PVC sin volumen") == ""
+    guide = remediation_guidance(ev, "ml-abonos-api", "PVC sin volumen")
+    assert guide and ("StorageClass" in guide or "PV" in guide)
+
+
+@pytest.mark.unit
+def test_guidance_image_auth_mentions_secret():
+    ev = "ns Pod/x Failed to pull image: unauthorized: authentication required"
+    assert build_remediation(ev, "ns", "auth registry") == ""
+    guide = remediation_guidance(ev, "ns", "auth registry")
+    assert "secret" in guide.lower()
+
+
+@pytest.mark.unit
+def test_remediation_namespace_is_forced():
+    ev = "pay Pod/api-abc12345de-x4k2p OOMKilling out of memory"
+    cmd = build_remediation(ev, namespace="pay", root_cause="OOM")
+    assert cmd.endswith("-n pay")

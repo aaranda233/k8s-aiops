@@ -77,6 +77,11 @@
       border-radius:9px; overflow-x:auto; border:1px solid var(--border-soft); }
   .cmd-help { font-size:11.5px; color:var(--muted); margin-top:5px; line-height:1.5; padding-left:2px; }
   .cmd-help::before { content:'↳ '; color:var(--dim); }
+  .guidance { background:var(--panel2); border-left:3px solid var(--teal); border-radius:7px;
+      padding:10px 13px; font-size:12.5px; color:var(--muted); line-height:1.55; }
+  .sol-tag { font-size:10px; font-weight:400; color:var(--dim); border:1px solid var(--border-soft);
+      border-radius:6px; padding:1px 6px; margin-left:7px; text-transform:none; letter-spacing:0; }
+  .sol-tag.manual { color:var(--teal); border-color:var(--teal); }
   .invest { list-style:none; font-size:12.5px; color:var(--muted); font-family:var(--mono); }
   .invest li { padding:3px 0 3px 16px; position:relative; }
   .invest li::before { content:""; position:absolute; left:2px; top:9px; width:5px; height:5px; border-radius:50%; background:var(--teal); }
@@ -183,8 +188,11 @@ function card(i){
     </div>
     ${invest?`<div class="section"><div class="label">Investigación</div><ul class="invest">${invest}</ul></div>`:""}
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
-    <div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>
-    ${i.remediation_command?`<div class="section"><div class="label">Remediar (reversible · shadow)</div><div class="cmd">${esc(i.remediation_command)}</div>${i.remediation_explanation?`<div class="cmd-help">${esc(i.remediation_explanation)}</div>`:""}</div>`:""}
+    ${i.remediation_command
+        ? `<div class="section"><div class="label">Solución <span class="sol-tag">shadow · requiere aprobación</span></div><div class="cmd">${esc(i.remediation_command)}</div>${i.remediation_explanation?`<div class="cmd-help">${esc(i.remediation_explanation)}</div>`:""}</div>`
+        : (i.remediation_guidance
+            ? `<div class="section"><div class="label">Solución <span class="sol-tag manual">manual</span></div><div class="guidance">${esc(i.remediation_guidance)}</div></div>`
+            : `<div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>`)}
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
