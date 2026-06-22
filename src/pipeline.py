@@ -7,6 +7,7 @@ Modos:
 """
 
 import logging
+import os
 import threading
 import time
 
@@ -299,6 +300,15 @@ class AIOPsPipeline:
         self._scored_windows.append(scored)
         self._print_window_line(scored)
         self._tracker.log_window(scored)
+
+        # Modo B — verificación por re-detección: los incidentes EXECUTED que no
+        # reaparecen tras un periodo de gracia se marcan resueltos+verificados.
+        if self._incident_store is not None:
+            try:
+                grace = float(os.getenv("AIOPS_VERIFY_GRACE_SECONDS", "300"))
+                self._incident_store.sweep_resolved(grace)
+            except Exception:
+                pass
 
         self._emit("window_scored", {
             "index": window.index,

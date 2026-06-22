@@ -37,6 +37,16 @@ def _supports_dryrun(cmd: str) -> bool:
     return not any(rest[:len(pat)] == list(pat) for pat in _NO_DRYRUN)
 
 
+def execute_if_reversible(kubectl_command: str) -> "ExecutionResult | None":
+    """Ejecuta solo si el comando es L0 (lectura) o L1 (reversible). Devuelve None
+    si es L2/L3 (config/destructivo) — esos nunca se ejecutan automáticamente, ni
+    siquiera tras aprobación. Es la barrera de seguridad del modo B."""
+    from src.remediation.risk_scorer import score
+    if score(kubectl_command).level >= 2:
+        return None
+    return execute_with_dryrun(kubectl_command)
+
+
 def execute_with_dryrun(kubectl_command: str) -> ExecutionResult:
     """Ejecuta dry-run primero (si el comando lo soporta), luego el comando real."""
     cmd = kubectl_command.strip()

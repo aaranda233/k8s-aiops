@@ -146,6 +146,32 @@ class IncidentStore:
                 except Exception:
                     pass  # el feedback nunca debe tumbar la remediación
 
+    def mark_executed(self, incident_id: str, output: str, success: bool) -> None:
+        """Modo B: tras ejecutar la remediación aprobada. EXECUTED no es terminal
+        (esperamos a la verificación por re-detección); si la ejecución falló →
+        FAILED (terminal → verificación negativa)."""
+        self.update(
+            incident_id,
+            execution_output=(output or "")[:2000],
+            last_seen=_now(),
+            status=STATUS_EXECUTED if success else STATUS_FAILED,
+            verified=None if success else False,
+        )
+
+    def fail_executed(self, incident_id: str) -> None:
+        """El problema reapareció tras ejecutar el fix → no funcionó → FAILED."""
+        inc = self._incidents.get(incident_id)
+        if inc is not None and inc.status == STATUS_EXECUTED:
+            self.update(incident_id, status=STATUS_FAILED, verified=False)
+
+    def sweep_resolved(self, grace_seconds: float) -> None:
+        """Verificación por re-detección: un incidente EXECUTED que NO reaparece
+        tras 'grace' (el detector no lo vuelve a marcar) → RESOLVED + verificado."""
+        now = _now()
+        for inc in list(self._incidents.values()):
+            if inc.status == STATUS_EXECUTED and (now - inc.last_seen) >= grace_seconds:
+                self.update(inc.id, status=STATUS_RESOLVED, verified=True)
+
     def _record(self, incident: Incident, event_type: str) -> None:
         if self._log is not None:
             try:

@@ -218,11 +218,35 @@ async def api_get_incident(incident_id: str):
     return inc.to_dict()
 
 
+def _plan_command(inc) -> str:
+    """Comando de escritura a ejecutar: el paso 'command' del plan del grafo, o
+    el remediation_command determinista como fallback."""
+    for s in (getattr(inc, "remediation_plan", None) or []):
+        if s.get("action_type") == "command" and s.get("action"):
+            return s["action"]
+    return getattr(inc, "remediation_command", "") or ""
+
+
 @app.post("/api/incidents/{incident_id}/approve")
 async def api_approve(incident_id: str):
     if not incident_store.set_response(incident_id, "approved"):
         return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
-    return {"status": "approved", "id": incident_id}
+    # Modo B (off por defecto): la acción aprobada se EJECUTA y luego el detector
+    # la verifica por re-detección. Solo L0/L1 (reversible); L2/L3 → escalado.
+    executed = False
+    if os.getenv("AIOPS_EXECUTE_ON_APPROVAL", "false").lower() == "true":
+        inc = incident_store.get(incident_id)
+        cmd = _plan_command(inc) if inc else ""
+        if cmd:
+            from src.remediation.executor import execute_if_reversible
+            res = execute_if_reversible(cmd)
+            if res is None:
+                incident_store.update(incident_id, status="escalated")
+            else:
+                incident_store.mark_executed(
+                    incident_id, res.real_output or res.dry_run_output, res.success)
+                executed = True
+    return {"status": "approved", "executed": executed, "id": incident_id}
 
 
 @app.post("/api/incidents/{incident_id}/reject")

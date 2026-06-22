@@ -175,6 +175,9 @@ class AutoRemediation:
             dup = self.incidents.find_recent_duplicate(namespaces, self.dedup_window)
             if dup is not None:
                 self.incidents.bump(dup.id)
+                # Modo B: si reaparece un incidente cuyo fix YA se ejecutó, el fix
+                # no funcionó → verificación negativa.
+                self.incidents.fail_executed(dup.id)
                 console.print(f"  [dim]Duplicado de {dup.id} (x{dup.occurrence_count}) — no se crea otro[/]")
                 return RemediationResult(dup.id, dup.fingerprint, dup.risk_level,
                                          "deduped", dup.kubectl_cmd, None, None)
