@@ -99,7 +99,9 @@ _INTENTS: list[dict] = [
     {
         "name": "pvc",
         "kw": ["persistentvolumeclaim", "pvc", "failedbinding", "unbound", "no volume",
-               "provision", "waitforfirstconsumer", "volume claim"],
+               "provision", "waitforfirstconsumer", "volume claim",
+               # español
+               "no se vincula", "sin volumen", "reclamo de volumen", "almacenamiento"],
         "verb": "describe",
         "investigate": lambda ev, ns: (
             f"kubectl describe pvc {extract_pvc(ev)}{_ns_flag(ns)}" if extract_pvc(ev)
@@ -113,7 +115,10 @@ _INTENTS: list[dict] = [
     {
         "name": "node_pressure",
         "kw": ["node was low", "diskpressure", "disk pressure", "memorypressure",
-               "memory pressure", "evicted"],
+               "memory pressure", "evicted",
+               # español
+               "presión de memoria", "presión de disco", "desalojad", "nodo con poca",
+               "nodo bajo"],
         "verb": "describe",
         "investigate": lambda ev, ns: (
             f"kubectl describe node {extract_node(ev)}" if extract_node(ev)
@@ -126,7 +131,10 @@ _INTENTS: list[dict] = [
     {
         "name": "network",
         "kw": ["networkpolicy", "network policy", "connection refused", "denied",
-               "i/o timeout", "no route to host"],
+               "i/o timeout", "no route to host",
+               # español
+               "de red", "conexión rechazada", "política de red", "interrupción",
+               "fallo en la red", "sin ruta", "tiempo de espera agotado", "ingress"],
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get networkpolicy{_ns_flag(ns)}",
         "remediate": _restart,  # reiniciar el controlador/servicio afectado
@@ -136,7 +144,10 @@ _INTENTS: list[dict] = [
     {
         "name": "image_auth",
         "kw": ["unauthorized", "403", "pull access denied", "authentication required",
-               "imagepullsecret", "credential"],
+               "imagepullsecret", "credential",
+               # español
+               "no autorizado", "autenticación con el registro", "registro privado",
+               "credenciales del registro"],
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get secret{_ns_flag(ns)}",
         "remediate": lambda ev, ns: "",
@@ -148,7 +159,10 @@ _INTENTS: list[dict] = [
         "name": "image",
         "kw": ["imagepullbackoff", "errimagepull", "errimage", "manifest",
                "no such image", "back-off pulling image", "failed to pull image",
-               "image can't be pulled"],
+               "image can't be pulled",
+               # español
+               "no se pudo descargar la imagen", "no se encuentra la imagen",
+               "etiqueta de la imagen", "descargar la imagen"],
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": lambda ev, ns: "",
@@ -158,7 +172,10 @@ _INTENTS: list[dict] = [
     },
     {
         "name": "oom",
-        "kw": ["oomkill", "oom ", "out of memory", "memory cgroup", "oomkilled"],
+        "kw": ["oomkill", "oom ", "out of memory", "memory cgroup", "oomkilled",
+               # español
+               "sin memoria", "fuera de memoria", "límite de memoria",
+               "memoria del contenedor", "superó la memoria"],
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": _restart,
@@ -168,7 +185,10 @@ _INTENTS: list[dict] = [
     {
         "name": "crash_secret",
         "kw": ["secret", "role", "does not exist", "password", "authentication failed",
-               "couldn't find key", "missing key"],
+               "couldn't find key", "missing key",
+               # español
+               "rol", "no existe", "credencial", "contraseña", "no encuentra la clave",
+               "falta la clave", "secreto"],
         "verb": "get",
         "investigate": lambda ev, ns: f"kubectl get secret{_ns_flag(ns)}",
         "remediate": lambda ev, ns: "",
@@ -179,7 +199,10 @@ _INTENTS: list[dict] = [
         "name": "crash_config",
         "kw": ["crashloopbackoff", "crashloop", "back-off restarting", "configmap",
                "exit code", "exit status", "containerd task", "invalid configuration",
-               "env var"],
+               "env var",
+               # español
+               "reiniciando en bucle", "código de salida", "variable de entorno",
+               "configuración inválida", "reinicios repetidos"],
         "verb": "logs",
         "investigate": lambda ev, ns: (
             f"kubectl logs {extract_pod(ev)}{_ns_flag(ns)} --previous" if extract_pod(ev)
@@ -192,7 +215,9 @@ _INTENTS: list[dict] = [
     {
         "name": "probe",
         "kw": ["liveness probe", "readiness probe", "probe failed", "unhealthy",
-               "health check"],
+               "health check",
+               # español
+               "sonda de", "comprobación de salud", "chequeo de salud", "no responde a la sonda"],
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": _restart,
@@ -201,7 +226,9 @@ _INTENTS: list[dict] = [
     },
     {
         "name": "endpoints",
-        "kw": ["no endpoints", "endpoints", "selector", "notready", "no healthy upstream"],
+        "kw": ["no endpoints", "endpoints", "selector", "notready", "no healthy upstream",
+               # español
+               "sin endpoints", "sin pods listos", "no listo", "sin destinos"],
         "verb": "get",
         "investigate": lambda ev, ns: (
             f"kubectl get endpoints {extract_service(ev)}{_ns_flag(ns)}" if extract_service(ev)
@@ -214,7 +241,10 @@ _INTENTS: list[dict] = [
     {
         "name": "pending_cpu",
         "kw": ["insufficient cpu", "unschedulable", "failedscheduling", "pending",
-               "didn't match", "no nodes available"],
+               "didn't match", "no nodes available",
+               # español
+               "cpu insuficiente", "no se puede planificar", "sin nodos disponibles",
+               "no hay cpu", "pendiente de planificación"],
         "verb": "describe",
         "investigate": _pod_or_pods,
         "remediate": lambda ev, ns: "",
