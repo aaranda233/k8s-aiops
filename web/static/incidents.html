@@ -77,6 +77,26 @@
       border-radius:9px; overflow-x:auto; border:1px solid var(--border-soft); }
   .cmd-help { font-size:11.5px; color:var(--muted); margin-top:5px; line-height:1.5; padding-left:2px; }
   .cmd-help::before { content:'↳ '; color:var(--dim); }
+  .execlog { background:#0a0e14; border:1px solid var(--border-soft); border-radius:9px; padding:10px 12px;
+      font-family:var(--mono); font-size:12px; display:flex; flex-direction:column; gap:9px; overflow-x:auto; }
+  .exec-step { border-left:2px solid var(--border-soft); padding-left:10px; }
+  .exec-step.s-done { border-left-color:var(--ok); }
+  .exec-step.s-failed { border-left-color:var(--error); }
+  .exec-step.s-running { border-left-color:var(--warn); }
+  .exec-step.s-manual { border-left-color:var(--teal); }
+  .exec-h { display:flex; align-items:center; gap:8px; }
+  .exec-ic { width:14px; text-align:center; }
+  .s-done .exec-ic { color:var(--ok); }
+  .s-failed .exec-ic { color:var(--error); }
+  .s-running .exec-ic { color:var(--warn); animation:spin 1.1s linear infinite; display:inline-block; }
+  .s-manual .exec-ic { color:var(--teal); }
+  .exec-t { font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim);
+      border:1px solid var(--border-soft); border-radius:5px; padding:1px 5px; }
+  .exec-cmd { color:#7ee0c0; }
+  .exec-out { color:#9fb3c8; white-space:pre-wrap; margin:5px 0 0 22px; line-height:1.5;
+      max-height:140px; overflow-y:auto; }
+  .live { font-size:10px; font-weight:600; color:var(--warn); margin-left:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   .guidance { background:var(--panel2); border-left:3px solid var(--teal); border-radius:7px;
       padding:10px 13px; font-size:12.5px; color:var(--muted); line-height:1.55; }
   .sol-tag { font-size:10px; font-weight:400; color:var(--dim); border:1px solid var(--border-soft);
@@ -141,25 +161,7 @@ const ICHECK='<svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/><
 const IX='<svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function planCmd(i){
-  for(const s of (i.remediation_plan||[])) if(s.action_type==="command" && s.action) return s.action;
-  return i.remediation_command||"";
-}
-function remedChatUrl(i){
-  const ns=i.namespaces.join(", "), cmd=planCmd(i);
-  const q = cmd
-    ? `Voy a aplicar "${cmd}" en ${ns} para resolver: ${i.root_cause||""}. Investiga el estado actual del namespace paso a paso y dime si el problema se está resolviendo.`
-    : `¿Qué le pasa a ${ns}? ${i.root_cause||""}`;
-  return `/chat?q=${encodeURIComponent(q)}`;
-}
-async function approve(id){
-  // Abrir el chat (mismo mecanismo que "Investigar en el chat") para ver en vivo,
-  // por streaming ReAct, lo que va pasando con la remediación. window.open síncrono
-  // dentro del gesto de clic → el navegador no lo bloquea.
-  const i=allItems.find(x=>x.id===id);
-  if(i) window.open(remedChatUrl(i),"_blank");
-  await act(id,"approve");
-}
+async function approve(id){ await act(id,"approve"); }
 async function reject(id){ await act(id,"reject"); }
 function toggleCorrect(id){
   const b=document.getElementById("cb-"+id);
@@ -215,6 +217,25 @@ function solutionSection(i){
     return `<div class="section"><div class="label">Solución <span class="sol-tag manual">manual</span></div><div class="guidance">${esc(i.remediation_guidance)}</div></div>`;
   return `<div class="section"><div class="label">Investigar</div><div class="cmd">${esc(i.kubectl_cmd)}</div>${i.command_explanation?`<div class="cmd-help">${esc(i.command_explanation)}</div>`:""}</div>`;
 }
+function execSection(i){
+  const log=i.execution_log||[];
+  if(!log.length){
+    return i.execution_output
+      ? `<div class="section"><div class="label">Resultado</div><div class="execlog"><div class="exec-step s-done"><span class="exec-ic">✓</span><span class="exec-cmd">${esc(i.kubectl_cmd)}</span><div class="exec-out">${esc(i.execution_output).slice(0,500)}</div></div></div></div>`
+      : "";
+  }
+  const ic={running:"⟳",done:"✓",failed:"✗",manual:"•"};
+  const tlab={investigate:"investigar",command:"aplicar",guidance:"manual",verify:"verificar"};
+  const rows=log.map(s=>{
+    const head=(s.type==="verify"||s.type==="guidance")
+      ? `<span class="exec-cmd">${esc(s.command)}</span>`
+      : `<span class="exec-cmd">$ ${esc(s.command)}</span>`;
+    const out=s.output?`<div class="exec-out">${esc(s.output).slice(0,500)}</div>`:"";
+    return `<div class="exec-step s-${s.status}"><div class="exec-h"><span class="exec-ic">${ic[s.status]||'·'}</span><span class="exec-t">${tlab[s.type]||s.type}</span>${head}</div>${out}</div>`;
+  }).join("");
+  const running=log.some(s=>s.status==="running");
+  return `<div class="section"><div class="label">Ejecución ${running?'<span class="live">● en vivo</span>':''}</div><div class="execlog">${rows}</div></div>`;
+}
 function card(i){
   const pending=i.status==="pending_approval";
   const invest=(i.investigation||[]).map(s=>`<li>${esc(s)}</li>`).join("");
@@ -235,7 +256,7 @@ function card(i){
   } else {
     actions="";
   }
-  const exec=i.execution_output?`<div class="section"><div class="label">Resultado</div><div class="cmd" style="color:#cbd5e1">${esc(i.execution_output).slice(0,400)}</div></div>`:"";
+  const exec=execSection(i);
   return `
   <div class="card ${pending?'pending':''} ${i.id===pathId?'highlight':''}" data-inc="${i.id}">
     <div class="card-head">
@@ -253,7 +274,6 @@ function card(i){
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
-      ${planCmd(i)?`<a class="teachlink" href="${remedChatUrl(i)}" target="_blank">▶ Ver la remediación en el chat</a>`:""}
       <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
       ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
       <div class="correctbox" id="cb-${i.id}" style="display:none">

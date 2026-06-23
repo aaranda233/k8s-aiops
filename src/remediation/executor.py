@@ -47,6 +47,17 @@ def execute_if_reversible(kubectl_command: str) -> "ExecutionResult | None":
     return execute_with_dryrun(kubectl_command)
 
 
+def run_readonly(kubectl_command: str) -> ExecutionResult:
+    """Ejecuta un comando de SOLO LECTURA directamente (sin dry-run; get/describe
+    no aceptan --dry-run). Para los pasos de investigación del log de ejecución."""
+    cmd = kubectl_command.strip()
+    out, ok = _run(cmd)
+    return ExecutionResult(
+        command=cmd, dry_run_ok=True, dry_run_output="", executed=True,
+        real_output=out, success=ok, error=None if ok else out[:200],
+    )
+
+
 def execute_with_dryrun(kubectl_command: str) -> ExecutionResult:
     """Ejecuta dry-run primero (si el comando lo soporta), luego el comando real."""
     cmd = kubectl_command.strip()

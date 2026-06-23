@@ -52,6 +52,7 @@ class Incident:
     category: str = "app"              # 'app' (código/config) | 'platform' (infra)
     occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
     last_seen: float = 0.0             # última vez que se observó el mismo problema
+    execution_log: list = field(default_factory=list)  # pasos ejecutados en vivo: {order,type,command,output,status}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -159,6 +160,14 @@ class IncidentStore:
                     self._feedback_hook(inc.to_dict())
                 except Exception:
                     pass  # el feedback nunca debe tumbar la remediación
+
+    def set_execution_log(self, incident_id: str, log_list: list) -> None:
+        """Reemplaza el log de ejecución paso a paso (lo consume la consola en vivo)."""
+        inc = self._incidents.get(incident_id)
+        if inc is None:
+            return
+        inc.execution_log = list(log_list)
+        inc.updated_at = _now()
 
     def mark_executed(self, incident_id: str, output: str, success: bool) -> None:
         """Modo B: tras ejecutar la remediación aprobada. EXECUTED no es terminal

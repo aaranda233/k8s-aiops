@@ -37,7 +37,7 @@ from src.remediation.base_notifier import (
     BaseNotifier,
 )
 from src.remediation.circuit_breaker import CircuitBreaker
-from src.remediation.executor import ExecutionResult, execute_with_dryrun
+from src.remediation.executor import ExecutionResult, execute_with_dryrun, run_readonly
 from src.remediation.incident_store import (
     STATUS_APPROVED,
     STATUS_BLOCKED,
@@ -286,29 +286,110 @@ class AutoRemediation:
         return RemediationResult(incident_id, fp, risk_level, "skipped", exec_cmd, None, None)
 
     def _execute_level1(self, incident: Incident, fp: str) -> RemediationResult:
-        incident_id = incident.id
-        # Ejecuta la ACCIÓN del plan (paso 'command'), no el kubectl de investigación.
-        kubectl_cmd = plan_command(incident) or incident.kubectl_cmd
-        namespaces = set(incident.namespaces)
         console.print("  [green]Level 1 — ejecutando automáticamente...[/]")
-        result = execute_with_dryrun(kubectl_cmd)
+        return self._execute_plan(incident, fp, level=1, action_taken="executed")
 
-        if not result.success:
-            console.print(f"  [red]Ejecución fallida: {result.error}[/]")
-            self._circuit.record(fp, kubectl_cmd, success=False)
-            self.incidents.update(
-                incident_id, status=STATUS_FAILED,
-                execution_output=result.error or result.dry_run_output, verified=False,
-            )
-            self._notify(self.incidents.get(incident_id), KIND_FAILED)
-            return RemediationResult(incident_id, fp, 1, "executed", kubectl_cmd, result, False)
+    def _handle_level2(self, incident: Incident, fp: str) -> RemediationResult:
+        incident_id = incident.id
+        console.print("  [yellow]Level 2 — esperando decisión humana en la consola...[/]")
+        self.incidents.update(incident_id, status=STATUS_PENDING)
+        self._notify(incident, KIND_APPROVAL)
 
-        console.print(f"  [green]Ejecutado OK. Verificando en {self.verify_wait}s...[/]")
-        self._circuit.record(fp, kubectl_cmd, success=True)
-        self.incidents.update(incident_id, status=STATUS_EXECUTED, execution_output=result.real_output)
-        self._notify(self.incidents.get(incident_id), KIND_EXECUTED)
+        # Polling sobre el incident store: la consola web fija incident.response
+        deadline = time.time() + self.approval_timeout
+        while time.time() < deadline:
+            current = self.incidents.get(incident_id)
+            response = current.response if current else None
+            if response == "approved":
+                console.print("  [green]Aprobado — ejecutando el plan...[/]")
+                self.incidents.update(incident_id, status=STATUS_APPROVED)
+                return self._execute_plan(incident, fp, level=2, action_taken="approved")
+            if response == "rejected":
+                console.print("  [yellow]Rechazado por el operador[/]")
+                self.incidents.update(incident_id, status=STATUS_REJECTED)
+                return RemediationResult(incident_id, fp, 2, "rejected",
+                                         plan_command(incident) or incident.kubectl_cmd, None, None)
+            time.sleep(_APPROVAL_POLL_INTERVAL)
 
-        verified = self._verify(kubectl_cmd, namespaces)
+        console.print("  [dim]Timeout de decisión (30min)[/]")
+        self.incidents.update(incident_id, status=STATUS_TIMEOUT)
+        return RemediationResult(incident_id, fp, 2, "timeout",
+                                 plan_command(incident) or incident.kubectl_cmd, None, None)
+
+    def _execute_plan(self, incident: Incident, fp: str, level: int,
+                      action_taken: str) -> RemediationResult:
+        """Ejecuta el plan paso a paso, registrando el output de cada comando en vivo
+        (incident.execution_log, que la consola refresca cada 3s):
+          · investigate → kubectl de lectura, output real
+          · command     → la acción reversible (dry-run + real); marca el outcome
+          · guidance    → texto manual, no se ejecuta
+        Tras la acción, verifica y fija el estado terminal.
+        """
+        incident_id = incident.id
+        namespaces = set(incident.namespaces)
+        action_cmd = plan_command(incident) or incident.kubectl_cmd
+
+        steps = list(getattr(incident, "remediation_plan", None) or [])
+        if not steps:
+            steps = [{"action_type": "command", "action": action_cmd,
+                      "explanation": "", "risk_level": incident.risk_level}]
+
+        log: list[dict] = []
+        def _persist():
+            self.incidents.set_execution_log(incident_id, log)
+
+        cmd_result: ExecutionResult | None = None
+        order = 0
+        for s in steps:
+            atype = s.get("action_type", "investigate")
+            action = (s.get("action") or "").strip()
+            if not action:
+                continue
+            order += 1
+            if atype == "guidance":
+                log.append({"order": order, "type": "guidance", "command": action,
+                            "output": "", "status": "manual"})
+                _persist()
+                continue
+            # Marcar el paso como en curso (la consola muestra ⟳ mientras corre).
+            log.append({"order": order, "type": atype, "command": action,
+                        "output": "", "status": "running"})
+            _persist()
+            if atype == "command":
+                res = execute_with_dryrun(action)
+                cmd_result = res
+                action_cmd = action
+                out = res.real_output if res.success else (res.error or res.dry_run_output or "")
+                log[-1] = {"order": order, "type": "command", "command": action,
+                           "output": out, "status": "done" if res.success else "failed"}
+                _persist()
+                self._circuit.record(fp, action, success=res.success)
+                if not res.success:
+                    console.print(f"  [red]Ejecución fallida: {res.error}[/]")
+                    self.incidents.update(incident_id, status=STATUS_FAILED,
+                                          execution_output=out, verified=False)
+                    self._notify(self.incidents.get(incident_id), KIND_FAILED)
+                    return RemediationResult(incident_id, fp, level, action_taken, action, res, False)
+                self.incidents.update(incident_id, status=STATUS_EXECUTED,
+                                      execution_output=res.real_output)
+                self._notify(self.incidents.get(incident_id), KIND_EXECUTED)
+            else:  # investigate — solo lectura
+                res = run_readonly(action)
+                log[-1] = {"order": order, "type": "investigate", "command": action,
+                           "output": res.real_output, "status": "done" if res.success else "failed"}
+                _persist()
+
+        # Verificación post-fix (la consola muestra ⏳ durante la espera).
+        order += 1
+        log.append({"order": order, "type": "verify",
+                    "command": f"verificación (~{self.verify_wait}s)…", "output": "", "status": "running"})
+        _persist()
+        verified = self._verify(action_cmd, namespaces)
+        log[-1] = {"order": order, "type": "verify", "command": "verificación",
+                   "output": "anomalía resuelta" if verified else "la anomalía persiste tras el fix",
+                   "status": "done" if verified else "failed"}
+        _persist()
+
         if verified:
             console.print("  [bold green]✓ Anomalía resuelta[/]")
             self._circuit.reset(fp)
@@ -319,46 +400,7 @@ class AutoRemediation:
             self.incidents.update(incident_id, status=STATUS_FAILED, verified=False)
             self._notify(self.incidents.get(incident_id), KIND_FAILED)
 
-        return RemediationResult(incident_id, fp, 1, "executed", kubectl_cmd, result, verified)
-
-    def _handle_level2(self, incident: Incident, fp: str) -> RemediationResult:
-        incident_id = incident.id
-        # Ejecuta la ACCIÓN del plan (paso 'command'), no el kubectl de investigación.
-        kubectl_cmd = plan_command(incident) or incident.kubectl_cmd
-        namespaces = set(incident.namespaces)
-        console.print("  [yellow]Level 2 — esperando decisión humana en la consola...[/]")
-
-        self.incidents.update(incident_id, status=STATUS_PENDING)
-        self._notify(incident, KIND_APPROVAL)
-
-        # Polling sobre el incident store: la consola web fija incident.response
-        deadline = time.time() + self.approval_timeout
-        while time.time() < deadline:
-            current = self.incidents.get(incident_id)
-            response = current.response if current else None
-            if response == "approved":
-                console.print("  [green]Aprobado — ejecutando...[/]")
-                self.incidents.update(incident_id, status=STATUS_APPROVED)
-                result = execute_with_dryrun(kubectl_cmd)
-                self._circuit.record(fp, kubectl_cmd, success=result.success)
-                verified = self._verify(kubectl_cmd, namespaces) if result.success else False
-                self.incidents.update(
-                    incident_id,
-                    status=STATUS_RESOLVED if verified else STATUS_FAILED,
-                    execution_output=result.real_output if result.success else (result.error or ""),
-                    verified=verified,
-                )
-                self._notify(self.incidents.get(incident_id), KIND_RESOLVED if verified else KIND_FAILED)
-                return RemediationResult(incident_id, fp, 2, "approved", kubectl_cmd, result, verified)
-            if response == "rejected":
-                console.print("  [yellow]Rechazado por el operador[/]")
-                self.incidents.update(incident_id, status=STATUS_REJECTED)
-                return RemediationResult(incident_id, fp, 2, "rejected", kubectl_cmd, None, None)
-            time.sleep(_APPROVAL_POLL_INTERVAL)
-
-        console.print("  [dim]Timeout de decisión (30min)[/]")
-        self.incidents.update(incident_id, status=STATUS_TIMEOUT)
-        return RemediationResult(incident_id, fp, 2, "timeout", kubectl_cmd, None, None)
+        return RemediationResult(incident_id, fp, level, action_taken, action_cmd, cmd_result, verified)
 
     def _verify(self, kubectl_cmd: str, namespaces: set[str]) -> bool:
         """Espera y comprueba si el recurso afectado está sano."""
