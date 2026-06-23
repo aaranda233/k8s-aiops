@@ -200,11 +200,23 @@ function solutionSection(i){
 function card(i){
   const pending=i.status==="pending_approval";
   const invest=(i.investigation||[]).map(s=>`<li>${esc(s)}</li>`).join("");
-  const actions=pending?`
+  const inflight=i.status==="approved"||i.status==="executed";
+  let actions;
+  if (pending) {
+    actions=`
     <div class="actions">
       <button class="approve" onclick="approve('${i.id}')">${ICHECK} Aprobar y ejecutar</button>
       <button class="reject" onclick="reject('${i.id}')">${IX} Rechazar</button>
-    </div>`:(i.response?`<div class="done">Decisión: ${i.response==="approved"?"aprobado":"rechazado"} por el operador.</div>`:"");
+    </div>`;
+  } else if (i.response==="approved") {
+    actions=inflight
+      ? `<div class="done">⏳ Aprobado — ejecutando y verificando… (≈90&nbsp;s)</div>`
+      : `<div class="done">✓ Aprobado por el operador — ${i.verified===true?"anomalía resuelta":i.verified===false?"la anomalía persiste tras el fix":"ejecutado"}.</div>`;
+  } else if (i.response==="rejected") {
+    actions=`<div class="done">Rechazado por el operador.</div>`;
+  } else {
+    actions="";
+  }
   const exec=i.execution_output?`<div class="section"><div class="label">Resultado</div><div class="cmd" style="color:#cbd5e1">${esc(i.execution_output).slice(0,400)}</div></div>`:"";
   return `
   <div class="card ${pending?'pending':''} ${i.id===pathId?'highlight':''}" data-inc="${i.id}">
