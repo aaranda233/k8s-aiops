@@ -1048,7 +1048,54 @@ Gemma4-E2B-ORPO is a **real quality improvement (+14 pts RCA keyword)** but is *
 
 **Decision: production stays on qwen-1.5B-ORPO + deterministic guardrails (Q4_K_M GGUF on Ollama)** — deployable, 986 MB, robust. The Gemma adapter and 16-bit merge are archived privately at `aaranda233/k8s-rca-orpo-gemma4-it` for revisitation when llama.cpp/Ollama gemma4 support and hardware mature. As a thesis result this is a clean comparative finding: *a larger, newer model lifts RCA quality, but a 1.5B SLM with deterministic guardrails is the cost-efficient, deployable choice on commodity CPU hardware.*
 
-## 19. Pending / Future Work
+## 19. Executable Remediation Knowledge Graph — Multi-Step Plans with Verified Consolidation
+
+The auto-remediation of §13 maps a diagnosis to a *single* kubectl command. Real failures often need a *sequence* — investigate → identify → fix → verify — and one command rarely resolves them: an ingress 5xx is not fixed by restarting the controller if the backend has no Ready endpoints or a NetworkPolicy is dropping the traffic. This section adds a **non-parametric, structured, executable memory**: a knowledge graph of remediation plans. It mirrors the closed loop of §16, but for *remediation* instead of *RCA* — a fast deterministic memory (the graph) plus slow consolidation into the SLM's weights (ORPO on verified diagnoses).
+
+### 19.1 Design — abstract layer + runtime binding (AST-style)
+
+- **Node** = an abstract problem signature (`intent` + workload class), portable across clusters.
+- **Edge** = a remediation step with an action *template* (placeholders `{ns}`, `{pod}`, `{workload}`, `{service}`, `{pvc}`, `{node}`), a `risk_level` (0 read · 1 reversible · 3 destructive) and a `source` (`catalog`/`escalated`).
+- **Binding** (the real namespace and resources) is resolved at runtime by the *same* deterministic extractors used everywhere else (`src/diagnostics/command_builder.py`). A step whose resource cannot be extracted from the evidence is dropped, keeping the `{ns}`-only steps.
+- Retrieval is performed by **code** (deterministic intent detection + lookup, with embedding fallback), never by the SLM — the small model never loads the graph into its context. The store is SQLite (`src/remediation/remediation_graph.py`).
+- Step types: `investigate` (read-only), `command` (reversible write, gated by shadow mode + approval), `guidance` (manual action as text, no safe command), `verify`.
+
+### 19.2 Seeding — zero regression
+
+`seed_from_catalog()` seeds 11 intent plans from the existing command catalog (idempotent). The graph therefore starts **full** with everything the system already knew how to do, so introducing it cannot regress the deterministic command quality measured in §17.7. Each seeded plan is multi-step and, where a reversible fix applies, ends in a `rollout restart` (Level 1).
+
+### 19.3 Resolution and escalation (miss → large model)
+
+`resolve()` first builds a deterministic intent key (catalog hits via `intent_for`); on an unknown intent it falls back to nearest-neighbour by **embedding** over escalated nodes (cosine, threshold 0.6). On a miss with escalation enabled — `src/diagnostics/escalation.py`, **off by default**, pluggable across `anthropic`/`openai`/`ollama` backends — a large model proposes a multi-step plan in strict JSON. The plan is parsed and **validated**: only read verbs (`get`/`describe`/`logs`/`top`/`events`) and the reversible `rollout restart` survive; any destructive verb (`delete`/`drain`/`cordon`/`exec`/`apply`/`patch`/`scale`) is rejected, consistent with shadow mode. A validated plan is persisted as **provisional** (unverified, with an embedding of its signature) so future misses reuse it without another model call.
+
+### 19.4 Verification by outcome (free signal)
+
+`verify_from_incident()` / `mark_verified()`: when an incident whose plan came from the graph reaches a terminal state, the graph's edges are marked **verified** (`status=resolved` and `verified`/`approved`) or the failed attempt is recorded (`failed`/`rejected`). This reuses the *same* incident signal that already drives the RCA learning loop of §16 — no new supervision is required.
+
+### 19.5 Consolidation into weights (verified)
+
+`finetune/graph_to_orpo.py` exports to an ORPO dataset **only the diagnoses** whose solution came from the graph (`solution_source ∈ {graph, escalated}`) and was verified by outcome (`verified=True`). It deliberately does **not** retrain *solutions* — the graph serves those deterministically and auditably — only the diagnostic prose, labelled by causes that remediation confirmed. The export is offline, idempotent and void-safe; the retraining itself stays behind the non-regression gate of §16.
+
+### 19.6 Evaluation — coverage/correctness
+
+`eval/eval_graph.py`, deterministic and in-memory (seeded from the catalog, no cluster and no real store), over the 14 project failure scenarios:
+
+| Metric | Value |
+|--------|:-----:|
+| Coverage (returns a plan) | **100.0%** |
+| Intent correct | **100.0%** |
+| Multi-step plan (>1 step) | **100.0%** |
+| NS-ok (correct binding) | **100.0%** |
+| Reversible final action | 42.9% |
+| Steps per plan (mean) | 2.5 |
+
+**Reading:** the graph returns a correct-intent, namespace-bound, multi-step plan for **every** scenario. The 42.9% "reversible final action" is *by design, not a deficiency*: roughly 57% of failure classes (image pull, node pressure, PVC binding, insufficient CPU, registry auth) cannot be resolved by any in-cluster reversible action — their fix is external (correct an image tag, add node capacity, provision a PV). For those, the plan correctly ends in a `guidance` step rather than forcing a destructive or ineffective command; where a `rollout restart` *does* resolve the issue (config, secret, probe, OOM, network, readiness) the plan ends in one (Level 1).
+
+Together with §16, the system now consolidates **both halves** of an incident — the diagnosis (RCA, via ORPO) and the remediation (via the graph) — each backed by the same free, outcome-verified, human-in-the-loop signal.
+
+---
+
+## 20. Pending / Future Work
 
 - [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
 - [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
@@ -1067,6 +1114,7 @@ Gemma4-E2B-ORPO is a **real quality improvement (+14 pts RCA keyword)** but is *
 - [x] RCA evidence hardening — error-template clustering, culprit focus, anti-drift fallback (§17.4–17.5)
 - [x] Incident deduplication with occurrence counter (§17.6)
 - [x] Remediation command quality — deterministic command builder: NS-ok 33%→85.7%, Verb-ok 41%→92.9% (§17.7)
+- [x] Executable remediation knowledge graph — multi-step plans, miss-escalation, outcome verification, verified consolidation; 100% coverage/intent/NS-ok over 14 scenarios (§19)
 - [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
 - [ ] Shadow-mode remediation on production cluster (generate incidents, all actions gated on approval)
 - [ ] LLM-assisted prioritization of security findings (rules detect, model contextualizes)

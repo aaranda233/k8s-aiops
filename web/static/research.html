@@ -288,7 +288,21 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     <div class="cl-header">
       <div>
         <div class="cl-title">Novedades — v2</div>
-        <div class="cl-subtitle">Últimas actualizaciones del experimento · 2026-06-18</div>
+        <div class="cl-subtitle">Últimas actualizaciones del experimento · 2026-06-22</div>
+      </div>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-date">2026-06-22</div>
+      <div class="cl-body">
+        <span class="cl-tag feat">Remediación</span>
+        <div class="cl-text">
+          <strong>Grafo de conocimiento de remediación — planes multi-paso verificados por outcome.</strong>
+          Memoria no-paramétrica y ejecutable (nodo = firma abstracta, arista = paso con plantilla; binding en runtime).
+          Siembra del catálogo (cero regresión), escalado a modelo grande en <em>miss</em> con validación de seguridad,
+          verificación por outcome y consolidación a ORPO solo de los diagnósticos verificados. Eval determinista:
+          <strong>100%</strong> cobertura / intent / multi-paso / NS-ok sobre 14 escenarios. Ver sección 10.
+        </div>
       </div>
     </div>
 
@@ -1013,6 +1027,57 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
 
     <div class="finding-box">
       <strong>Veredicto.</strong> Gemma4-E2B-ORPO mejora el diagnóstico (<strong>+14 pts</strong> en Keyword%) pero es operativamente inviable en el stack CPU/Ollama. <strong>Producción se mantiene en qwen-1.5B-ORPO + guardarraíles deterministas (Q4_K_M, 986 MB)</strong>: desplegable, ligero y robusto. El modelo Gemma queda archivado para revisitarlo cuando madure el tooling. Conclusión de tesis: <em>un modelo mayor sube la calidad del RCA, pero un SLM de 1.5B con guardarraíles deterministas es la opción coste-eficiente y desplegable en hardware CPU de propósito general.</em>
+    </div>
+  </div>
+
+  <!-- ── 10 GRAFO DE REMEDIACIÓN ── -->
+  <div class="section">
+    <div class="section-title"><span>10</span> Grafo de remediación</div>
+    <h2>De un comando a un plan multi-paso verificado</h2>
+    <p class="subtitle">Memoria no-paramétrica, estructurada y ejecutable: un grafo de planes de remediación (investigar → identificar → arreglar → verificar). Un solo comando rara vez resuelve un fallo real; el grafo es el espejo del bucle de aprendizaje, pero para la <em>remediación</em> en vez del <em>diagnóstico</em>.</p>
+
+    <div class="finding-box">
+      <strong>Diseño estilo AST (capa abstracta + binding).</strong> El <strong>nodo</strong> es una firma abstracta de problema (intent + clase de workload), portable entre clusters; la <strong>arista</strong> es un paso con plantilla de acción (<code>{ns}</code>, <code>{pod}</code>, <code>{workload}</code>…), riesgo y origen. El <strong>binding</strong> a recursos reales se resuelve en runtime con los extractores deterministas del sistema. La recuperación la hace <strong>código</strong> (intención + lookup, con fallback por embedding), nunca el SLM: el modelo pequeño jamás carga el grafo en su contexto.
+    </div>
+
+    <table class="cmp-table">
+      <thead><tr><th>Fase</th><th>Qué añade</th><th>Cómo</th></tr></thead>
+      <tbody>
+        <tr><td class="metric-name">1 · Siembra</td><td>Cero regresión</td><td>11 planes sembrados del catálogo existente (idempotente); el grafo arranca lleno con todo lo que el sistema ya sabía hacer.</td></tr>
+        <tr><td class="metric-name">2 · Escalado</td><td>Problemas novedosos</td><td>En <em>miss</em>, un modelo grande (pluggable: Anthropic/OpenAI/Ollama, <strong>off por defecto</strong>) propone un plan JSON; se valida (solo lectura + <code>rollout restart</code>; destructivos rechazados) y se guarda como provisional con embedding.</td></tr>
+        <tr><td class="metric-name">3 · Verificación</td><td>Señal gratis por outcome</td><td>Al cerrar un incidente cuyo plan vino del grafo, sus aristas se marcan verificadas (resuelto+aprobado) o se registra el fallo. Misma señal que el bucle de RCA.</td></tr>
+        <tr><td class="metric-name">4 · Consolidación</td><td>Conocimiento → pesos</td><td>Exporta a ORPO solo los <strong>diagnósticos</strong> verificados por el grafo. No reentrena soluciones (las sirve el grafo, determinista y auditable); solo la prosa de diagnóstico.</td></tr>
+        <tr><td class="metric-name">5 · Eval</td><td>Cobertura/corrección</td><td>Evaluación determinista en memoria sobre los 14 escenarios del proyecto.</td></tr>
+      </tbody>
+    </table>
+
+    <table class="cmp-table">
+      <thead><tr><th>Métrica del grafo · 14 escenarios</th><th>Valor</th><th>Lectura</th></tr></thead>
+      <tbody>
+        <tr><td class="metric-name">Cobertura (devuelve plan)</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="best">100%</span></div></td>
+          <td>Hay plan para todos los escenarios</td></tr>
+        <tr><td class="metric-name">Intent correcto</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="best">100%</span></div></td>
+          <td>Detección determinista de intención</td></tr>
+        <tr><td class="metric-name">Plan multi-paso (&gt;1 paso)</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="best">100%</span></div></td>
+          <td>Nunca un comando suelto</td></tr>
+        <tr><td class="metric-name">NS-ok (binding)</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="best">100%</span></div></td>
+          <td>Namespace correcto en los comandos</td></tr>
+        <tr><td class="metric-name">Acción reversible final</td>
+          <td><div class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:42.9%;background:var(--blue)"></div></div><span class="mid">42.9%</span></div></td>
+          <td><strong>Por diseño:</strong> ~57% de las clases de fallo no se arreglan dentro del cluster</td></tr>
+      </tbody>
+    </table>
+
+    <div class="finding-box">
+      <strong>El 42.9% reversible es por diseño, no una carencia.</strong> Clases como pull de imagen, presión de nodo, binding de PVC, CPU insuficiente o auth de registry no se resuelven con ninguna acción reversible dentro del cluster — su arreglo es externo (corregir un tag, añadir capacidad, aprovisionar un PV). En esos casos el plan termina en un paso de <code>guidance</code> en vez de forzar un comando destructivo o inútil; donde un <code>rollout restart</code> sí resuelve (config, secret, probe, OOM, network, readiness) el plan termina en uno (Level 1). Media: <strong>2.5 pasos por plan</strong>.
+    </div>
+
+    <div class="finding-box">
+      <strong>Conclusión.</strong> El sistema consolida ahora las <strong>dos mitades</strong> de un incidente — el diagnóstico (RCA, vía ORPO) y la remediación (vía el grafo) — cada una respaldada por la misma señal gratuita, verificada por outcome y con humano en el bucle.
     </div>
   </div>
 

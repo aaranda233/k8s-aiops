@@ -1,0 +1,23 @@
+escenario                  hit intent multi ns-ok rev  pasos  intent
+crash_config               ✓   ✓     ✓    ✓    ✓   3     crash_config
+crash_oom                  ✓   ✓     ✓    ✓    ✓   3     oom
+crash_probe                ✓   ✓     ✓    ✓    ✓   3     probe
+crash_secret               ✓   ✓     ✓    ✓    ✓   3     crash_secret
+image_auth                 ✓   ✓     ✓    ✓    ·   2     image_auth
+image_not_found            ✓   ✓     ✓    ✓    ·   2     image
+image_registry_down        ✓   ✓     ✓    ✓    ·   2     image
+network_policy_block       ✓   ✓     ✓    ✓    ✓   4     network
+node_disk_pressure         ✓   ✓     ✓    ✓    ·   2     node_pressure
+node_pressure_memory       ✓   ✓     ✓    ✓    ·   2     node_pressure
+pending_insufficient_cpu   ✓   ✓     ✓    ✓    ·   2     pending_cpu
+pvc_pending                ✓   ✓     ✓    ✓    ·   2     pvc
+readiness_failing          ✓   ✓     ✓    ✓    ✓   3     probe
+service_no_endpoints       ✓   ✓     ✓    ✓    ·   2     endpoints
+
+=== Agregado (cobertura/corrección del grafo) ===
+  Cobertura (hit):     100.0%
+  Intent correcto:     100.0%
+  Plan multi-paso:     100.0%
+  NS-ok (binding):     100.0%
+  Acción reversible:   42.9%
+  Pasos por plan:      2.5 (media)
