@@ -528,6 +528,7 @@
     <a href="#entrenamiento">Entrenamiento</a>
     <a href="#alineacion">Alineación</a>
     <a href="#remediacion">Remediación</a>
+    <a href="#grafo">Grafo</a>
     <a href="#consola">Consola</a>
     <a href="#resultados">Resultados</a>
     <a href="#tracking">Tracking</a>
@@ -1133,6 +1134,49 @@ NOTIFY_CHANNEL=teams \
 TEAMS_WEBHOOK_URL=https://prod.westeurope.logic.azure.com/workflows/... \
 WEBHOOK_BASE_URL=https://k8s-aiops.empresa.com \
 python main.py live</pre>
+
+  </div>
+</section>
+
+<!-- GRAFO DE REMEDIACIÓN -->
+<section id="grafo">
+  <div class="container">
+    <h2>Grafo de Conocimiento de Remediación</h2>
+    <p class="section-lead">Memoria ejecutable multi-paso — planes verificados por outcome y consolidados en los pesos del modelo</p>
+
+    <p>La auto-remediación mapea un diagnóstico a <em>un</em> comando kubectl. Pero los fallos reales suelen necesitar una <em>secuencia</em> —investigar → identificar → arreglar → verificar— y un solo comando rara vez los resuelve: un 5xx de ingress no se arregla reiniciando el controlador si el backend no tiene endpoints Ready o una NetworkPolicy bloquea el tráfico. La extensión es una <strong>memoria no-paramétrica, estructurada y ejecutable</strong>: un grafo de planes de remediación. Es el espejo del ciclo de aprendizaje del SLM, pero para la <em>remediación</em> en vez del <em>diagnóstico</em> — memoria rápida y determinista (el grafo) + consolidación lenta en los pesos (ORPO sobre diagnósticos verificados).</p>
+
+    <div class="callout" style="border-left-color:#0ea5e9;">
+      <strong>Diseño estilo AST (capa abstracta + binding):</strong> el <strong>nodo</strong> es una firma abstracta de problema (intent + clase de workload), portable entre clusters; la <strong>arista</strong> es un paso de remediación con plantilla de acción (<code>{ns}</code>, <code>{pod}</code>, <code>{workload}</code>, <code>{service}</code>, <code>{pvc}</code>, <code>{node}</code>), riesgo y origen. El <strong>binding</strong> (namespace y recursos reales) se resuelve en runtime con los mismos extractores deterministas del resto del sistema. La recuperación la hace <strong>código</strong> (detección de intención + lookup, con fallback por embedding), nunca el SLM — el modelo pequeño jamás carga el grafo en su contexto.
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Las cinco fases</h3>
+
+    <div class="table-wrap" style="margin-top:16px;">
+      <table>
+        <tr><th>Fase</th><th>Qué añade</th><th>Cómo</th></tr>
+        <tr style="background:#f0fdf4;"><td><strong>1 — Siembra</strong></td><td>Cero regresión</td><td>Siembra 11 planes del catálogo existente (idempotente); el grafo arranca lleno con todo lo que el sistema ya sabía hacer.</td></tr>
+        <tr style="background:#eff6ff;"><td><strong>2 — Escalado</strong></td><td>Planes para problemas novedosos</td><td>En <em>miss</em>, un modelo grande (pluggable: Anthropic/OpenAI/Ollama, <strong>off por defecto</strong>) propone un plan en JSON; se valida (solo verbos de lectura + <code>rollout restart</code>; destructivos rechazados) y se persiste como provisional con embedding para reusarlo.</td></tr>
+        <tr style="background:#fffbeb;"><td><strong>3 — Verificación</strong></td><td>Señal gratis por outcome</td><td>Cuando un incidente cuyo plan vino del grafo llega a estado terminal, sus aristas se marcan verificadas (resuelto+aprobado) o se registra el fallo. Misma señal que el loop de aprendizaje de RCA.</td></tr>
+        <tr style="background:#faf5ff;"><td><strong>4 — Consolidación</strong></td><td>Conocimiento → pesos</td><td>Exporta a ORPO <strong>solo los diagnósticos</strong> verificados por el grafo. No reentrena soluciones (eso lo sirve el grafo, determinista y auditable); solo la prosa de diagnóstico, etiquetada por causas que la remediación confirmó.</td></tr>
+        <tr style="background:#f0f9ff;"><td><strong>5 — Eval</strong></td><td>Métrica de cobertura/corrección</td><td>Evaluación determinista en memoria sobre los 14 escenarios del proyecto.</td></tr>
+      </table>
+    </div>
+
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Evaluación — cobertura y corrección</h3>
+
+    <div class="stats" style="margin-top:16px;">
+      <div class="stat"><div class="num">100%</div><div class="label">Cobertura</div><div class="desc">Devuelve un plan para los 14 escenarios</div></div>
+      <div class="stat"><div class="num">100%</div><div class="label">Intent + NS-ok</div><div class="desc">Intención correcta y binding del namespace</div></div>
+      <div class="stat"><div class="num">100%</div><div class="label">Multi-paso</div><div class="desc">Planes con &gt;1 paso (no un comando suelto)</div></div>
+      <div class="stat"><div class="num">2.5</div><div class="label">Pasos / plan</div><div class="desc">Media; acción reversible final en el 42.9% por diseño</div></div>
+    </div>
+
+    <p style="margin-top:16px;">El grafo devuelve un plan multi-paso, con intención correcta y namespace enlazado, para <strong>todos</strong> los escenarios. El 42.9% de "acción reversible final" es <em>por diseño, no una carencia</em>: ~57% de las clases de fallo (pull de imagen, presión de nodo, binding de PVC, CPU insuficiente, auth de registry) no se resuelven con ninguna acción reversible dentro del cluster — su arreglo es externo (corregir un tag de imagen, añadir capacidad, aprovisionar un PV). En esos casos el plan termina en un paso de <code>guidance</code> en vez de forzar un comando destructivo o inútil; donde un <code>rollout restart</code> sí resuelve (config, secret, probe, OOM, network, readiness) el plan termina en uno (Level 1).</p>
+
+    <div class="callout" style="margin-top:24px;">
+      <strong>Conclusión:</strong> el sistema consolida ahora las <strong>dos mitades</strong> de un incidente —el diagnóstico (RCA, vía ORPO) y la remediación (vía el grafo)— cada una respaldada por la misma señal gratuita, verificada por outcome y con humano en el bucle.
+    </div>
 
   </div>
 </section>
