@@ -4,9 +4,15 @@ Executor seguro de comandos kubectl de remediación.
 Siempre ejecuta dry-run primero. Solo procede con el real si dry-run es exitoso.
 """
 
+import json
 import shlex
 import subprocess
 from dataclasses import dataclass
+
+_UNHEALTHY_WAITING = {
+    "CrashLoopBackOff", "Error", "ImagePullBackOff", "ErrImagePull",
+    "CreateContainerConfigError", "RunContainerError", "CreateContainerError",
+}
 
 _TIMEOUT = 30
 _MAX_OUTPUT = 100  # líneas
@@ -45,6 +51,60 @@ def execute_if_reversible(kubectl_command: str) -> "ExecutionResult | None":
     if score(kubectl_command).level >= 2:
         return None
     return execute_with_dryrun(kubectl_command)
+
+
+def resolve_restart_target(namespace: str) -> str | None:
+    """Encuentra el controlador real (deployment/statefulset/daemonset) del pod que
+    está fallando en el namespace, para que el `rollout restart` apunte al workload
+    que existe de verdad — y no a un nombre adivinado del texto del diagnóstico.
+
+    Devuelve 'kind/name' (p. ej. 'deployment/inventory-api') o None si no hay un
+    pod fallando con un controlador reiniciable.
+    """
+    out, ok = _run(f"kubectl get pods -n {namespace} -o json")
+    if not ok:
+        return None
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return None
+
+    worst = None
+    worst_restarts = -1
+    for pod in data.get("items", []):
+        st = pod.get("status", {}) or {}
+        css = st.get("containerStatuses", []) or []
+        restarts = sum(cs.get("restartCount", 0) for cs in css)
+        unhealthy = st.get("phase") not in ("Running", "Succeeded")
+        for cs in css:
+            waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+            if waiting.get("reason") in _UNHEALTHY_WAITING:
+                unhealthy = True
+            if not cs.get("ready", False) and cs.get("restartCount", 0) > 0:
+                unhealthy = True
+        if unhealthy and restarts >= worst_restarts:
+            worst_restarts = restarts
+            worst = pod
+
+    if worst is None:
+        return None
+    owners = (worst.get("metadata", {}) or {}).get("ownerReferences", []) or []
+    if not owners:
+        return None
+    kind, name = owners[0].get("kind"), owners[0].get("name")
+    if kind == "ReplicaSet":
+        # El owner real es el Deployment dueño del ReplicaSet.
+        rout, rok = _run(
+            f"kubectl get rs {name} -n {namespace} "
+            "-o jsonpath={.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}"
+        )
+        if rok and "/" in rout:
+            dkind, dname = rout.split("/", 1)
+            return f"{dkind.lower()}/{dname}" if dname else None
+        return None
+    if kind in ("Deployment", "StatefulSet", "DaemonSet"):
+        return f"{kind.lower()}/{name}"
+    return None
 
 
 def run_readonly(kubectl_command: str) -> ExecutionResult:

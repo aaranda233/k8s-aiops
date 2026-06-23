@@ -37,7 +37,12 @@ from src.remediation.base_notifier import (
     BaseNotifier,
 )
 from src.remediation.circuit_breaker import CircuitBreaker
-from src.remediation.executor import ExecutionResult, execute_with_dryrun, run_readonly
+from src.remediation.executor import (
+    ExecutionResult,
+    execute_with_dryrun,
+    resolve_restart_target,
+    run_readonly,
+)
 from src.remediation.incident_store import (
     STATUS_APPROVED,
     STATUS_BLOCKED,
@@ -63,6 +68,21 @@ _APPROVAL_POLL_INTERVAL = 10
 
 _EN_MARKERS = (" the ", " is ", " are ", " will ", " command ", " indicates", " issue")
 _ES_MARKERS = (" el ", " la ", " de ", " que ", " los ", " un ", " está", " espacio", " memoria")
+
+
+def _ns_from(cmd: str) -> str | None:
+    """Extrae el namespace (-n / --namespace) de un comando kubectl."""
+    import shlex
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    for i, p in enumerate(parts):
+        if p in ("-n", "--namespace") and i + 1 < len(parts):
+            return parts[i + 1]
+        if p.startswith("--namespace="):
+            return p.split("=", 1)[1]
+    return None
 
 
 def _looks_spanish(text: str) -> bool:
@@ -329,6 +349,7 @@ class AutoRemediation:
         namespaces = set(incident.namespaces)
         action_cmd = plan_command(incident) or incident.kubectl_cmd
 
+        from_plan = bool(getattr(incident, "remediation_plan", None))
         steps = list(getattr(incident, "remediation_plan", None) or [])
         if not steps:
             steps = [{"action_type": "command", "action": action_cmd,
@@ -347,8 +368,11 @@ class AutoRemediation:
                 continue
             order += 1
             if atype == "guidance":
+                note = ("✓ confirmado por el operador"
+                        if getattr(incident, "manual_confirmed", False)
+                        else "acción manual (texto)")
                 log.append({"order": order, "type": "guidance", "command": action,
-                            "output": "", "status": "manual"})
+                            "output": note, "status": "manual"})
                 _persist()
                 continue
             # Marcar el paso como en curso (la consola muestra ⟳ mientras corre).
@@ -356,6 +380,24 @@ class AutoRemediation:
                         "output": "", "status": "running"})
             _persist()
             if atype == "command":
+                # Para un `rollout restart` venido de un plan, resolvemos el workload
+                # REAL que falla en el namespace (el nombre del plan se adivina del
+                # texto y suele no existir). Si no hay workload reiniciable → manual.
+                if from_plan and "rollout restart" in action.lower():
+                    ns = _ns_from(action) or next(iter(namespaces), "default")
+                    target = resolve_restart_target(ns)
+                    if target:
+                        action = f"kubectl rollout restart {target} -n {ns}"
+                        log[-1]["command"] = action
+                        _persist()
+                    else:
+                        log[-1] = {"order": order, "type": "command", "command": action,
+                                   "output": "No se encontró un workload reiniciable en el namespace; "
+                                             "requiere acción manual.", "status": "manual"}
+                        _persist()
+                        self.incidents.update(incident_id, status=STATUS_ESCALATED, verified=None)
+                        self._notify(self.incidents.get(incident_id), KIND_MANUAL)
+                        return RemediationResult(incident_id, fp, level, "manual", action, None, None)
                 res = execute_with_dryrun(action)
                 cmd_result = res
                 action_cmd = action

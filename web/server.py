@@ -250,6 +250,16 @@ async def api_reject(incident_id: str):
     return {"status": "rejected", "id": incident_id}
 
 
+@app.post("/api/incidents/{incident_id}/manual-done")
+async def api_manual_done(incident_id: str):
+    """El operador confirma que ha hecho el paso manual previo (p. ej. crear el
+    secret). Habilita la ejecución de la acción reversible del plan."""
+    if incident_store.get(incident_id) is None:
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    incident_store.update(incident_id, manual_confirmed=True)
+    return {"status": "manual_confirmed", "id": incident_id}
+
+
 @app.post("/api/incidents/{incident_id}/correct")
 async def api_correct(incident_id: str, correction: dict):
     """Corrección humana del diagnóstico (señal de aprendizaje de máxima calidad).

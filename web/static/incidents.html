@@ -97,6 +97,11 @@
       max-height:140px; overflow-y:auto; }
   .live { font-size:10px; font-weight:600; color:var(--warn); margin-left:6px; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  .manualbtn { margin-top:8px; font-size:12px; font-weight:600; color:var(--warn); background:rgba(210,153,34,.12);
+      border:1px solid rgba(210,153,34,.4); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .manualbtn:hover { background:rgba(210,153,34,.2); }
+  .manual-done { margin-top:8px; font-size:12px; color:var(--ok); font-weight:600; }
+  .manual-hint { font-size:11.5px; color:var(--warn); margin-top:8px; }
   .guidance { background:var(--panel2); border-left:3px solid var(--teal); border-radius:7px;
       padding:10px 13px; font-size:12.5px; color:var(--muted); line-height:1.55; }
   .sol-tag { font-size:10px; font-weight:400; color:var(--dim); border:1px solid var(--border-soft);
@@ -161,8 +166,12 @@ const ICHECK='<svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/><
 const IX='<svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function hasManual(i){ return (i.remediation_plan||[]).some(s=>s.action_type==="guidance"); }
 async function approve(id){ await act(id,"approve"); }
 async function reject(id){ await act(id,"reject"); }
+async function manualDone(id){
+  try { await fetch(`/api/incidents/${id}/manual-done`,{method:"POST"}); await load(); } catch(e){}
+}
 function toggleCorrect(id){
   const b=document.getElementById("cb-"+id);
   b.style.display = b.style.display==="none" ? "flex" : "none";
@@ -202,9 +211,19 @@ function solutionSection(i){
     const srcMap = {graph:"grafo", escalated:"escalado", catalog:"catálogo"};
     const src = srcMap[i.solution_source] || "grafo";
     const tlabel = {investigate:"Investigar", command:"Aplicar", guidance:"Manual", verify:"Verificar"};
+    const pendingNow = i.status==="pending_approval";
     const steps = plan.map((s,idx)=>{
       const isCmd = s.action_type !== "guidance";
-      const body = isCmd ? `<div class="cmd">${esc(s.action)}</div>` : `<div class="guidance">${esc(s.action)}</div>`;
+      let body;
+      if (isCmd) {
+        body = `<div class="cmd">${esc(s.action)}</div>`;
+      } else {
+        const gate = !pendingNow ? ""
+          : (i.manual_confirmed
+              ? `<div class="manual-done">✓ Hecho — ya puedes aprobar la acción</div>`
+              : `<button class="manualbtn" onclick="manualDone('${i.id}')">He hecho este paso ✓</button>`);
+        body = `<div class="guidance">${esc(s.action)}</div>${gate}`;
+      }
       const expl = s.explanation ? `<div class="cmd-help">${esc(s.explanation)}</div>` : "";
       const risk = (s.risk_level>0) ? `<span class="step-risk r${s.risk_level}">L${s.risk_level}</span>` : "";
       return `<li class="plan-step"><div class="step-h"><span class="step-num">${idx+1}</span><span class="step-type ${s.action_type}">${tlabel[s.action_type]||s.action_type}</span>${risk}</div>${body}${expl}</li>`;
@@ -242,11 +261,16 @@ function card(i){
   const inflight=i.status==="approved"||i.status==="executed";
   let actions;
   if (pending) {
+    const needManual = hasManual(i) && !i.manual_confirmed;
+    const approveBtn = needManual
+      ? `<button class="approve" disabled title="Confirma primero el paso manual del plan">${ICHECK} Aprobar y ejecutar</button>`
+      : `<button class="approve" onclick="approve('${i.id}')">${ICHECK} Aprobar y ejecutar</button>`;
+    const hint = needManual ? `<div class="manual-hint">Haz el paso manual del plan y márcalo antes de ejecutar la acción.</div>` : "";
     actions=`
     <div class="actions">
-      <button class="approve" onclick="approve('${i.id}')">${ICHECK} Aprobar y ejecutar</button>
+      ${approveBtn}
       <button class="reject" onclick="reject('${i.id}')">${IX} Rechazar</button>
-    </div>`;
+    </div>${hint}`;
   } else if (i.response==="approved") {
     actions=inflight
       ? `<div class="done">⏳ Aprobado — ejecutando y verificando… (≈90&nbsp;s)</div>`

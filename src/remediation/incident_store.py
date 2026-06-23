@@ -53,6 +53,7 @@ class Incident:
     occurrence_count: int = 1          # nº de veces que se ha repetido (deduplicación)
     last_seen: float = 0.0             # última vez que se observó el mismo problema
     execution_log: list = field(default_factory=list)  # pasos ejecutados en vivo: {order,type,command,output,status}
+    manual_confirmed: bool = False     # el operador confirmó el paso manual previo a la acción
 
     def to_dict(self) -> dict:
         return asdict(self)
