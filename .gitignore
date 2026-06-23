@@ -14,3 +14,9 @@ finetune/output/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Datos de runtime (estado vivo, no versionar)
+data/incidents/incidents.jsonl
+data/incidents/*.bak*
+data/graph/
+data/feedback/
