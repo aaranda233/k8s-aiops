@@ -141,7 +141,25 @@ const ICHECK='<svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/><
 const IX='<svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-async function approve(id){ await act(id,"approve"); }
+function planCmd(i){
+  for(const s of (i.remediation_plan||[])) if(s.action_type==="command" && s.action) return s.action;
+  return i.remediation_command||"";
+}
+function remedChatUrl(i){
+  const ns=i.namespaces.join(", "), cmd=planCmd(i);
+  const q = cmd
+    ? `Voy a aplicar "${cmd}" en ${ns} para resolver: ${i.root_cause||""}. Investiga el estado actual del namespace paso a paso y dime si el problema se está resolviendo.`
+    : `¿Qué le pasa a ${ns}? ${i.root_cause||""}`;
+  return `/chat?q=${encodeURIComponent(q)}`;
+}
+async function approve(id){
+  // Abrir el chat (mismo mecanismo que "Investigar en el chat") para ver en vivo,
+  // por streaming ReAct, lo que va pasando con la remediación. window.open síncrono
+  // dentro del gesto de clic → el navegador no lo bloquea.
+  const i=allItems.find(x=>x.id===id);
+  if(i) window.open(remedChatUrl(i),"_blank");
+  await act(id,"approve");
+}
 async function reject(id){ await act(id,"reject"); }
 function toggleCorrect(id){
   const b=document.getElementById("cb-"+id);
@@ -235,6 +253,7 @@ function card(i){
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
+      ${planCmd(i)?`<a class="teachlink" href="${remedChatUrl(i)}" target="_blank">▶ Ver la remediación en el chat</a>`:""}
       <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
       ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
       <div class="correctbox" id="cb-${i.id}" style="display:none">
