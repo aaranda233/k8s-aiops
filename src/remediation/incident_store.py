@@ -62,6 +62,20 @@ class Incident:
         return ",".join(sorted(self.namespaces))
 
 
+def plan_command(obj) -> str:
+    """Comando de escritura ejecutable de una remediación: el paso 'command' del
+    plan del grafo, o el remediation_command determinista como fallback. Devuelve
+    '' si el plan es puramente manual (solo investigación + guía).
+
+    Acepta cualquier objeto con atributos remediation_plan / remediation_command
+    (un Incident o un DiagnosisResult).
+    """
+    for s in (getattr(obj, "remediation_plan", None) or []):
+        if isinstance(s, dict) and s.get("action_type") == "command" and s.get("action"):
+            return s["action"]
+    return getattr(obj, "remediation_command", "") or ""
+
+
 class IncidentStore:
     """Almacén thread-safe-enough para el caso de uso (dict + asignaciones atómicas)."""
 

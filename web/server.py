@@ -26,7 +26,7 @@ from src.collector.topology_collector import TopologyCollector
 from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
 from src.remediation.incident_log import IncidentLog
-from src.remediation.incident_store import Incident, IncidentStore
+from src.remediation.incident_store import Incident, IncidentStore, plan_command
 from src.security.scanner import SecurityScanner
 from web.event_bus import bus
 
@@ -221,15 +221,6 @@ async def api_get_incident(incident_id: str):
     return inc.to_dict()
 
 
-def _plan_command(inc) -> str:
-    """Comando de escritura a ejecutar: el paso 'command' del plan del grafo, o
-    el remediation_command determinista como fallback."""
-    for s in (getattr(inc, "remediation_plan", None) or []):
-        if s.get("action_type") == "command" and s.get("action"):
-            return s["action"]
-    return getattr(inc, "remediation_command", "") or ""
-
-
 @app.post("/api/incidents/{incident_id}/approve")
 async def api_approve(incident_id: str):
     if not incident_store.set_response(incident_id, "approved"):
@@ -239,7 +230,7 @@ async def api_approve(incident_id: str):
     executed = False
     if os.getenv("AIOPS_EXECUTE_ON_APPROVAL", "false").lower() == "true":
         inc = incident_store.get(incident_id)
-        cmd = _plan_command(inc) if inc else ""
+        cmd = plan_command(inc) if inc else ""
         if cmd:
             from src.remediation.executor import execute_if_reversible
             res = execute_if_reversible(cmd)

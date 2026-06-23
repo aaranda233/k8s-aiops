@@ -50,6 +50,7 @@ from src.remediation.incident_store import (
     STATUS_TIMEOUT,
     Incident,
     IncidentStore,
+    plan_command,
 )
 from src.remediation.risk_scorer import score as risk_score
 
@@ -193,7 +194,25 @@ class AutoRemediation:
             if step.action:
                 investigation_steps.append(f"ACTION: {sanitize_kubectl(step.action)}")
 
-        risk = risk_score(kubectl_cmd)
+        # El riesgo y la ejecución se basan en la ACCIÓN ejecutable (el paso
+        # 'command' del plan del grafo), NO en el kubectl_cmd de investigación
+        # —que casi siempre es de lectura y haría que todo saliera Level 0—.
+        #   · Plan con paso ejecutable → puntúa esa acción.
+        #   · Plan SIN acción (solo investigar + guía) → manual, se escala.
+        #   · Sin plan (single-shot / catálogo) → fallback al kubectl_cmd (legacy).
+        has_plan = bool(getattr(diagnosis, "remediation_plan", None))
+        exec_cmd = plan_command(diagnosis)
+        if not has_plan and not exec_cmd:
+            exec_cmd = kubectl_cmd
+        is_manual = has_plan and not exec_cmd
+
+        if is_manual:
+            risk_level, risk_label = 3, "manual"
+            risk_reason = "Plan sin acción reversible — requiere intervención manual"
+        else:
+            risk = risk_score(exec_cmd)
+            risk_level, risk_label, risk_reason = risk.level, risk.label, risk.reason
+
         fp = self._circuit.fingerprint(namespaces, root_cause)
 
         # Crear el incidente — única fuente de verdad para la consola
@@ -204,8 +223,8 @@ class AutoRemediation:
             score=scored_window.score,
             root_cause=root_cause,
             kubectl_cmd=kubectl_cmd,
-            risk_level=risk.level,
-            risk_label=risk.label,
+            risk_level=risk_level,
+            risk_label=risk_label,
             investigation=investigation_steps,
             status=STATUS_PENDING,
             prompt_user=getattr(diagnosis, "prompt_user", ""),
@@ -221,8 +240,8 @@ class AutoRemediation:
         self.incidents.add(incident)
 
         console.print(f"\n  [bold yellow][REMEDIATION][/] {incident_id} — {', '.join(namespaces)}")
-        console.print(f"  Risk: Level {risk.level} ({risk.label}) — {risk.reason}")
-        console.print(f"  kubectl: [cyan]{kubectl_cmd}[/]")
+        console.print(f"  Risk: Level {risk_level} ({risk_label}) — {risk_reason}")
+        console.print(f"  acción: [cyan]{exec_cmd or '(manual)'}[/]")
 
         # 1. Circuit breaker
         blocked, attempts = self._circuit.is_blocked(fp)
@@ -230,37 +249,46 @@ class AutoRemediation:
             console.print(f"  [red]Circuit breaker activo ({attempts} intentos)[/]")
             self.incidents.update(incident_id, status=STATUS_BLOCKED)
             self._notify(incident, KIND_CIRCUIT)
-            return RemediationResult(incident_id, fp, -1, "blocked", kubectl_cmd, None, None)
+            return RemediationResult(incident_id, fp, -1, "blocked", exec_cmd, None, None)
 
-        # 2. Enrutar según nivel de riesgo
-        if risk.level == 0:
+        # 2. Plan manual (sin acción reversible) → escalar, NO marcar resuelto
+        if is_manual:
+            console.print("  [magenta]Plan manual — escalado a la consola (sin acción reversible)[/]")
+            self.incidents.update(incident_id, status=STATUS_ESCALATED)
+            self._notify(incident, KIND_MANUAL)
+            return RemediationResult(incident_id, fp, risk_level, "manual", "", None, None)
+
+        # 3. Enrutar según nivel de riesgo de la acción ejecutable
+        if risk_level == 0:
             console.print("  [dim]Level 0 — solo lectura, sin acción adicional[/]")
             self.incidents.update(incident_id, status=STATUS_RESOLVED)
-            return RemediationResult(incident_id, fp, 0, "skipped", kubectl_cmd, None, None)
+            return RemediationResult(incident_id, fp, 0, "skipped", exec_cmd, None, None)
 
-        # Modo sombra: nada se auto-ejecuta; todo va a aprobación humana en la consola.
-        if self.shadow_mode and risk.level in (1, 2):
+        # Modo sombra: nada se auto-ejecuta; L1/L2 van a aprobación humana en la consola.
+        if self.shadow_mode and risk_level in (1, 2):
             console.print("  [magenta]Modo sombra — esperando aprobación en la consola (no auto-ejecuta)[/]")
             return self._handle_level2(incident, fp)
 
-        if risk.level == 1 and self.max_auto_level >= 1:
+        if risk_level == 1 and self.max_auto_level >= 1:
             return self._execute_level1(incident, fp)
 
-        if risk.level == 2 and self.max_auto_level >= 2:
+        if risk_level == 2 and self.max_auto_level >= 2:
             return self._handle_level2(incident, fp)
 
         # Level 3, o Level 2 sin auto-nivel suficiente → escalar a la consola
-        console.print(f"  [red]Level {risk.level} — escalando a la consola[/]")
-        if risk.level == 2:
+        console.print(f"  [red]Level {risk_level} — escalando a la consola[/]")
+        if risk_level == 2:
             self.incidents.update(incident_id, status=STATUS_PENDING)
             self._notify(incident, KIND_APPROVAL)
         else:
             self.incidents.update(incident_id, status=STATUS_ESCALATED)
             self._notify(incident, KIND_MANUAL)
-        return RemediationResult(incident_id, fp, risk.level, "skipped", kubectl_cmd, None, None)
+        return RemediationResult(incident_id, fp, risk_level, "skipped", exec_cmd, None, None)
 
     def _execute_level1(self, incident: Incident, fp: str) -> RemediationResult:
-        incident_id, kubectl_cmd = incident.id, incident.kubectl_cmd
+        incident_id = incident.id
+        # Ejecuta la ACCIÓN del plan (paso 'command'), no el kubectl de investigación.
+        kubectl_cmd = plan_command(incident) or incident.kubectl_cmd
         namespaces = set(incident.namespaces)
         console.print("  [green]Level 1 — ejecutando automáticamente...[/]")
         result = execute_with_dryrun(kubectl_cmd)
@@ -294,7 +322,9 @@ class AutoRemediation:
         return RemediationResult(incident_id, fp, 1, "executed", kubectl_cmd, result, verified)
 
     def _handle_level2(self, incident: Incident, fp: str) -> RemediationResult:
-        incident_id, kubectl_cmd = incident.id, incident.kubectl_cmd
+        incident_id = incident.id
+        # Ejecuta la ACCIÓN del plan (paso 'command'), no el kubectl de investigación.
+        kubectl_cmd = plan_command(incident) or incident.kubectl_cmd
         namespaces = set(incident.namespaces)
         console.print("  [yellow]Level 2 — esperando decisión humana en la consola...[/]")
 
