@@ -147,6 +147,9 @@ def parse_args():
                    help="Modelos a evaluar: sft,orpo,baseline,hybrid_orpo,hybrid_sft (separados por coma)")
     p.add_argument("--regen", action="store_true",
                    help="Regenerar test set aunque ya exista")
+    p.add_argument("--limit", type=int, default=0,
+                   help="Usar solo las primeras N muestras del test set cargado "
+                        "(para benchmark de latencia sin regenerar el set canónico)")
     p.add_argument("--grammar", action="store_true",
                    help="Activar GBNF grammar-constrained sampling (fuerza formato ROOT CAUSE/KUBECTL). "
                         "Desacopla calidad de contenido del fallo de formato.")
@@ -159,6 +162,9 @@ def main():
 
     # 1. Test set
     test_samples = build_test_set(args.samples, force=args.regen)
+    if args.limit and args.limit > 0:
+        test_samples = test_samples[:args.limit]
+        print(f"[eval] subset de latencia: primeras {len(test_samples)} muestras")
     print(f"\n[eval] {len(test_samples)} muestras · {len(models_to_run)} modelo(s)\n")
 
     all_per_sample: dict[str, list] = {}

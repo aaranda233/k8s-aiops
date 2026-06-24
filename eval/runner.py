@@ -13,6 +13,7 @@ Modo grammar (--grammar):
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -76,6 +77,13 @@ class HybridModelConfig:
     num_predict: int = 300
 
 
+def _gpu_opt() -> dict:
+    """Inyecta num_gpu en las options de Ollama si AIOPS_EVAL_NUM_GPU está fijado.
+    AIOPS_EVAL_NUM_GPU=0 fuerza inferencia 100% CPU (benchmark de latencia CPU)."""
+    ng = os.getenv("AIOPS_EVAL_NUM_GPU")
+    return {"num_gpu": int(ng)} if ng not in (None, "") else {}
+
+
 def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
     """Llama a Ollama y devuelve (root_cause, kubectl, latency_s)."""
     msgs = sample["messages"]
@@ -97,6 +105,7 @@ def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
             "options": {
                 "temperature": cfg.temperature,
                 "num_predict": cfg.num_predict,
+                **_gpu_opt(),
             },
         }
         t0 = time.time()
@@ -116,6 +125,7 @@ def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
             "options": {
                 "temperature": cfg.temperature,
                 "num_predict": cfg.num_predict,
+                **_gpu_opt(),
             },
         }
         t0 = time.time()
@@ -258,7 +268,7 @@ def _call_hybrid(sample: dict, cfg: HybridModelConfig) -> tuple[str, str, float,
                 "model": cfg.base_model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": cfg.temperature, "num_predict": 200},
+                "options": {"temperature": cfg.temperature, "num_predict": 200, **_gpu_opt()},
             }
             resp = client.post(f"{cfg.host}/api/chat", json=payload)
             resp.raise_for_status()
@@ -308,6 +318,7 @@ def _call_hybrid(sample: dict, cfg: HybridModelConfig) -> tuple[str, str, float,
                 "temperature": cfg.temperature,
                 "num_predict": cfg.num_predict,
                 "num_ctx": 2048,
+                **_gpu_opt(),
             },
         }
         resp = client.post(f"{cfg.host}/api/generate", json=expert_payload)
