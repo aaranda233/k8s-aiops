@@ -260,6 +260,93 @@ async def api_manual_done(incident_id: str):
     return {"status": "manual_confirmed", "id": incident_id}
 
 
+@app.post("/api/incidents/{incident_id}/run-step")
+async def api_run_step(incident_id: str, body: dict):
+    """Ejecuta UN paso del plan (play paso a paso, en vez de todo de golpe):
+      · investigate → kubectl de lectura, muestra el output.
+      · command     → acción reversible: resuelve el workload real y la ejecuta
+        (gate: si hay paso manual antes, exige manual_confirmed).
+    No usa el hilo de fondo; el estado terminal lo fija Modo B por re-detección.
+    """
+    import re
+
+    from src.remediation.executor import (
+        execute_if_reversible,
+        resolve_restart_target,
+        run_readonly,
+    )
+
+    inc = incident_store.get(incident_id)
+    if inc is None:
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    plan = inc.remediation_plan or []
+    try:
+        order = int(body.get("order"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "order inválido"}, status_code=400)
+    if order < 1 or order > len(plan):
+        return JSONResponse({"error": "paso no encontrado"}, status_code=404)
+
+    step = plan[order - 1]
+    atype = step.get("action_type")
+    action = (step.get("action") or "").strip()
+    if atype == "guidance" or not action:
+        return JSONResponse({"error": "ese paso no es ejecutable"}, status_code=400)
+
+    if atype == "command":
+        has_manual_before = any(
+            plan[i].get("action_type") == "guidance" for i in range(order - 1)
+        )
+        if has_manual_before and not getattr(inc, "manual_confirmed", False):
+            return JSONResponse(
+                {"error": "Confirma primero el paso manual del plan"}, status_code=409)
+
+    log = list(inc.execution_log or [])
+    log.append({"order": order, "type": atype, "command": action, "output": "", "status": "running"})
+    incident_store.set_execution_log(incident_id, log)
+
+    if atype == "command":
+        m = re.search(r"(?:-n|--namespace)[=\s]+(\S+)", action)
+        ns = m.group(1) if m else (inc.namespaces[0] if inc.namespaces else "default")
+        if "rollout restart" in action.lower():
+            target = resolve_restart_target(ns)
+            if target:
+                action = f"kubectl rollout restart {target} -n {ns}"
+            else:
+                log[-1] = {"order": order, "type": "command", "command": action,
+                           "output": "No se encontró un workload reiniciable; acción manual.",
+                           "status": "manual"}
+                incident_store.set_execution_log(incident_id, log)
+                incident_store.update(incident_id, status="escalated")
+                return {"status": "manual", "order": order, "id": incident_id}
+        res = execute_if_reversible(action)
+        if res is None:
+            log[-1] = {"order": order, "type": "command", "command": action,
+                       "output": "Comando no reversible — bloqueado por seguridad.", "status": "failed"}
+            incident_store.set_execution_log(incident_id, log)
+            return JSONResponse({"error": "comando no reversible (L2+)"}, status_code=400)
+        out = res.real_output if res.success else (res.error or res.dry_run_output or "")
+        log[-1] = {"order": order, "type": "command", "command": action,
+                   "output": out, "status": "done" if res.success else "failed"}
+        incident_store.set_execution_log(incident_id, log)
+        # EXECUTED no es terminal: Modo B verifica por re-detección → resolved/failed.
+        incident_store.update(
+            incident_id,
+            status="executed" if res.success else "failed",
+            execution_output=res.real_output if res.success else out,
+            verified=None if res.success else False,
+        )
+        return {"status": "done" if res.success else "failed", "order": order, "output": out, "id": incident_id}
+
+    # investigate — solo lectura
+    res = run_readonly(action)
+    log[-1] = {"order": order, "type": "investigate", "command": action,
+               "output": res.real_output, "status": "done" if res.success else "failed"}
+    incident_store.set_execution_log(incident_id, log)
+    return {"status": "done" if res.success else "failed", "order": order,
+            "output": res.real_output, "id": incident_id}
+
+
 @app.post("/api/incidents/{incident_id}/correct")
 async def api_correct(incident_id: str, correction: dict):
     """Corrección humana del diagnóstico (señal de aprendizaje de máxima calidad).
