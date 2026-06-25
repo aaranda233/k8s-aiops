@@ -140,7 +140,7 @@
   <div class="brand">K8s-AIOps <span>· Incidencias</span></div>
   <nav class="nav" style="margin-left:18px">
     <a href="/">Dashboard</a><a href="/incidents" class="active">Incidencias</a>
-    <a href="/chat">Chat</a><a href="/topology">Topología</a><a href="/security">Seguridad</a>
+    <a href="/topology">Topología</a><a href="/security">Seguridad</a>
   </nav>
   <span class="live"><span class="pulse"></span>en vivo</span>
 </header>
@@ -185,8 +185,9 @@ async function runStep(id, order){
   } catch(e){ document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>b.disabled=false); }
 }
 function toggleLogs(id){
+  if(openLogs.has(id)) openLogs.delete(id); else openLogs.add(id);
   const b=document.getElementById("pl-"+id);
-  if(b) b.style.display = b.style.display==="none" ? "block" : "none";
+  if(b) b.style.display = openLogs.has(id) ? "block" : "none";
 }
 function toggleCorrect(id){
   const b=document.getElementById("cb-"+id);
@@ -322,11 +323,10 @@ function card(i){
     ${solutionSection(i)}
     ${exec}${actions}
     <div class="teach">
-      <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
       ${i.prompt_user?`<button class="teachbtn" onclick="toggleLogs('${i.id}')">📄 Ver logs del problema</button>`:""}
       <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
       ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
-      ${i.prompt_user?`<div class="problemlogs" id="pl-${i.id}" style="display:none">${esc(i.prompt_user)}</div>`:""}
+      ${i.prompt_user?`<div class="problemlogs" id="pl-${i.id}" style="display:${openLogs.has(i.id)?'block':'none'}">${esc(i.prompt_user)}</div>`:""}
       <div class="correctbox" id="cb-${i.id}" style="display:none">
         <textarea id="rc-${i.id}" rows="2" placeholder="Causa raíz correcta (lo que aprendiste investigando)…"></textarea>
         <input id="kc-${i.id}" placeholder="kubectl … (acción correcta)">
@@ -338,6 +338,7 @@ function card(i){
 }
 let allItems=[];
 let catFilter="all";
+const openLogs=new Set();  // paneles de logs abiertos (persisten entre refrescos de 3s)
 function setFilter(c){
   catFilter=c;
   document.querySelectorAll(".filterbtn").forEach(b=>b.classList.toggle("active", b.dataset.cat===c));

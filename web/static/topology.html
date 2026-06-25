@@ -142,7 +142,7 @@
   <div class="brand">K8s-AIOps <span>· Topología</span></div>
   <nav class="nav">
     <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
-    <a href="/chat">Chat</a><a href="/topology" class="active">Topología</a><a href="/security">Seguridad</a>
+    <a href="/topology" class="active">Topología</a><a href="/security">Seguridad</a>
   </nav>
 </header>
 
@@ -382,7 +382,6 @@ function showDetail(d){
       ${d.namespace?`<div class="row"><span>Namespace</span><b>${esc(d.namespace)}</b></div>`:""}
       <div class="row"><span>Estado</span><b>${esc(d.status)}</b></div>
       <div class="row"><span>Salud</span><b style="color:${colorFor(d)}">${d.health}</b></div>
-      ${d.type==="pod"?`<a class="ask" href="/chat">Preguntar al chat sobre este pod →</a>`:""}
     </div>`;
 }
 
