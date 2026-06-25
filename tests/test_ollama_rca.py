@@ -407,7 +407,8 @@ class _FakeResp:
     def raise_for_status(self):
         pass
     def json(self):
-        return {"message": {"content": self._content}}
+        # cubre ambos endpoints: /api/chat ("message") y /api/generate ("response")
+        return {"message": {"content": self._content}, "response": self._content}
 
 
 class _FakeClient:

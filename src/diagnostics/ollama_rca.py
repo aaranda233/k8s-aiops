@@ -142,6 +142,13 @@ def rca_namespaces_line(window, primary_override: str | None = None) -> str:
     return line
 
 
+# GBNF grammar que fuerza ROOT CAUSE: … \n KUBECTL: kubectl … a nivel de token
+# (mismo patrón que el experto del híbrido) → Parse% garantizado en single-shot.
+_GRAMMAR_GBNF = r"""root         ::= "ROOT CAUSE: " rc-text "\nKUBECTL: " kubectl-text
+rc-text      ::= [^\n]+ (" " [^\n]+)*
+kubectl-text ::= "kubectl " [^\n]+
+"""
+
 # Reasons de evento K8s que son señal de fallo — para el digest determinista.
 # Específicos y sin solapamiento (evita doble conteo de substrings).
 _K8S_REASONS = (
@@ -405,26 +412,28 @@ class OllamaRCA:
         # dominantes para que el experto (solo) nombre mejor la causa.
         user_msg = evidence_digest(logs_text) + user_msg
 
+        # GBNF grammar via /api/generate → formato ROOT CAUSE/KUBECTL garantizado a
+        # nivel de token (igual que el experto del híbrido). stop+num_predict cortan
+        # la divagación si el runtime no aplica la grammar.
+        prompt = (
+            f"<|im_start|>system\n{_SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
+            "prompt": prompt,
             "stream": False,
-            # stop: corta la divagación tipo tutorial (listas, markdown, pasos).
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 300,
-                "stop": ["\n\n", "\n1.", "\n- ", "\n#", "```", "\nPaso", "\nStep"],
-            },
+            "grammar": _GRAMMAR_GBNF,
+            "stop": ["\n\n", "\n1.", "\n- ", "\n#", "```", "\nROOT CAUSE", "\nAnalysis", "\nPaso"],
+            "options": {"temperature": 0.1, "num_predict": 160, "num_ctx": 2048},
         }
 
         with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(f"{self.host}/api/chat", json=payload)
+            resp = client.post(f"{self.host}/api/generate", json=payload)
             resp.raise_for_status()
 
-        text = resp.json()["message"]["content"].strip()
+        text = resp.json()["response"].strip()
         root_cause, kubectl_cmd = parse_diagnosis(text)
         root_cause = ensure_meaningful_root_cause(root_cause, w)
         kubectl_cmd = build_command(logs_text, primary, root_cause, kubectl_cmd)
