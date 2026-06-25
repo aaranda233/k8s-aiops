@@ -925,7 +925,7 @@ L_SFT previene que L_OR desvíe al modelo de la distribución estructurada.</pre
     <p style="font-size:14px; color:var(--muted); margin-top:8px;"><strong>logps/chosen</strong> sube de −2.39 a −0.75 (el modelo es más probable de generar chosen). Contraste con DPO v2 donde cayó de −22 a −104. nll_loss (L_SFT) baja de 1.06 a 0.28: el formato se consolida progresivamente en cada step.</p>
 
     <h3 style="margin-top:56px; font-family:'Lora',serif; font-size:22px;">Comparativa cuantitativa de todos los modelos</h3>
-    <p>Harness de evaluación: 210 muestras ciegas · 14 escenarios · seed=99 · inferencia CPU Intel Xeon Gold 6526Y</p>
+    <p>Harness de evaluación: 210 muestras ciegas · 14 escenarios · seed=99 · Intel Xeon Gold 6526Y. <strong>Nota:</strong> la columna <em>Lat. media</em> es <strong>con GPU</strong> (Ollama auto-usa la A30); la latencia CPU real está abajo en "Rendimiento de inferencia: CPU vs GPU". La calidad es idéntica en CPU y GPU.</p>
 
     <div class="table-wrap" style="margin-top:16px;">
       <table>
@@ -1293,15 +1293,17 @@ python main.py live</pre>
       </div>
     </div>
 
-    <h3>Rendimiento de inferencia en CPU</h3>
+    <h3>Rendimiento de inferencia: CPU vs GPU (medido)</h3>
+    <p style="font-size:14px; color:var(--muted);">Las latencias de la comparativa de modelos (arriba) son <strong>con GPU</strong> (Ollama auto-usa la A30 si está presente). Latencia <strong>CPU real</strong> (<code>num_gpu:0</code>), config de producción single-shot ORPO Q8 + grammar:</p>
     <div class="table-wrap">
       <table>
-        <tr><th>Estado del modelo</th><th>Latencia</th><th>Hardware</th></tr>
-        <tr><td>Cold start (primera llamada)</td><td>2.6 s</td><td rowspan="2">Intel Xeon Gold 6526Y · 4 cores · 13 GB RAM disponibles</td></tr>
-        <tr><td>Warm (modelo en memoria)</td><td>0.75 s</td></tr>
-        <tr><td>Descarga automática tras inactividad</td><td>—</td><td>Configurable vía <code>OLLAMA_KEEP_ALIVE</code> (default 5 min)</td></tr>
+        <tr><th>Hardware</th><th>Lat. media</th><th>Lat. p95</th></tr>
+        <tr><td>Xeon Gold 6526Y · 4 vCPU (CPU pura)</td><td>36.2 s</td><td>50.4 s</td></tr>
+        <tr><td>Xeon Gold 6526Y · 8 vCPU (CPU pura)</td><td>32.6 s</td><td>38.9 s</td></tr>
+        <tr style="background:#f0f9ff;"><td>GPU A30 (aceleración opcional)</td><td>~0.7–2 s</td><td>—</td></tr>
       </table>
     </div>
+    <p style="font-size:13px; color:var(--muted); margin-top:8px;"><strong>Calidad idéntica en CPU y GPU</strong> (mismo modelo Q8 — el coste es solo latencia). p95 ~39 s &lt; ventana de detección de 60 s → <strong>productivo para triaje</strong>. Más cores apenas ayuda (limitado por ancho de banda de memoria / prefill, no por cómputo); la GPU queda como aceleración opcional.</p>
   </div>
 </section>
 
