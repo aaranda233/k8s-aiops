@@ -184,6 +184,10 @@ async function runStep(id, order){
     await load();
   } catch(e){ document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>b.disabled=false); }
 }
+function toggleLogs(id){
+  const b=document.getElementById("pl-"+id);
+  if(b) b.style.display = b.style.display==="none" ? "block" : "none";
+}
 function toggleCorrect(id){
   const b=document.getElementById("cb-"+id);
   b.style.display = b.style.display==="none" ? "flex" : "none";
@@ -319,8 +323,10 @@ function card(i){
     ${exec}${actions}
     <div class="teach">
       <a class="teachlink" href="/chat?q=${encodeURIComponent('¿Qué le pasa a ' + i.namespaces.join(', ') + '? ' + (i.root_cause||''))}" target="_blank">💬 Investigar en el chat</a>
+      ${i.prompt_user?`<button class="teachbtn" onclick="toggleLogs('${i.id}')">📄 Ver logs del problema</button>`:""}
       <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
       ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
+      ${i.prompt_user?`<div class="problemlogs" id="pl-${i.id}" style="display:none">${esc(i.prompt_user)}</div>`:""}
       <div class="correctbox" id="cb-${i.id}" style="display:none">
         <textarea id="rc-${i.id}" rows="2" placeholder="Causa raíz correcta (lo que aprendiste investigando)…"></textarea>
         <input id="kc-${i.id}" placeholder="kubectl … (acción correcta)">
@@ -403,6 +409,9 @@ load(); setInterval(load, 3000);
 .teach{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:13px}
 .teachlink{color:var(--accent);text-decoration:none}
 .teachlink:hover{text-decoration:underline}
+.problemlogs{margin-top:10px;background:#0a0e14;border:1px solid var(--border-soft);border-radius:9px;
+  padding:11px 13px;font-family:var(--mono);font-size:12px;color:#9fb3c8;white-space:pre-wrap;
+  line-height:1.5;max-height:280px;overflow:auto}
 .teachbtn{cursor:pointer;border:1px solid var(--border);background:var(--panel);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px}
 .teachbtn:hover{border-color:var(--teal);color:var(--teal)}
 .taught{color:var(--ok);font-weight:600}
