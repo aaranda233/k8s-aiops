@@ -1,8 +1,8 @@
 # K8s-AIOps: Autonomous Anomaly Detection and Root Cause Analysis in Kubernetes using a Fine-Tuned Small Language Model and a Hybrid ReAct Agent
 
-**Status:** Work in progress — Experiment 10 complete
-**Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [aaranda233/k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo)
-**Hardware:** NVIDIA A30 (24GB VRAM) training · Intel Xeon Gold 6526Y inference
+**Status:** Final version (2026-06-25) — full closed-loop system in production
+**Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [aaranda233/k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo) (diagnosis) · `qwen2.5-coder:14b` (agentic remediation planner, on-demand)
+**Hardware:** NVIDIA A30 (24GB VRAM) training + on-demand agentic planner · Intel Xeon Gold 6526Y inference (expert single-shot, CPU-viable)
 
 ---
 
@@ -12,7 +12,7 @@ This work presents an end-to-end AIOps pipeline for Kubernetes environments that
 
 The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. The final system — a Hybrid ReAct Agent combining a vanilla `qwen2.5:1.5b` investigator with a fine-tuned ORPO expert under GBNF grammar — resolves the trade-off simultaneously: **Keyword%=92.9%** (matching the unspecialized baseline) with **Parse%=98.6%** (guaranteed by grammar), all running on CPU without GPU infrastructure at inference time.
 
-Beyond detection and diagnosis, the system extends to a full **operational console** built entirely on read-only access to the Kubernetes API (no observability infrastructure required): dual detection sources (control-plane events + application logs), auto-remediation with human-in-the-loop approval via ChatOps (Microsoft Teams), a conversational read-only investigation agent ("chat with the cluster"), a live topology view, and a rule-based security posture scanner. The same investigation pipeline that diagnoses operational anomalies thus also audits security posture — all without GPU at inference time and without deploying agents into the cluster.
+Beyond detection and diagnosis, the system extends to a full **operational console** built entirely on read-only access to the Kubernetes API (no observability infrastructure required): dual detection sources (control-plane events + application logs), auto-remediation with human-in-the-loop approval via ChatOps (Microsoft Teams) and step-by-step plan execution, an **executable remediation knowledge graph** with a browsable view, a live topology view, and a rule-based security posture scanner. The final-version remediation layer adds an **agentic escalation planner**: when a novel failure misses the deterministic graph, a larger local code model (`qwen2.5-coder:14b`, loaded on-demand on the same A30 alongside the resident ORPO expert) **investigates the live cluster** with read-only `kubectl` and proposes a validated, real-name-bound multi-step plan that fills the graph — the small expert keeps diagnosing, the large model only acts on the long tail. The same investigation pipeline that diagnoses operational anomalies thus also audits security posture — all without GPU at inference time for the diagnosis path and without deploying agents into the cluster.
 
 ---
 
@@ -723,7 +723,7 @@ This validation surfaced a real executor bug: `kubectl rollout restart` does not
 
 ## 14. Operational Console and Extended Capabilities
 
-Beyond the detection→diagnosis→remediation core, the system grew into a full operational console. Every capability below uses **only read-only Kubernetes API access** (native Python client for data gathering; the `kubectl` CLI, whitelisted to read-only verbs, for the chat and remediation layers). No Loki, Prometheus, or agents are deployed — the system stays portable and infrastructure-free.
+Beyond the detection→diagnosis→remediation core, the system grew into a full operational console. Every capability below uses **only read-only Kubernetes API access** for data gathering (native Python client; the `kubectl` CLI whitelisted to read-only verbs for the investigation and remediation layers). The single exception is the human-approved write action (a reversible `rollout restart`), gated behind shadow mode and explicit operator approval. No Loki, Prometheus, or agents are deployed — the system stays portable and infrastructure-free.
 
 ### 14.1 Dual Detection Source — Events + Application Logs
 
@@ -738,25 +738,20 @@ A FastAPI + WebSocket console exposes the system through five navigable views:
 | View | Purpose |
 |------|---------|
 | **Dashboard** | Watch the algorithm live: Drain3 templates, Isolation Forest PCA, scored windows |
-| **Incidencias** | Operations inbox: incidents with diagnosis + proposed kubectl, approve/reject |
-| **Chat** | Conversational read-only investigation of the cluster |
+| **Incidencias** | Operations inbox: incidents with diagnosis + multi-step plan, per-step execution, approve/reject |
 | **Topología** | Live cluster map (graph + electrical-panel views) coloured by health |
 | **Seguridad** | Security posture findings by severity |
+| **Grafo** | Browse the remediation knowledge graph: problem signatures, multi-step plans, source (catalog vs agentic-escalated) and verification state |
 
 The console is the human-in-the-loop control point: notifications (Teams) only alert and deep-link here; the actual decision (approve/reject/investigate) happens in the authenticated console, not in anonymous notification links.
 
-### 14.3 Conversational Investigation — "Chat with the Cluster"
+### 14.3 Remediation Graph View and Step-by-Step Execution
 
-The `ClusterChatAgent` exposes the hybrid ReAct engine as a chat. The operator asks in natural language ("¿por qué falla el pod X?"); the system investigates live (streamed via SSE) and the fine-tuned ORPO expert synthesizes the final diagnosis from the gathered evidence. Safety is structural: every action passes through the read-only `kubectl_toolbox` (only `describe`/`get`/`logs`/`top`; write verbs rejected before execution).
+The **Grafo** view makes the executable remediation knowledge graph of §19 directly inspectable by the operator. It reads `GET /api/graph` (a read-only `RemediationGraph.dump()`) and renders each node as a collapsible card: the problem signature (intent + namespace class), a source badge (**catalog** vs **agentic-escalated**), the verification state (`✓ successes/attempts`), and — on expand — the full multi-step plan with each step's type (investigate/command/guidance/verify), risk level (L0–L3) and bound command. A filter separates the seeded catalog plans from those the agentic planner has learned, so the operator can watch the system's remediation knowledge grow over time.
 
-**Deterministic scaffolding for a 1.5B model.** A free-form ReAct loop fails on a small base model: in live tests it dithered (5 consecutive THOUGHT turns with no ACTION), never drilled into the failing pod, and — most damaging — the synthesis hallucinated ("all pods are Running") because it only received the first 600 characters of `kubectl get pods -A`, where the broken pods were below the cut. The redesign moves the critical path out of the model and into the harness:
+On the **Incidencias** view, the multi-step plan is no longer a static suggestion: each executable step has its own **play button** with live state derived from the incident's `execution_log` — `▶ Ejecutar` → `⟳ Ejecutando…` → `✓ Hecho` (or `✗ Falló`/`▶ Reintentar`). A `guidance` (manual) step gates the executable steps after it until the operator confirms it, so the plan runs in the intended investigate→fix→verify order under shadow mode.
 
-1. **Deterministic triage.** The harness always runs `kubectl get pods -A` as step 1 and extracts problem pods (CrashLoopBackOff/Error/not-ready; Completed/Succeeded and stale restarts excluded to avoid false positives), producing a compact high-signal digest.
-2. **Deterministic drill-down.** The harness runs `describe` + `logs --tail` on the most severe pod, guaranteeing real root-cause evidence regardless of what the weak model emits.
-3. **Scoped questions.** If the question names a real namespace ("¿cuántos pods en firmas?"), a scoped `get pods -n <ns>` runs with an authoritative deterministic count, so the expert answers the actual question instead of diagnosing the worst cluster fault.
-4. **Grounded synthesis.** The expert receives the problem digest and the culprit's describe/logs (never a truncated dump), with a prompt forbidding invented pods/images/errors and write-command "fixes".
-
-The model retains an optional breadth role (drilling additional problem pods). Guards remain: placeholder commands (`<namespace>`) are rejected, and malformed `ns/name` resource references are auto-normalized. In production this took the chat from a fabricated "everything is Running" answer to correctly quoting the live OIDC-discovery 404 behind a CrashLoopBackOff and proposing a read-only-safe fix.
+**Note (final version).** An earlier release exposed a free-form conversational agent ("chat with the cluster") that wrapped the same read-only `kubectl_toolbox` as a Q&A surface. It was **removed** in the final version: the expert-only diagnosis (§17.9) plus the agentic remediation planner (§19.3) cover the same investigation need but *act* — producing verifiable plans that fill the graph — rather than returning prose, and the deterministic scaffolding the small chat model required is now embedded in the planner's structured loop. The read-only toolbox it relied on remains, reused by both the agentic planner and the per-step executor.
 
 ### 14.4 Cluster Topology — the "Electrical Panel"
 
@@ -766,7 +761,7 @@ The model retains an optional breadth role (drilling additional problem pods). G
 
 `SecurityScanner` extends the read-only investigation from operational anomalies to **security risk**. It applies ~10 deterministic, rule-based checks over the API: privileged containers, runAsRoot, hostNetwork/PID/IPC, hostPath volumes, dangerous capabilities, mutable image tags, hardcoded secrets in env, missing resource limits, cluster-admin bindings to non-system subjects, and namespaces without NetworkPolicy. Findings carry severity (critical/high/medium/low) and a concrete recommendation.
 
-Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection must be deterministic, auditable, and free of LLM hallucination. The LLM's role is complementary and *post*-detection — contextualizing and prioritizing findings (distinguishing a legitimately-privileged CNI pod from a suspicious application pod), reachable by asking the chat about a specific finding. On the production cluster the scanner surfaced 353 findings (31 critical) in under a second, with no infrastructure installed.
+Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection must be deterministic, auditable, and free of LLM hallucination. The LLM's role is complementary and *post*-detection — contextualizing and prioritizing findings (distinguishing a legitimately-privileged CNI pod from a suspicious application pod). On the production cluster the scanner surfaced 353 findings (31 critical) in under a second, with no infrastructure installed.
 
 ---
 
@@ -783,13 +778,15 @@ Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection
 | GGUF Q8_0 — ORPO ⭐ | [HF Hub — k8s-rca-orpo-gguf](https://huggingface.co/aaranda233/k8s-rca-orpo-gguf) (private until publication) |
 | Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
 | Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
+| Expert single-shot + grammar + digest | `src/diagnostics/ollama_rca.py` (production diagnosis path) |
+| Remediation knowledge graph | `src/remediation/remediation_graph.py` (SQLite, seed + escalated nodes) |
+| Escalation + agentic planner | `src/diagnostics/escalation.py` · `src/diagnostics/agentic_planner.py` (live read-only investigation → validated plan) |
 | Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, auto_remediation, incident_store |
 | Notification (pluggable) | `src/remediation/` — base_notifier, teams_notifier (Teams), notifier (email) |
 | Log detection source | `src/collector/log_collector.py` (read-only application logs) |
 | Topology | `src/collector/topology_collector.py` |
-| Cluster chat | `src/diagnostics/cluster_chat.py` |
 | Security scanner | `src/security/scanner.py` |
-| Web console (5 views) | `web/server.py` · `web/static/{index,incidents,chat,topology,security}.html` |
+| Web console (5 views) | `web/server.py` · `web/static/{index,incidents,topology,security,graph}.html` |
 | Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
 
 ---
@@ -862,7 +859,7 @@ or a larger context window.
 The two approaches are wired into a single loop modelled on *complementary
 learning systems* (fast hippocampal vs slow cortical memory):
 
-1. An incident occurs; the operator investigates via chat and reaches a solution
+1. An incident occurs; the operator investigates in the console and reaches a solution
    (recorded as a human correction — the highest-quality signal).
 2. The solution lands in `feedback.jsonl`, which is the RAG index → **available
    instantly** to the next similar incident, no training.
@@ -1001,7 +998,9 @@ The honest caveats: (i) the `NS-ok%`/`Verb-ok%` columns favour single-shot but a
 
 ### 17.10 Chat investigation — "running but on fire" detection and verified commands
 
-The conversational investigation agent (§14.3) was hardened to match the rest of the system:
+> *Historical (development-era finding). The conversational chat surface was **removed** in the final version (§14.3), but the techniques below outlived it: the "running but on fire" log-based culprit detection informs the detector's per-namespace severity signal, and the semantic grounding of §17.11 is reused by the remediation graph's embedding fallback (§19.3).*
+
+The conversational investigation agent was hardened to match the rest of the system:
 
 - **Read-only execution via the kubernetes-configured `kubectl`.** The agent shells out to `kubectl` (read-only verbs only, enforced by `kubectl_toolbox`). On a host with cluster credentials (`~/.kube/config`) but no binary, this failed silently; the binary is provided and the triage output is no longer truncated (a >150-pod cluster was dropping namespaces, so focusing on e.g. `postgresql` found nothing).
 - **Verified commands instead of hallucinated ones.** The synthesiser (ORPO) is asked to explain the cause in prose only; any `kubectl` it invents is stripped, and the system appends a deterministic command from the command builder (§17.7) targeted at the culprit pod, with its plain-language explanation.
@@ -1088,7 +1087,13 @@ The auto-remediation of §13 maps a diagnosis to a *single* kubectl command. Rea
 
 ### 19.3 Resolution and escalation (miss → large model)
 
-`resolve()` first builds a deterministic intent key (catalog hits via `intent_for`); on an unknown intent it falls back to nearest-neighbour by **embedding** over escalated nodes (cosine, threshold 0.6). On a miss with escalation enabled — `src/diagnostics/escalation.py`, **off by default**, pluggable across `anthropic`/`openai`/`ollama` backends — a large model proposes a multi-step plan in strict JSON. The plan is parsed and **validated**: only read verbs (`get`/`describe`/`logs`/`top`/`events`) and the reversible `rollout restart` survive; any destructive verb (`delete`/`drain`/`cordon`/`exec`/`apply`/`patch`/`scale`) is rejected, consistent with shadow mode. A validated plan is persisted as **provisional** (unverified, with an embedding of its signature) so future misses reuse it without another model call.
+`resolve()` first builds a deterministic intent key (catalog hits via `intent_for`); on an unknown intent it falls back to nearest-neighbour by **embedding** over escalated nodes (cosine, threshold 0.6). On a miss with escalation enabled — `src/diagnostics/escalation.py`, pluggable across `anthropic`/`openai`/`ollama` backends — a large model proposes a multi-step plan. The plan is parsed and **validated**: only read verbs (`get`/`describe`/`logs`/`top`/`events`) and the reversible `rollout restart` survive; any destructive verb (`delete`/`drain`/`cordon`/`exec`/`apply`/`patch`/`scale`) is rejected, consistent with shadow mode. A validated plan is persisted as **provisional** (unverified, with an embedding of its signature) so future misses reuse it without another model call.
+
+The escalation has two modes (`ESCALATION_MODE`). **Single-shot** (the original) makes one blind call returning a JSON plan. **Agentic** (`src/diagnostics/agentic_planner.py`, the final-version default in production) is a ReAct loop that *investigates the live cluster first*: THOUGHT → ACTION (read-only `kubectl` via the same `kubectl_toolbox`) → OBSERVATION, repeated up to a step budget, then emits the plan using the **real resource names it observed** — eliminating the `<pod>`/`<deployment>` placeholders a blind call tends to produce. The two layers of defence against unsafe output are unchanged and shared with the single-shot path: the toolbox rejects any write verb during investigation, and `_parse_plan` re-validates the final plan; a deterministic guard additionally drops any executable step that still carries an unresolved `<...>` placeholder. If the agentic loop yields nothing, it falls back to single-shot.
+
+### 19.3.1 Production deployment — local agentic planner on the A30
+
+In the final version the escalation runs **on** in production with the `ollama` backend and `qwen2.5-coder:14b` as the planner model. This 14B code model is **loaded on-demand** on the same A30 that hosts the resident `k8s-rca-orpo` expert (≈2 GB): when a miss fires, Ollama loads the coder (≈15 GB resident, both models at 100% GPU, ~7 GB VRAM headroom), the planner investigates and persists the plan, and the coder idle-unloads after the keep-alive window — so steady-state VRAM cost is just the small expert. This preserves the determinism thesis: the **diagnosis** path stays on the small CPU-viable expert (§17.9), and the **large model only acts on the long tail** (novel problems the catalog/graph does not cover), producing an auditable, real-name-bound, read-only-then-reversible plan rather than a free-form answer. A live production miss produced, for an `inventory-api` CrashLoopBackOff, a five-step plan (`get pods` → `describe pod inventory-api-64b5b587c9-4dlnb` → `logs` → `get events` → `rollout restart deployment/inventory-api`) with the real pod name resolved and no destructive verb — now visible in the **Grafo** view under the *escalated* filter, awaiting outcome verification (§19.4).
 
 ### 19.4 Verification by outcome (free signal)
 
@@ -1125,11 +1130,13 @@ Together with §16, the system now consolidates **both halves** of an incident �
 - [x] Hybrid ReAct Agent — role separation resolves Parse%/Keyword% trade-off
 - [x] Auto-remediation with human-in-the-loop — Level 1 autonomous, Level 2 approval, circuit breaker
 - [x] Pluggable ChatOps notification — Microsoft Teams (primary) + email (fallback)
-- [x] Web operational console — Dashboard, Incidencias, Chat, Topología, Seguridad
+- [x] Web operational console — Dashboard, Incidencias, Topología, Seguridad, Grafo
 - [x] Dual detection source — control-plane events + application logs (read-only)
-- [x] Conversational read-only investigation agent ("chat with the cluster")
 - [x] Live cluster topology (graph + electrical-panel views)
 - [x] Rule-based security posture scanner (10 checks, read-only)
+- [x] Remediation graph view + per-step plan execution (play buttons with live state) (§14.3)
+- [x] Agentic escalation planner — `qwen2.5-coder:14b` investigates live cluster on a graph miss, fills the graph with validated real-name plans; on-demand on the A30 (§19.3.1)
+- [~] Conversational chat agent ("chat with the cluster") — **removed in the final version**, superseded by expert-only diagnosis + agentic planner (§14.3)
 - [x] Per-namespace anomaly scoring with single-culprit attribution (§17.1)
 - [x] Absolute Isolation Forest score — eliminates the relative-normalisation anomaly flood (§17.2)
 - [x] Novelty warm-up on (re)start (§17.3)

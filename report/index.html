@@ -506,7 +506,7 @@
 <!-- HEADER -->
 <header>
   <div class="header-inner">
-    <div class="header-kicker">Trabajo de Investigación · Borrador · Junio 2026</div>
+    <div class="header-kicker">Trabajo de Investigación · Versión Final · Junio 2026</div>
     <h1>Pipeline AIOps para <span>Kubernetes</span>:<br>Detección de Anomalías y Diagnóstico Autónomo</h1>
     <p class="header-desc">Sistema end-to-end para detección de fallos en tiempo real y análisis de causa raíz mediante un modelo de lenguaje pequeño fine-tuneado, funcionando completamente on-premise sin enviar datos al exterior.</p>
     <div class="header-meta">
@@ -1174,8 +1174,15 @@ python main.py live</pre>
 
     <p style="margin-top:16px;">El grafo devuelve un plan multi-paso, con intención correcta y namespace enlazado, para <strong>todos</strong> los escenarios. El 42.9% de "acción reversible final" es <em>por diseño, no una carencia</em>: ~57% de las clases de fallo (pull de imagen, presión de nodo, binding de PVC, CPU insuficiente, auth de registry) no se resuelven con ninguna acción reversible dentro del cluster — su arreglo es externo (corregir un tag de imagen, añadir capacidad, aprovisionar un PV). En esos casos el plan termina en un paso de <code>guidance</code> en vez de forzar un comando destructivo o inútil; donde un <code>rollout restart</code> sí resuelve (config, secret, probe, OOM, network, readiness) el plan termina en uno (Level 1).</p>
 
+    <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Planner agéntico — el modelo grande investiga el cluster en la cola larga</h3>
+    <p>Cuando un fallo <em>novedoso</em> no encaja en el grafo (miss del catálogo y del vecino por embedding), entra el <strong>escalado agéntico</strong> (<code>ESCALATION_MODE=agentic</code>, modo por defecto en producción). En vez de una llamada ciega, un modelo de código local más grande —<code>qwen2.5-coder:14b</code>— ejecuta un bucle ReAct que <strong>investiga el cluster en vivo</strong> (THOUGHT → ACTION con <code>kubectl</code> read-only → OBSERVATION) y luego emite el plan usando los <strong>nombres reales de recurso que ha observado</strong>, eliminando los placeholders <code>&lt;pod&gt;</code>/<code>&lt;deployment&gt;</code> que produce una llamada ciega. El plan validado se persiste como <strong>provisional</strong> en el grafo, listo para reusarse y para verificarse por outcome.</p>
+    <div class="callout" style="margin-top:16px;">
+      <strong>On-demand sobre la A30, sin romper la tesis de determinismo:</strong> el coder de 14B se carga bajo demanda en la misma A30 donde reside el experto <code>k8s-rca-orpo</code> (≈2 GB): ante un miss, Ollama lo carga (≈15 GB, ambos al 100% GPU, ~7 GB de margen), planifica y se descarga tras el periodo de inactividad — así el coste VRAM en estado estacionario es solo el experto pequeño. El <strong>diagnóstico</strong> sigue en el experto pequeño CPU-viable; el <strong>modelo grande solo actúa en la cola larga</strong> (problemas que el catálogo/grafo no cubren), produciendo un plan auditable, enlazado a nombres reales, read-only → reversible, en vez de una respuesta libre.
+    </div>
+    <p style="margin-top:16px;">Un miss real en producción generó, para un CrashLoopBackOff de <code>inventory-api</code>, un plan de cinco pasos (<code>get pods</code> → <code>describe pod inventory-api-64b5b587c9-4dlnb</code> → <code>logs</code> → <code>get events</code> → <code>rollout restart deployment/inventory-api</code>) con el nombre real del pod resuelto y sin ningún verbo destructivo — visible ahora en la vista <strong>Grafo</strong> bajo el filtro <em>escalado (agéntico)</em>, a la espera de verificación por outcome.</p>
+
     <div class="callout" style="margin-top:24px;">
-      <strong>Conclusión:</strong> el sistema consolida ahora las <strong>dos mitades</strong> de un incidente —el diagnóstico (RCA, vía ORPO) y la remediación (vía el grafo)— cada una respaldada por la misma señal gratuita, verificada por outcome y con humano en el bucle.
+      <strong>Conclusión:</strong> el sistema consolida ahora las <strong>dos mitades</strong> de un incidente —el diagnóstico (RCA, vía ORPO) y la remediación (vía el grafo)— cada una respaldada por la misma señal gratuita, verificada por outcome y con humano en el bucle. El planner agéntico rellena la cola larga del grafo sin contaminar la ruta de diagnóstico determinista.
     </div>
 
   </div>
@@ -1187,24 +1194,25 @@ python main.py live</pre>
     <h2>Consola Operativa y Capacidades Extendidas</h2>
     <p class="section-lead">Más allá del núcleo detección→diagnóstico→remediación, todo sobre acceso read-only a la API de Kubernetes — sin Loki, sin Prometheus, sin agentes</p>
 
-    <p>El sistema creció hasta una consola web (FastAPI + WebSocket) de cinco vistas navegables. Toda la recopilación de datos usa el cliente Python nativo; el chat y la remediación usan la CLI <code>kubectl</code> restringida a verbos de solo lectura. Nada se despliega dentro del cluster: el sistema permanece portable y sin infraestructura.</p>
+    <p>El sistema creció hasta una consola web (FastAPI + WebSocket) de cinco vistas navegables. Toda la recopilación de datos usa el cliente Python nativo; la investigación y la remediación usan la CLI <code>kubectl</code> restringida a verbos de solo lectura. La única excepción es la acción de escritura aprobada por el operador (un <code>rollout restart</code> reversible), tras modo sombra y aprobación explícita. Nada se despliega dentro del cluster: el sistema permanece portable y sin infraestructura.</p>
 
     <div class="table-wrap" style="margin-top:16px;">
       <table>
         <tr><th>Vista</th><th>Propósito</th></tr>
         <tr><td><strong>Dashboard</strong></td><td>El algoritmo en vivo: templates Drain3, scatter PCA del Isolation Forest, ventanas puntuadas</td></tr>
-        <tr><td><strong>Incidencias</strong></td><td>Bandeja de operaciones: incidentes con diagnóstico + kubectl propuesto, aprobar/rechazar</td></tr>
-        <tr><td><strong>Chat</strong></td><td>Investigación conversacional del cluster en lenguaje natural (ReAct read-only, streaming SSE)</td></tr>
+        <tr><td><strong>Incidencias</strong></td><td>Bandeja de operaciones: incidentes con diagnóstico + plan multi-paso, ejecución paso a paso, aprobar/rechazar</td></tr>
         <tr><td><strong>Topología</strong></td><td>Mapa del cluster en vivo (grafo de flujo + cuadro eléctrico) coloreado por salud</td></tr>
         <tr><td><strong>Seguridad</strong></td><td>Postura de seguridad: ~10 checks por severidad</td></tr>
+        <tr><td><strong>Grafo</strong></td><td>Explorar el grafo de remediación: firmas de problema, planes multi-paso, origen (catálogo vs escalado agéntico) y estado de verificación</td></tr>
       </table>
     </div>
 
     <h3 style="margin-top:48px; font-family:'Lora',serif; font-size:22px;">Doble fuente de detección — eventos + logs de aplicación</h3>
     <p>La detección consumía solo <strong>Eventos de Kubernetes</strong> (señales del plano de control), que son escasos: un cluster sano emite muy pocos. Se añadió una segunda fuente, los <strong>logs de aplicación</strong> (read-only, acotado por <code>since_seconds</code>/<code>tail_lines</code>/<code>max_pods</code>), que alimenta el mismo Drain3 + Isolation Forest. Captura señal a nivel de app (errores, trazas, fallos de init) que nunca genera un evento K8s. En el cluster de producción, activar logs elevó la señal por ventana de 1-2 eventos a 600+ líneas en 34 namespaces.</p>
 
-    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Chat con el cluster — investigación conversacional</h3>
-    <p>El motor híbrido ReAct expuesto como chat: el operador pregunta en lenguaje natural y el modelo base investiga en vivo (THOUGHT → <code>kubectl</code> read-only → OBSERVATION, en streaming), y el experto ORPO sintetiza el diagnóstico final. Seguridad estructural: toda acción pasa por un toolbox read-only (solo <code>describe</code>/<code>get</code>/<code>logs</code>/<code>top</code>); los verbos de escritura se rechazan antes de ejecutarse.</p>
+    <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Vista Grafo y ejecución paso a paso</h3>
+    <p>La vista <strong>Grafo</strong> hace inspeccionable el grafo de conocimiento de remediación: cada nodo es una tarjeta plegable con la firma del problema (intent + clase de namespace), un badge de origen (<strong>catálogo</strong> vs <strong>escalado agéntico</strong>), el estado de verificación (<code>✓ éxitos/intentos</code>) y, al desplegar, el plan multi-paso completo con tipo, riesgo (L0–L3) y comando enlazado. Un filtro separa los planes sembrados del catálogo de los que el planner agéntico ha aprendido, para ver crecer el conocimiento del sistema. En <strong>Incidencias</strong>, cada paso ejecutable tiene su propio botón <em>play</em> con estado en vivo derivado del log de ejecución (<code>▶ Ejecutar → ⟳ Ejecutando… → ✓ Hecho</code>), y un paso manual bloquea los posteriores hasta que el operador lo confirma.</p>
+    <p style="color:var(--muted); font-size:15px;"><em>Nota (versión final):</em> una versión anterior exponía un agente conversacional ("chat con el cluster"). Se <strong>eliminó</strong>: el diagnóstico con experto único más el planner agéntico cubren la misma necesidad de investigación pero <em>actúan</em> —producen planes verificables que rellenan el grafo— en vez de devolver prosa. El toolbox read-only que usaba permanece, reutilizado por el planner agéntico y por el ejecutor paso a paso.</p>
 
     <h3 style="margin-top:40px; font-family:'Lora',serif; font-size:22px;">Escáner de seguridad — del fallo operativo al riesgo de seguridad</h3>
     <p>El mismo enfoque read-only se extiende a la postura de seguridad con ~10 checks deterministas basados en reglas: contenedores privilegiados, runAsRoot, hostNetwork/hostPath, capabilities peligrosas, imágenes con tag mutable, secretos en variables de entorno, sin límites de recursos, bindings a cluster-admin y namespaces sin NetworkPolicy. Cada hallazgo lleva severidad y recomendación concreta.</p>
