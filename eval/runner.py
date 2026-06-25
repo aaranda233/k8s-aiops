@@ -77,6 +77,28 @@ class HybridModelConfig:
     num_predict: int = 300
 
 
+def evidence_digest(user_content: str) -> str:
+    """Resumen determinista (sin LLM): destaca las señales de evento dominantes del
+    propio sample — el 'reason' K8s de cada línea (Evicted/OOMKilling/FailedScheduling…),
+    que ya está en la evidencia. No hardcodea keywords; solo las surface."""
+    import collections
+    reasons: collections.Counter = collections.Counter()
+    in_sample = False
+    for line in user_content.splitlines():
+        s = line.strip()
+        if s.lower().startswith("event sample") or s.lower().startswith(("logs", "events")):
+            in_sample = True
+            continue
+        if in_sample and line.startswith("  "):
+            parts = line.split()
+            if len(parts) >= 3 and ("/" in parts[1] or parts[1].isupper()):
+                reasons[parts[2]] += 1
+    if not reasons:
+        return ""
+    top = ", ".join("%s (x%d)" % (r, n) for r, n in reasons.most_common(3))
+    return "Dominant event signals (deterministic digest): %s.\n\n" % top
+
+
 def _gpu_opt() -> dict:
     """Inyecta num_gpu en las options de Ollama si AIOPS_EVAL_NUM_GPU está fijado.
     AIOPS_EVAL_NUM_GPU=0 fuerza inferencia 100% CPU (benchmark de latencia CPU)."""
@@ -88,6 +110,10 @@ def _call_ollama(sample: dict, cfg: ModelConfig) -> tuple[str, str, float]:
     """Llama a Ollama y devuelve (root_cause, kubectl, latency_s)."""
     msgs = sample["messages"]
     user_content = msgs[1]["content"]
+    # Opción B: enriquecimiento determinista (AIOPS_EVAL_ENRICH=1) — antepone un
+    # digest de las señales de evento dominantes, sin LLM ni cluster.
+    if os.getenv("AIOPS_EVAL_ENRICH"):
+        user_content = evidence_digest(user_content) + user_content
 
     if cfg.use_grammar:
         # Grammar-constrained sampling usa /api/generate (no /api/chat)
