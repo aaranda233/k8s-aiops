@@ -131,6 +131,27 @@ def test_plan_agentic_returns_empty_on_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_drops_steps_with_unresolved_placeholders(monkeypatch):
+    """Un paso ejecutable con `<...>` sin resolver se descarta; la guía se conserva."""
+    monkeypatch.setattr(
+        AgenticPlanner, "_call_llm",
+        _scripted_llm(["""PLAN:
+[
+  {"type":"investigate","action":"kubectl describe pod <nombre-del-pod> -n web","explanation":"placeholder","risk":0},
+  {"type":"investigate","action":"kubectl get pods -n web","explanation":"real","risk":0},
+  {"type":"guidance","action":"Revisa la config del deployment","explanation":"manual","risk":0}
+]"""]),
+    )
+    p = AgenticPlanner(tool=lambda c: _FakeToolResult(command=c), max_steps=1)
+    steps = p.plan("rc", "ev", "web")
+    actions = [s.action for s in steps]
+    assert "kubectl get pods -n web" in actions
+    assert all("<" not in a for a in actions if a.startswith("kubectl"))
+    assert any(s.action_type == "guidance" for s in steps)  # la guía manual sobrevive
+    assert [s.order for s in steps] == list(range(len(steps)))  # reindexado
+
+
+@pytest.mark.unit
 def test_extract_action_and_has_plan():
     assert agentic_planner._extract_action("THOUGHT: x\nACTION: kubectl get pods") == "kubectl get pods"
     assert agentic_planner._extract_action("THOUGHT: solo pienso") is None

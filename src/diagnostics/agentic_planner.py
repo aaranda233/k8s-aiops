@@ -19,43 +19,55 @@ consolidación ORPO) funciona sin cambios.
 from __future__ import annotations
 
 import os
+import re
+from dataclasses import replace
 
 import httpx
 
 from src.diagnostics.escalation import _parse_plan as parse_plan
 from src.diagnostics.kubectl_toolbox import execute as kubectl_execute
-from src.remediation.remediation_graph import Step
+from src.remediation.remediation_graph import COMMAND, INVESTIGATE, Step
 
 _DEFAULT_MODEL = "qwen2.5-coder:14b"
 _MAX_OBS_CHARS = 1500
 
+# Placeholder sin resolver (p. ej. <pod>, <nombre-del-pod>, <deployment>). Un paso
+# ejecutable que lo conserve no es accionable → se descarta.
+_UNRESOLVED_RE = re.compile(r"<[^>\n]+>")
+
 _SYSTEM = """You are an expert Kubernetes SRE. A monitoring system detected an
 anomaly and hands you a diagnosis plus event evidence. First INVESTIGATE the live
-cluster with read-only kubectl, then produce a step-by-step remediation PLAN.
+cluster with read-only kubectl to learn the REAL resource names, then produce a
+step-by-step remediation PLAN that uses those exact names.
 
 Each turn output EXACTLY ONE of these two formats:
 
 Format A — investigate further:
-THOUGHT: <what to check next and why>
+THOUGHT: reasoning about what to check next
 ACTION: kubectl <read-only command>
 
 Format B — final plan (only when you have enough evidence):
-THOUGHT: <summary of what you found>
+THOUGHT: summary of what you found
 PLAN:
 [
   {"type": "investigate"|"command"|"guidance", "action": "...", "explanation": "...", "risk": 0|1}
 ]
 
-Investigation tools (Format A) — read only:
-  kubectl get <resource> [-n <ns>]
-  kubectl describe <resource> <name> [-n <ns>]
-  kubectl logs <pod> [-n <ns>] [--previous] [--tail=<N>]
-  kubectl top pod [-n <ns>]
+How to investigate (Format A) — read only:
+- ALWAYS start by listing resources to discover their real names, e.g.
+  `kubectl get pods -n aiops-demo`, then `kubectl describe pod <that-name> -n aiops-demo`.
+- Read the exact pod / deployment / service names from the OBSERVATION output.
+- Other read verbs allowed: get, describe, logs, top, events.
 
 PLAN rules (Format B):
 - 2 to 5 steps, ordered: investigate -> identify -> fix -> verify.
+- Use the EXACT resource names you observed (e.g. `inventory-api-7d9c8-abc12`,
+  `deployment/inventory-api`). NEVER write a placeholder such as <pod>,
+  <nombre-del-pod>, <deployment>, <name> or <x>. A step containing angle
+  brackets is INVALID — if you don't know a name yet, investigate first.
 - "command"/"investigate" -> ONE kubectl line, ONLY read verbs
-  (get/describe/logs/top/events) or `kubectl rollout restart deployment/<x> -n <ns>`.
+  (get/describe/logs/top/events) or `kubectl rollout restart deployment/NAME -n NAMESPACE`
+  with NAME and NAMESPACE replaced by the real values.
 - FORBIDDEN anywhere: delete, drain, cordon, exec, apply, patch, scale.
 - "guidance" -> a manual action written in Spanish (no command).
 - "explanation" -> Spanish, brief.
@@ -84,9 +96,17 @@ def _extract_action(text: str) -> str | None:
 
 def _has_plan(text: str) -> bool:
     """True si el texto contiene un array JSON de objetos (el PLAN final)."""
-    import re
-
     return re.search(r"\[\s*\{", text or "") is not None
+
+
+def _resolve_steps(steps: list[Step]) -> list[Step]:
+    """Descarta los pasos ejecutables que aún traen un placeholder `<...>` sin
+    resolver y reindexa el orden. La guía manual (texto) se conserva."""
+    kept = [
+        s for s in steps
+        if not (s.action_type in (INVESTIGATE, COMMAND) and _UNRESOLVED_RE.search(s.action))
+    ]
+    return [replace(s, order=i) for i, s in enumerate(kept)]
 
 
 class AgenticPlanner:
@@ -116,7 +136,7 @@ class AgenticPlanner:
         for _ in range(self.max_steps):
             text = self._call_llm(messages)
             if _has_plan(text):
-                steps = parse_plan(text)
+                steps = _resolve_steps(parse_plan(text))
                 if steps:
                     return steps
             action = _extract_action(text)
@@ -134,9 +154,10 @@ class AgenticPlanner:
         # Límite alcanzado o sin nueva acción: fuerza el plan final.
         messages.append({
             "role": "user",
-            "content": "Entrega AHORA el PLAN final como array JSON (Format B), sin texto alrededor.",
+            "content": "Entrega AHORA el PLAN final como array JSON (Format B) usando los "
+                       "nombres reales observados, sin placeholders ni texto alrededor.",
         })
-        return parse_plan(self._call_llm(messages))
+        return _resolve_steps(parse_plan(self._call_llm(messages)))
 
     def _call_llm(self, messages: list[dict]) -> str:
         payload = {
