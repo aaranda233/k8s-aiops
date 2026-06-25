@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s-AIOps · Grafo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0a0d13; --bg2:#0e121b; --panel:#141a26; --panel2:#1a212f; --rail:#0c1018;
+    --border:#222a3a; --border-soft:#1a2130; --text:#e8ebf2; --muted:#8b94a7; --muted2:#5c6577;
+    --accent:#4f8ff7; --teal:#2dd4bf;
+    --ok:#3fb950; --warn:#d29922; --error:#f85149;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,sans-serif; background:
+      radial-gradient(1200px 600px at 75% -10%, rgba(79,143,247,.05), transparent),
+      var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden;
+      -webkit-font-smoothing:antialiased; }
+  svg.icon { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+  header { padding:0 22px; height:56px; border-bottom:1px solid var(--border-soft);
+      display:flex; align-items:center; gap:13px; background:rgba(10,13,19,.7); backdrop-filter:blur(8px); }
+  .logo { display:flex; align-items:center; justify-content:center; width:30px; height:30px;
+      border-radius:8px; background:linear-gradient(135deg,#1e3a6e,#0f1d38); border:1px solid #2a467e; color:#7fb0ff; }
+  .brand { font-size:15px; font-weight:700; letter-spacing:-.01em; }
+  .brand span { color:var(--muted2); font-weight:500; }
+  .nav { margin-left:18px; display:flex; gap:4px; }
+  .nav a { color:var(--muted); text-decoration:none; font-size:13.5px; font-weight:500; padding:7px 12px; border-radius:7px; transition:.15s; }
+  .nav a:hover { color:var(--text); background:var(--panel); }
+  .nav a.active { color:var(--text); background:var(--panel2); }
+
+  .bar { padding:11px 22px; border-bottom:1px solid var(--border-soft); display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+  .seg { display:flex; background:var(--rail); border:1px solid var(--border); border-radius:9px; padding:3px; gap:2px; }
+  .seg button { display:flex; align-items:center; gap:7px; background:transparent; color:var(--muted);
+      border:none; padding:6px 13px; font-size:13px; font-weight:500; font-family:inherit; cursor:pointer; border-radius:6px; transition:.15s; }
+  .seg button:hover { color:var(--text); }
+  .seg button.active { background:linear-gradient(180deg,#21314f,#1a2740); color:#cfe0ff; box-shadow:var(--shadow); }
+  .stats { display:flex; gap:16px; }
+  .stat { display:flex; align-items:baseline; gap:5px; font-size:13px; color:var(--muted); }
+  .stat b { color:var(--text); font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .stat.good b { color:var(--ok); }
+  .hint { margin-left:auto; font-size:12px; color:var(--muted2); }
+
+  main { flex:1; overflow-y:auto; padding:20px 22px 60px; }
+  main::-webkit-scrollbar { width:10px; } main::-webkit-scrollbar-thumb { background:var(--border); border-radius:5px; }
+  .grid { display:flex; flex-direction:column; gap:11px; max-width:1100px; margin:0 auto; }
+
+  .node { border:1px solid var(--border-soft); border-radius:12px; background:var(--panel); overflow:hidden; }
+  .node-h { display:flex; align-items:center; gap:11px; padding:14px 16px; cursor:pointer; transition:.15s; flex-wrap:wrap; }
+  .node-h:hover { background:var(--panel2); }
+  .chev { color:var(--muted2); transition:transform .18s; }
+  .node.open .chev { transform:rotate(90deg); }
+  .intent { font-size:14.5px; font-weight:600; font-family:var(--mono); color:var(--text); }
+  .nsclass { font-size:11.5px; color:var(--muted); border:1px solid var(--border-soft); border-radius:6px; padding:1px 7px; }
+  .src { font-size:10.5px; font-weight:600; border-radius:20px; padding:2px 10px; text-transform:uppercase; letter-spacing:.04em; }
+  .src.catalog { color:var(--accent); background:rgba(79,143,247,.12); }
+  .src.escalated { color:var(--warn); background:rgba(210,153,34,.13); }
+  .ver { display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--ok); }
+  .ver.no { color:var(--muted2); }
+  .nsteps { margin-left:auto; font-size:12px; color:var(--muted); }
+
+  .body { display:none; padding:4px 16px 16px; border-top:1px solid var(--border-soft); }
+  .node.open .body { display:block; }
+  ol.plan { list-style:none; display:flex; flex-direction:column; gap:9px; margin-top:12px; }
+  .step { border-left:2px solid var(--border-soft); padding-left:12px; }
+  .step-h { display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+  .step-num { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
+      border-radius:50%; background:var(--rail); color:var(--muted); font-size:11px; font-weight:600; }
+  .step-type { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted2); }
+  .step-type.command { color:var(--teal); }
+  .step-type.guidance { color:var(--warn); }
+  .step-risk { font-size:10px; border:1px solid var(--border-soft); border-radius:5px; padding:0 5px; color:var(--muted); }
+  .step-risk.r1 { color:var(--warn); border-color:var(--warn); }
+  .step-risk.r3 { color:var(--error); border-color:var(--error); }
+  .vchip { font-size:10px; color:var(--ok); border:1px solid rgba(63,185,80,.4); border-radius:5px; padding:0 5px; }
+  .cmd { font-family:var(--mono); font-size:12.5px; color:#7ee0c0; background:var(--rail); border:1px solid var(--border-soft);
+      border-radius:7px; padding:9px 12px; white-space:pre-wrap; word-break:break-word; }
+  .guidance-txt { font-size:12.5px; color:var(--muted); background:var(--panel2); border-left:3px solid var(--teal);
+      border-radius:7px; padding:9px 12px; line-height:1.5; }
+  .expl { font-size:11.5px; color:var(--muted2); margin-top:5px; padding-left:2px; }
+  .empty { text-align:center; color:var(--muted); padding:80px 20px; }
+  .spinner { width:22px; height:22px; border:2.5px solid var(--border); border-top-color:var(--accent);
+      border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 14px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+  </div>
+  <div class="brand">K8s-AIOps <span>· Grafo</span></div>
+  <nav class="nav">
+    <a href="/">Dashboard</a><a href="/incidents">Incidencias</a>
+    <a href="/topology">Topología</a><a href="/security">Seguridad</a>
+    <a href="/graph" class="active">Grafo</a>
+  </nav>
+</header>
+
+<div class="bar">
+  <div class="seg" id="seg">
+    <button class="active" data-src="all" onclick="setFilter('all')">Todos</button>
+    <button data-src="catalog" onclick="setFilter('catalog')">Catálogo</button>
+    <button data-src="escalated" onclick="setFilter('escalated')">Escalado (agéntico)</button>
+  </div>
+  <div class="stats" id="stats"></div>
+  <span class="hint">Memoria de remediación: cada nodo es una firma de problema; las aristas, sus pasos.</span>
+</div>
+
+<main>
+  <div id="grid" class="grid"><div class="empty"><div class="spinner"></div>Cargando grafo…</div></div>
+</main>
+
+<script>
+const TLABEL = {investigate:"Investigar", command:"Aplicar", guidance:"Manual", verify:"Verificar"};
+const SRCLABEL = {catalog:"Catálogo", escalated:"Escalado"};
+let DATA = [];
+let filter = "all";
+const open = new Set();
+
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function setFilter(src){
+  filter = src;
+  document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("active", b.dataset.src===src));
+  render();
+}
+
+function toggleNode(intent){
+  if(open.has(intent)) open.delete(intent); else open.add(intent);
+  render();
+}
+
+function stepHtml(s, idx){
+  const body = s.action_type === "guidance"
+    ? `<div class="guidance-txt">${esc(s.action)}</div>`
+    : `<div class="cmd">${esc(s.action)}</div>`;
+  const risk = s.risk_level>0 ? `<span class="step-risk r${s.risk_level}">L${s.risk_level}</span>` : "";
+  const ver = s.verified
+    ? `<span class="vchip">✓ ${s.success_count}/${s.attempt_count}</span>` : "";
+  const expl = s.explanation ? `<div class="expl">${esc(s.explanation)}</div>` : "";
+  return `<li class="step"><div class="step-h">
+    <span class="step-num">${idx+1}</span>
+    <span class="step-type ${s.action_type}">${TLABEL[s.action_type]||s.action_type}</span>
+    ${risk}${ver}</div>${body}${expl}</li>`;
+}
+
+function nodeHtml(n){
+  const isOpen = open.has(n.intent);
+  const ver = n.verified
+    ? `<span class="ver"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>verificado</span>`
+    : `<span class="ver no">sin verificar</span>`;
+  const steps = n.steps.map(stepHtml).join("");
+  return `<div class="node ${isOpen?'open':''}">
+    <div class="node-h" onclick="toggleNode('${n.intent}')">
+      <svg class="icon chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+      <span class="intent">${esc(n.intent)}</span>
+      ${n.namespace_class?`<span class="nsclass">${esc(n.namespace_class)}</span>`:""}
+      <span class="src ${n.source}">${SRCLABEL[n.source]||n.source}</span>
+      ${ver}
+      <span class="nsteps">${n.steps.length} paso${n.steps.length===1?'':'s'}</span>
+    </div>
+    <div class="body"><ol class="plan">${steps}</ol></div>
+  </div>`;
+}
+
+function render(){
+  const grid = document.getElementById("grid");
+  const items = DATA.filter(n => filter==="all" || n.source===filter);
+  if(!items.length){
+    grid.innerHTML = `<div class="empty">No hay nodos${filter!=="all"?" de este origen":""} en el grafo todavía.</div>`;
+    return;
+  }
+  grid.innerHTML = items.map(nodeHtml).join("");
+}
+
+function renderStats(stats){
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><b>${stats.nodes||0}</b> nodos</div>
+    <div class="stat"><b>${stats.edges||0}</b> pasos</div>
+    <div class="stat good"><b>${stats.verified||0}</b> verificados</div>`;
+}
+
+async function load(){
+  try{
+    const r = await fetch("/api/graph");
+    const j = await r.json();
+    DATA = j.nodes || [];
+    renderStats(j.stats || {});
+    render();
+  }catch(e){
+    document.getElementById("grid").innerHTML = `<div class="empty">Error cargando el grafo.</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

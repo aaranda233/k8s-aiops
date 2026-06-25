@@ -65,11 +65,21 @@ def test_index_page_served(client):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", ["/incidents", "/topology", "/security"])
+@pytest.mark.parametrize("path", ["/incidents", "/topology", "/security", "/graph"])
 def test_spa_pages_served(client, path):
     r = client.get(path)
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+@pytest.mark.unit
+def test_graph_api_returns_envelope(client):
+    r = client.get("/api/graph")
+    assert r.status_code == 200
+    body = r.json()
+    assert "nodes" in body and isinstance(body["nodes"], list)
+    assert "stats" in body
+    assert {"nodes", "edges", "verified"} <= set(body["stats"])
 
 
 @pytest.mark.unit

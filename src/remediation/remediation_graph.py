@@ -368,7 +368,53 @@ class RemediationGraph:
     def stats(self) -> dict:
         n = self._conn.execute("SELECT COUNT(*) c FROM nodes").fetchone()["c"]
         e = self._conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
-        return {"nodes": n, "edges": e}
+        v = self._conn.execute(
+            "SELECT COUNT(DISTINCT node_id) c FROM edges WHERE verified=1"
+        ).fetchone()["c"]
+        return {"nodes": n, "edges": e, "verified": v}
+
+    def dump(self) -> list[dict]:
+        """Vuelca el grafo (read-only) para visualización: cada nodo con sus pasos.
+
+        `source` del nodo se deriva de sus aristas: 'catalog' si todas vienen del
+        catálogo, 'escalated' si alguna fue propuesta por el modelo grande.
+        """
+        out: list[dict] = []
+        nodes = self._conn.execute(
+            "SELECT id, intent, namespace_class, label FROM nodes ORDER BY intent"
+        ).fetchall()
+        for node in nodes:
+            rows = self._conn.execute(
+                "SELECT step_order, action_type, action_template, explanation, "
+                "risk_level, source, verified, success_count, attempt_count "
+                "FROM edges WHERE node_id=? ORDER BY step_order",
+                (node["id"],),
+            ).fetchall()
+            steps = [
+                {
+                    "order": r["step_order"],
+                    "action_type": r["action_type"],
+                    "action": r["action_template"],
+                    "explanation": r["explanation"],
+                    "risk_level": r["risk_level"],
+                    "source": r["source"],
+                    "verified": bool(r["verified"]),
+                    "success_count": r["success_count"],
+                    "attempt_count": r["attempt_count"],
+                }
+                for r in rows
+            ]
+            sources = {s["source"] for s in steps}
+            node_source = "escalated" if "escalated" in sources else "catalog"
+            out.append({
+                "intent": node["intent"],
+                "namespace_class": node["namespace_class"],
+                "label": node["label"],
+                "source": node_source,
+                "verified": any(s["verified"] for s in steps),
+                "steps": steps,
+            })
+        return out
 
     def add_provisional(self, key: str, steps: list[Step], signature_text: str = "",
                         namespace_class: str = "") -> None:

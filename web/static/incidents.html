@@ -102,10 +102,18 @@
   .manualbtn:hover { background:rgba(210,153,34,.2); }
   .manual-done { margin-top:8px; font-size:12px; color:var(--ok); font-weight:600; }
   .manual-hint { font-size:11.5px; color:var(--warn); margin-top:8px; }
-  .stepplay { margin-left:auto; font-size:12px; font-weight:700; color:#03260f; background:linear-gradient(180deg,#3fb950,#2ea043);
-      border:none; border-radius:6px; width:26px; height:22px; line-height:1; cursor:pointer; padding:0; }
-  .stepplay:hover { filter:brightness(1.1); }
-  .stepplay:disabled { opacity:.4; cursor:not-allowed; }
+  .stepplay { margin-left:auto; font-size:11.5px; font-weight:600; color:#03260f;
+      background:linear-gradient(180deg,#3fb950,#2ea043); border:none; border-radius:7px;
+      padding:5px 12px; line-height:1; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+      letter-spacing:.01em; transition:.15s; }
+  .stepplay:hover:not(:disabled) { filter:brightness(1.1); }
+  .stepplay:disabled { cursor:not-allowed; }
+  .stepplay.blocked { opacity:.4; }
+  .stepplay .tri { font-size:10px; }
+  .stepplay.running { background:rgba(210,153,34,.16); color:var(--warn); cursor:wait; }
+  .stepplay.running .tri { animation:spin 1s linear infinite; display:inline-block; }
+  .stepplay.done { background:rgba(63,185,80,.14); color:var(--ok); cursor:default; }
+  .stepplay.failed { background:rgba(248,81,73,.14); color:var(--error); }
   .guidance { background:var(--panel2); border-left:3px solid var(--teal); border-radius:7px;
       padding:10px 13px; font-size:12.5px; color:var(--muted); line-height:1.55; }
   .sol-tag { font-size:10px; font-weight:400; color:var(--dim); border:1px solid var(--border-soft);
@@ -141,6 +149,7 @@
   <nav class="nav" style="margin-left:18px">
     <a href="/">Dashboard</a><a href="/incidents" class="active">Incidencias</a>
     <a href="/topology">Topología</a><a href="/security">Seguridad</a>
+    <a href="/graph">Grafo</a>
   </nav>
   <span class="live"><span class="pulse"></span>en vivo</span>
 </header>
@@ -176,13 +185,21 @@ async function reject(id){ await act(id,"reject"); }
 async function manualDone(id){
   try { await fetch(`/api/incidents/${id}/manual-done`,{method:"POST"}); await load(); } catch(e){}
 }
-async function runStep(id, order){
-  document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>b.disabled=true);
+function execState(i, order){
+  const e = (i.execution_log||[]).filter(x=>x.order===order).pop();
+  return e ? e.status : null;   // running | done | failed | null
+}
+async function runStep(id, order, btn){
+  if(btn){ btn.classList.add("running"); btn.disabled=true; btn.innerHTML='<span class="tri">⟳</span> Ejecutando…'; }
+  document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>{ if(b!==btn) b.disabled=true; });
   try {
     await fetch(`/api/incidents/${id}/run-step`,{method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify({order})});
     await load();
-  } catch(e){ document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>b.disabled=false); }
+  } catch(e){
+    if(btn){ btn.classList.remove("running"); btn.innerHTML='<span class="tri">▶</span> Ejecutar'; }
+    document.querySelectorAll(`[data-inc="${id}"] .stepplay`).forEach(b=>b.disabled=false);
+  }
 }
 function toggleLogs(id){
   if(openLogs.has(id)) openLogs.delete(id); else openLogs.add(id);
@@ -244,13 +261,24 @@ function solutionSection(i){
       const expl = s.explanation ? `<div class="cmd-help">${esc(s.explanation)}</div>` : "";
       const risk = (s.risk_level>0) ? `<span class="step-risk r${s.risk_level}">L${s.risk_level}</span>` : "";
       let play = "";
-      if (pendingNow && isCmd) {
+      if (isCmd) {
         const order = idx + 1;
-        const manualBefore = plan.slice(0, idx).some(p => p.action_type === "guidance");
-        const blocked = s.action_type === "command" && manualBefore && !i.manual_confirmed;
-        play = blocked
-          ? `<button class="stepplay" disabled title="Confirma el paso manual primero">▶</button>`
-          : `<button class="stepplay" onclick="runStep('${i.id}',${order})" title="Ejecutar este paso">▶</button>`;
+        const state = execState(i, order);   // done | running | failed | null
+        if (state === "done") {
+          play = `<button class="stepplay done" disabled>✓ Hecho</button>`;
+        } else if (state === "running") {
+          play = `<button class="stepplay running" disabled><span class="tri">⟳</span> Ejecutando…</button>`;
+        } else if (state === "failed") {
+          play = pendingNow
+            ? `<button class="stepplay failed" onclick="runStep('${i.id}',${order},this)" title="Reintentar este paso"><span class="tri">▶</span> Reintentar</button>`
+            : `<button class="stepplay failed" disabled>✗ Falló</button>`;
+        } else if (pendingNow) {
+          const manualBefore = plan.slice(0, idx).some(p => p.action_type === "guidance");
+          const blocked = s.action_type === "command" && manualBefore && !i.manual_confirmed;
+          play = blocked
+            ? `<button class="stepplay blocked" disabled title="Confirma el paso manual primero"><span class="tri">▶</span> Ejecutar</button>`
+            : `<button class="stepplay" onclick="runStep('${i.id}',${order},this)" title="Ejecutar este paso"><span class="tri">▶</span> Ejecutar</button>`;
+        }
       }
       return `<li class="plan-step"><div class="step-h"><span class="step-num">${idx+1}</span><span class="step-type ${s.action_type}">${tlabel[s.action_type]||s.action_type}</span>${risk}${play}</div>${body}${expl}</li>`;
     }).join("");

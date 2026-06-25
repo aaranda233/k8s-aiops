@@ -468,3 +468,28 @@ async def api_security():
         return JSONResponse({"error": str(e), "findings": [], "summary": {}}, status_code=200)
 
 
+# ------------------------------------------------------------------
+# Grafo de remediación — visualización read-only del conocimiento
+# ------------------------------------------------------------------
+
+
+@app.get("/graph", response_class=HTMLResponse)
+async def graph_page():
+    html_path = Path(__file__).parent / "static" / "graph.html"
+    return HTMLResponse(html_path.read_text())
+
+
+@app.get("/api/graph")
+async def api_graph():
+    try:
+        from src.remediation.remediation_graph import get_graph
+
+        g = get_graph()
+        return {"nodes": g.dump(), "stats": g.stats()}
+    except Exception as e:
+        return JSONResponse(
+            {"error": str(e), "nodes": [], "stats": {"nodes": 0, "edges": 0, "verified": 0}},
+            status_code=200,
+        )
+
+

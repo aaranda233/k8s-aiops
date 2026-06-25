@@ -148,3 +148,34 @@ def test_command_steps_are_reversible(graph):
         if s.action_type == COMMAND:
             assert s.risk_level <= 1
             assert "rollout restart" in s.action
+
+
+@pytest.mark.unit
+def test_dump_returns_nodes_with_steps(graph):
+    """dump() vuelca cada nodo con sus pasos y deriva el origen."""
+    nodes = graph.dump()
+    assert len(nodes) >= 10
+    by_intent = {n["intent"]: n for n in nodes}
+    assert "oom" in by_intent
+    oom = by_intent["oom"]
+    assert oom["source"] == "catalog"          # solo aristas de catálogo
+    assert oom["namespace_class"] == "app"
+    assert len(oom["steps"]) >= 1
+    step = oom["steps"][0]
+    for k in ("order", "action_type", "action", "risk_level", "source",
+              "verified", "success_count", "attempt_count"):
+        assert k in step
+
+
+@pytest.mark.unit
+def test_dump_marks_escalated_source(graph):
+    """Un nodo con un paso escalado se marca source=escalated."""
+    graph.add_provisional(
+        "escalated:test",
+        [Step(order=0, action_type=INVESTIGATE, action="kubectl get pods -n web",
+              source="escalated")],
+        signature_text="problema novedoso",
+    )
+    node = next(n for n in graph.dump() if n["intent"] == "escalated:test")
+    assert node["source"] == "escalated"
+    assert node["steps"][0]["source"] == "escalated"
