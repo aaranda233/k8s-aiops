@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import CollectorConfig, DetectorConfig, DiagnosticsConfig, PipelineConfig, RemediationConfig
 from dataset.feedback_capture import record_feedback
 from src.collector.topology_collector import TopologyCollector
-from src.diagnostics.cluster_chat import ClusterChatAgent
 from src.pipeline import AIOPsPipeline
 from src.remediation.incident_log import IncidentLog
 from src.remediation.incident_store import Incident, IncidentStore, plan_command
@@ -66,15 +65,6 @@ for _snap in _incident_log.latest_incidents():
         })
     except Exception:
         pass
-
-# Agente de chat read-only (investigación on-demand del cluster)
-chat_agent = ClusterChatAgent(
-    host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-    model=os.getenv("REACT_BASE_MODEL", "qwen2.5:1.5b"),       # investigador
-    expert_model=os.getenv("OLLAMA_MODEL", "k8s-rca-orpo:latest"),  # sintetiza la conclusión
-    max_steps=int(os.getenv("CHAT_MAX_STEPS", "5")),
-    dry_run=os.getenv("CHAT_DRY_RUN", "false").lower() == "true",
-)
 
 # Estado de la aplicación (para sondas de K8s)
 _app_state = {"ready": False, "pipeline_thread": None}
@@ -430,43 +420,6 @@ async def demo_incident(mode: str = "human"):
         "hint": ("Aprueba/rechaza en /incidents" if not auto
                  else "Se ejecuta y verifica automáticamente; míralo en /incidents"),
     }
-
-
-# ------------------------------------------------------------------
-# Chat con el cluster — investigación ReAct read-only en vivo (SSE)
-# ------------------------------------------------------------------
-
-@app.get("/chat", response_class=HTMLResponse)
-async def chat_page():
-    html_path = Path(__file__).parent / "static" / "chat.html"
-    return HTMLResponse(html_path.read_text())
-
-
-@app.get("/api/chat/stream")
-async def chat_stream(q: str, cid: str = ""):
-    """Server-Sent Events: emite los pasos del agente conforme investiga.
-
-    `cid` = id de conversación (memoria entre turnos: follow-ups y comandos).
-    """
-    def event_gen():
-        if not q.strip():
-            yield _sse({"type": "error", "text": "Pregunta vacía"})
-            return
-        try:
-            for event in chat_agent.chat_iter(q, conversation_id=cid or None):
-                yield _sse(event)
-        except Exception as e:
-            yield _sse({"type": "error", "text": str(e)})
-        yield _sse({"type": "done"})
-
-    return StreamingResponse(event_gen(), media_type="text/event-stream", headers={
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",  # desactiva buffering en nginx/ingress
-    })
-
-
-def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ------------------------------------------------------------------

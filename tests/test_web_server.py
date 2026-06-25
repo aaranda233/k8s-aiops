@@ -65,7 +65,7 @@ def test_index_page_served(client):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", ["/incidents", "/chat", "/topology", "/security"])
+@pytest.mark.parametrize("path", ["/incidents", "/topology", "/security"])
 def test_spa_pages_served(client, path):
     r = client.get(path)
     assert r.status_code == 200
@@ -87,14 +87,6 @@ def test_security_api_returns_envelope(client):
     assert r.status_code == 200
     body = r.json()
     assert "findings" in body
-
-
-@pytest.mark.unit
-def test_chat_stream_empty_query_emits_error(client):
-    r = client.get("/api/chat/stream", params={"q": "  "})
-    assert r.status_code == 200
-    assert "text/event-stream" in r.headers["content-type"]
-    assert "error" in r.text.lower()
 
 
 @pytest.mark.unit
@@ -151,13 +143,6 @@ def test_incidents_page_has_correction_ui(client):
     html = client.get("/incidents").text
     assert "Enseñar la solución correcta" in html
     assert "toggleCorrect" in html and "function correct(" in html
-    assert "Investigar en el chat" in html
-
-
-@pytest.mark.unit
-def test_chat_page_supports_prefill(client):
-    html = client.get("/chat").text
-    assert "URLSearchParams" in html  # prefill desde ?q=
 
 
 @pytest.mark.unit
