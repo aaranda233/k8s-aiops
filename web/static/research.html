@@ -562,10 +562,14 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
           <td class="worst">2.04s</td>
           <td class="worst">1.60s</td>
           <td class="na">0.98s</td>
-          <td style="color:var(--dim);font-size:11px">Media por inferencia (CPU)</td>
+          <td style="color:var(--dim);font-size:11px">Media por inferencia (con GPU A30)</td>
         </tr>
       </tbody>
     </table>
+
+    <div class="finding-box" style="margin-top:16px;">
+      <strong>Latencia CPU vs GPU (medido, 2026-06).</strong> Las latencias de la tabla son <strong>con GPU</strong> (Ollama auto-usa la A30 si está presente). En <strong>CPU pura</strong> (<code>num_gpu:0</code>, VM Xeon Gold 6526Y) la config de producción (single-shot ORPO Q8 + grammar) da <strong>~32-36&nbsp;s/diagnóstico</strong> (p95 ~39-50&nbsp;s) — dentro de la ventana de detección de 60&nbsp;s, así que <strong>productivo para triaje</strong>. Claves: <strong>la calidad es idéntica en CPU y GPU</strong> (mismo modelo Q8 — el coste es solo latencia); <strong>más cores apenas ayuda</strong> (limitado por ancho de banda de memoria / prefill, no por cómputo); y <strong>Q4 no acelera en CPU</strong> (no más rápido que Q8 — el dequant 4-bit cuesta más por token → Q8 sigue siendo el default). La GPU queda como aceleración opcional (~1&nbsp;s).
+    </div>
 
     <div class="metrics-grid" style="margin-top:24px;">
       <div class="chart-card">

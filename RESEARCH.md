@@ -365,7 +365,7 @@ With grammar active on the ORPO model: Parse%: 58.1% → **100.0%**, Keyword%: 6
 
 ## 9. Quantitative Evaluation
 
-**Harness:** `eval/run_eval.py` · 210 blind samples (seed=99, distinct from training seed=42) · 14 scenarios × 15 samples · CPU Intel Xeon Gold 6526Y
+**Harness:** `eval/run_eval.py` · 210 blind samples (seed=99, distinct from training seed=42) · 14 scenarios × 15 samples · Intel Xeon Gold 6526Y. ⚠️ The `Lat.` column in §9.2 is **GPU-accelerated** (Ollama auto-uses the A30 when present); §9.4 reports the measured CPU-only latency. Quality metrics are hardware-independent.
 
 ### 9.1 Metrics
 
@@ -402,6 +402,24 @@ With grammar active on the ORPO model: Parse%: 58.1% → **100.0%**, Keyword%: 6
 2. **NS-ok% is the most sensitive metric to model capability.** It requires the model to extract the correct namespace from the event context and reproduce it in the kubectl command. ORPO+grammar achieves 89.5% by combining domain knowledge (ORPO) with format guarantee (grammar).
 
 3. **Keyword% is the best proxy for diagnostic quality.** It measures whether the model identified the correct failure type regardless of phrasing — closer to what an SRE actually cares about.
+
+### 9.4 CPU vs GPU latency (measured 2026-06-25)
+
+The `Lat.` column in §9.2 is **GPU-accelerated** — Ollama automatically offloads to the A30 when a GPU is present. Re-running the *same* harness with the GPU disabled (`AIOPS_EVAL_NUM_GPU=0` → `num_gpu:0`) on the Xeon Gold 6526Y VM gives the honest **CPU-only** latency for the production single-shot config (ORPO Q8 + grammar):
+
+| CPU allocation | Lat. mean | Lat. p95 | N |
+|----------------|:---------:|:--------:|:-:|
+| 4 vCPU (2 physical cores) | 36.2 s | 50.4 s | 14 |
+| 8 vCPU (4 physical cores) | 32.6 s | 38.9 s | 4 |
+
+Findings:
+
+- **Quality is hardware-independent.** CPU yields the same Parse%/Keyword%/NS-ok% as GPU (identical weights and Q8 quantization); the hardware only changes *where* the same computation runs. The CPU cost is **latency, not quality** — GPU (~0.7–2 s) is optional acceleration, not a quality requirement.
+- **CPU is productive for triage.** p95 ≈ 39 s sits within the 60 s anomaly-detection window, so a diagnosis completes before the next window. AIOps triage tolerates seconds, not milliseconds.
+- **Latency is memory-bandwidth / context-prefill bound, not core bound.** Doubling physical cores (2→4) cut latency only ~10%; the runner saturates all physical cores (384% CPU @ 2.8 GHz) yet stalls on memory bandwidth and the ~2 k-token event prefill. More cores give diminishing returns.
+- **Q4 gives no latency benefit on CPU.** A quick check of `k8s-rca-orpo-q4` measured 39.9 s mean — *not faster* than Q8's 32.6 s — because unoptimised 4-bit dequant costs more per token than Q8 on this CPU. (The same 4-sample run also showed format breakage under grammar, but that conflicts with the 210-sample §9.2 result where single-shot Q4 parses at 59.5%, so the quality point needs confirmation on a larger sample.) With no speedup on CPU plus §5's quality caveat, **Q8 remains the default**.
+
+*Small samples on an undersized shared VM → indicative figures; the representative on-prem-node number (8–16 dedicated cores) is left for future consolidation. The only remaining CPU lever is trimming the input context (less prefill).*
 
 ---
 

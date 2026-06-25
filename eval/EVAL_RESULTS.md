@@ -4,7 +4,7 @@
 **Test set:** 210 muestras ciegas (seed=99 ≠ seed entrenamiento=42)
 **Escenarios:** 14 × 15 muestras/escenario
 **Modelos:** `k8s-rca-slm` (SFT) · `k8s-rca-orpo` (ORPO) · `hybrid_orpo` (qwen2.5:1.5b investigador + k8s-rca-orpo experto) · `qwen2.5:1.5b` (baseline vanilla)
-**Infraestructura:** CPU Intel Xeon Gold 6526Y · Ollama · GGUF Q8_0
+**Infraestructura:** Intel Xeon Gold 6526Y · Ollama · GGUF Q8_0. ⚠️ Las latencias de las tablas de abajo son **con GPU** (Ollama usa la A30 si está presente). La latencia **CPU real** (`num_gpu:0`) está en la sección **Latencia CPU vs GPU**. La **calidad es idéntica** en CPU y GPU (mismo modelo Q8).
 
 ---
 
@@ -337,9 +337,22 @@ Pregunta: ¿un modelo más nuevo y grande sube el techo de calidad? Respuesta: *
 4. Ollama 0.24 con el GGUF **oficial** → `unable to load model` (el runtime no soporta gemma4).
 - Además: servidor con **15 GB RAM** → el merge fp32 (10.2 GB) muere por **OOM** al cargar.
 
-### Latencia CPU (referencia)
+### Latencia CPU vs GPU (medido 2026-06-25)
 
-qwen-ORPO Q4 en CPU (`num_gpu:0`): **~10 tok/s gen, 6–15 s/diagnóstico**. La de Gemma-GGUF-Q4 sería comparable (E2B es edge-optimizado), pero **no se puede materializar** en este stack.
+Las latencias de las tablas de arriba (0.71–2.04 s) se midieron **con GPU** (Ollama auto-usa la A30). La latencia **CPU real** (`num_gpu:0`, mismo harness `eval/run_eval.py` con `AIOPS_EVAL_NUM_GPU=0`) sobre VM Xeon Gold 6526Y, config de producción (single-shot **ORPO Q8 + grammar**):
+
+| CPU asignada | Lat. media | Lat. p95 | N |
+|---|:---:|:---:|:---:|
+| 4 vCPU (2 cores físicos) | 36.2 s | 50.4 s | 14 |
+| 8 vCPU (4 cores físicos) | 32.6 s | 38.9 s | 4 |
+
+**Hallazgos:**
+- **La calidad NO cambia CPU↔GPU** — mismo Parse%/Keyword%/NS-ok% (mismos pesos, mismo Q8). El hardware solo cambia *dónde* corre el mismo cómputo. El coste de CPU es **latencia, no calidad**.
+- **CPU productivo para triaje**: p95 ~39 s < ventana de detección de 60 s. La GPU (~0.7–2 s) es aceleración opcional.
+- **Más cores apenas ayuda** (2→4 físicos = ~10%): el runner satura los cores (384% CPU @ 2.8 GHz) pero el cuello es **ancho de banda de memoria / prefill del contexto (~2k tokens)**, no cómputo.
+- **Q4 NO acelera en CPU**: `k8s-rca-orpo-q4` dio 39.9 s media — *no más rápido* que Q8 (el dequant 4-bit sin kernels optimizados cuesta más por token). (Ese run de 4 muestras además rompió el formato con grammar, pero contradice la tabla §9.2 donde Q4 single-shot parsea al 59.5% — la calidad de Q4 hay que reconfirmarla con más muestras.) Sin ganancia de velocidad en CPU, **Q8 sigue siendo el default**.
+
+*Muestras pequeñas en VM compartida e infradimensionada → cifras indicativas; el número de nodo on-prem representativo (8–16 cores dedicados) queda por consolidar. La única palanca CPU restante: recortar el contexto de entrada.*
 
 ### Veredicto
 
