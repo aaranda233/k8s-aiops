@@ -32,6 +32,7 @@ from eval.metrics import (
     parse_rate,
     rouge_l,
 )
+from src.diagnostics.ollama_rca import evidence_digest
 
 _SYSTEM_PROMPT = """\
 You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes.
@@ -75,28 +76,6 @@ class HybridModelConfig:
     max_steps: int = 3
     temperature: float = 0.0
     num_predict: int = 300
-
-
-def evidence_digest(user_content: str) -> str:
-    """Resumen determinista (sin LLM): destaca las señales de evento dominantes del
-    propio sample — el 'reason' K8s de cada línea (Evicted/OOMKilling/FailedScheduling…),
-    que ya está en la evidencia. No hardcodea keywords; solo las surface."""
-    import collections
-    reasons: collections.Counter = collections.Counter()
-    in_sample = False
-    for line in user_content.splitlines():
-        s = line.strip()
-        if s.lower().startswith("event sample") or s.lower().startswith(("logs", "events")):
-            in_sample = True
-            continue
-        if in_sample and line.startswith("  "):
-            parts = line.split()
-            if len(parts) >= 3 and ("/" in parts[1] or parts[1].isupper()):
-                reasons[parts[2]] += 1
-    if not reasons:
-        return ""
-    top = ", ".join("%s (x%d)" % (r, n) for r, n in reasons.most_common(3))
-    return "Dominant event signals (deterministic digest): %s.\n\n" % top
 
 
 def _gpu_opt() -> dict:

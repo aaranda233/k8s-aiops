@@ -142,6 +142,32 @@ def rca_namespaces_line(window, primary_override: str | None = None) -> str:
     return line
 
 
+# Reasons de evento K8s que son señal de fallo — para el digest determinista.
+# Específicos y sin solapamiento (evita doble conteo de substrings).
+_K8S_REASONS = (
+    "OOMKilling", "OOMKilled", "Evicted", "FailedScheduling", "ImagePullBackOff",
+    "ErrImagePull", "CrashLoopBackOff", "Unhealthy", "FailedMount",
+    "FailedAttachVolume", "ProvisioningFailed", "NodeNotReady", "FailedCreatePodSandBox",
+)
+
+
+def evidence_digest(text: str) -> str:
+    """Resumen determinista (sin LLM, sin cluster): cuenta las señales de fallo K8s
+    presentes en la evidencia y surface las dominantes. Robusto al formato (eval o
+    producción). Antepuesto al prompt, ayuda al experto a nombrar la causa correcta
+    sin reintroducir el investigador. Devuelve '' si no hay señales conocidas."""
+    import collections
+    counts: collections.Counter = collections.Counter()
+    for reason in _K8S_REASONS:
+        c = text.count(reason)
+        if c:
+            counts[reason] = c
+    if not counts:
+        return ""
+    top = ", ".join("%s (x%d)" % (r, n) for r, n in counts.most_common(3))
+    return "Señales de evento dominantes (digest determinista): %s.\n\n" % top
+
+
 def window_event_sample(window, max_logs: int = 40, focus_ns: str | None = None) -> tuple[str, int, str]:
     """Muestra para el RCA priorizando los logs de error si los hay.
 
@@ -375,6 +401,9 @@ class OllamaRCA:
             f"Total events: {w.log_count} | Distinct templates: {w.template_count}\n"
             f"{label} ({n_sample} lines):\n{logs_text}"
         )
+        # Opción B: enriquecimiento determinista — antepone las señales de fallo
+        # dominantes para que el experto (solo) nombre mejor la causa.
+        user_msg = evidence_digest(logs_text) + user_msg
 
         payload = {
             "model": self.model,
