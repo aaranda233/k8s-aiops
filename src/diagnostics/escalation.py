@@ -152,9 +152,21 @@ def _parse_plan(text: str) -> list[Step]:
 
 
 def escalate(root_cause: str, evidence: str, namespace: str) -> list[Step]:
-    """Pide un plan al modelo grande y devuelve Steps validados ([] si falla/off)."""
+    """Pide un plan al modelo grande y devuelve Steps validados ([] si falla/off).
+
+    ESCALATION_MODE=agentic → el planner investiga el cluster en vivo (read-only)
+    antes de proponer el plan; si no produce nada, cae al single-shot. Por defecto
+    (single_shot) hace una sola llamada ciega.
+    """
     if not is_enabled():
         return []
+    mode = (os.getenv("ESCALATION_MODE", "single_shot") or "single_shot").lower()
+    if mode == "agentic":
+        from src.diagnostics.agentic_planner import plan_agentic
+
+        steps = plan_agentic(root_cause, evidence, namespace)
+        if steps:
+            return steps
     text = _call_backend(_SYSTEM, _user_prompt(root_cause, evidence, namespace))
     return _parse_plan(text or "")
 
