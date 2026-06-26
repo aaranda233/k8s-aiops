@@ -110,8 +110,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl get secret -n {ns}",
              "¿Existe el secret con el rol/credenciales que la app no encuentra?", 0),
-            (GUIDANCE, "Crea o corrige el secret que falta (p. ej. el rol/usuario de la base "
-             "de datos) y aplícalo.", "", 0),
             (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
              "Reinicia el workload para que recoja el secret corregido.", 1),
         ],
@@ -121,7 +119,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl logs {pod} -n {ns} --previous",
              "Mira el log de la instancia que crasheó para ver el error de arranque.", 0),
-            (GUIDANCE, "Corrige el ConfigMap o la variable de entorno que provoca el crash.", "", 0),
             (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
              "Reinicia el workload tras corregir la configuración.", 1),
         ],
@@ -131,7 +128,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
              "Confirma OOMKilled y el límite de memoria del contenedor.", 0),
-            (GUIDANCE, "Sube resources.limits.memory del contenedor.", "", 0),
             (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
              "Reinicia para aplicar el nuevo límite de memoria.", 1),
         ],
@@ -141,7 +137,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
              "Revisa el evento de liveness/readiness probe.", 0),
-            (GUIDANCE, "Ajusta timeouts/umbral del probe o corrige el endpoint de salud.", "", 0),
             (COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
              "Reinicia tras ajustar el probe.", 1),
         ],
@@ -151,8 +146,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
              "Mira el evento de pull para ver si es tag, registry o autenticación.", 0),
-            (GUIDANCE, "Verifica el nombre y el tag de la imagen y que exista en el registry; "
-             "corrígelo con `kubectl set image deploy/<workload> <contenedor>=<imagen:tag>`.", "", 0),
         ],
     },
     "image_auth": {
@@ -160,8 +153,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl get secret -n {ns}",
              "¿Existe el secret de pull referenciado en imagePullSecrets?", 0),
-            (GUIDANCE, "(Re)crea el secret de pull con `kubectl create secret docker-registry` "
-             "y referéncialo en imagePullSecrets del deployment.", "", 0),
         ],
     },
     "pvc": {
@@ -169,8 +160,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe pvc {pvc} -n {ns}",
              "Mira por qué el PVC no se vincula a un volumen.", 0),
-            (GUIDANCE, "Revisa el StorageClass y que haya un PV disponible o aprovisionamiento "
-             "dinámico; crea o ajusta el PV/StorageClass.", "", 0),
         ],
     },
     "node_pressure": {
@@ -178,8 +167,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe node {node}",
              "Revisa la presión de memoria/disco y las condiciones del nodo.", 0),
-            (GUIDANCE, "Libera recursos (elimina pods Evicted), reprograma cargas o añade "
-             "capacidad al cluster.", "", 0),
         ],
     },
     "pending_cpu": {
@@ -187,8 +174,6 @@ _SEED_PLANS: dict[str, dict] = {
         "steps": [
             (INVESTIGATE, "kubectl describe pod {pod} -n {ns}",
              "Mira por qué no se planifica (FailedScheduling / Insufficient cpu).", 0),
-            (GUIDANCE, "Reduce los requests de CPU del pod, libera capacidad (escala abajo un "
-             "vecino) o añade nodos al cluster.", "", 0),
         ],
     },
 }
@@ -327,11 +312,10 @@ class RemediationGraph:
         order = 0
         for r in rows:
             if r["action_type"] == GUIDANCE:
-                action = r["action_template"]  # texto, sin binding
-            else:
-                action = _bind(r["action_template"], ns, evidence)
-                if action is None:
-                    continue  # recurso no disponible → descartar el paso
+                continue  # los pasos manuales se han retirado (incl. nodos antiguos en BD)
+            action = _bind(r["action_template"], ns, evidence)
+            if action is None:
+                continue  # recurso no disponible → descartar el paso
             steps.append(Step(
                 order=order,
                 action_type=r["action_type"],
@@ -403,6 +387,7 @@ class RemediationGraph:
                     "attempt_count": r["attempt_count"],
                 }
                 for r in rows
+                if r["action_type"] != GUIDANCE  # los pasos manuales se han retirado
             ]
             sources = {s["source"] for s in steps}
             node_source = "escalated" if "escalated" in sources else "catalog"

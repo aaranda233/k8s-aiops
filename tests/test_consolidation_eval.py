@@ -32,5 +32,12 @@ def test_eval_graph_coverage_and_intent():
     assert len(rows) == len(SCENARIOS)
     assert all(r["hit"] for r in rows), "cobertura debe ser 100%"
     assert all(r["intent_ok"] for r in rows), "intent correcto en todos los escenarios"
-    assert all(r["multi"] for r in rows), "todos los planes deben ser multi-paso"
     assert all(r["ns_ok"] for r in rows), "binding de namespace correcto"
+    # Sin pasos manuales: los escenarios con acción reversible determinista son
+    # multi-paso (autónomos); el resto son investigate-only y se derivan al
+    # escalado agéntico en runtime (el modelo grande rellena el comando concreto).
+    for r in rows:
+        if r["reversible"]:
+            assert r["multi"], f"{r['scenario']} con acción debe ser multi-paso"
+    assert any(r["reversible"] for r in rows), "debe haber clases con fix reversible"
+    assert any(not r["reversible"] for r in rows), "debe haber clases que escalan"

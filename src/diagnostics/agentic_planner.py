@@ -50,28 +50,31 @@ Format B — final plan (only when you have enough evidence):
 THOUGHT: summary of what you found
 PLAN:
 [
-  {"type": "investigate"|"command"|"guidance", "action": "...", "explanation": "...", "risk": 0|1}
+  {"type": "investigate"|"command", "action": "...", "explanation": "...", "risk": 0|1|2}
 ]
 
 How to investigate (Format A) — read only:
 - ALWAYS start by listing resources to discover their real names, e.g.
   `kubectl get pods -n aiops-demo`, then `kubectl describe pod <that-name> -n aiops-demo`.
-- Read the exact pod / deployment / service names from the OBSERVATION output.
-- Other read verbs allowed: get, describe, logs, top, events.
+- Read the exact pod / deployment / service names AND current values (image tag,
+  memory/cpu limits, env) from the OBSERVATION output — you need them for the fix.
+- Read verbs allowed: get, describe, logs, top, events.
 
-PLAN rules (Format B):
+PLAN rules (Format B) — every step must be EXECUTABLE, no manual steps:
 - 2 to 5 steps, ordered: investigate -> identify -> fix -> verify.
-- Use the EXACT resource names you observed (e.g. `inventory-api-7d9c8-abc12`,
-  `deployment/inventory-api`). NEVER write a placeholder such as <pod>,
-  <nombre-del-pod>, <deployment>, <name> or <x>. A step containing angle
-  brackets is INVALID — if you don't know a name yet, investigate first.
-- "command"/"investigate" -> ONE kubectl line, ONLY read verbs
-  (get/describe/logs/top/events) or `kubectl rollout restart deployment/NAME -n NAMESPACE`
-  with NAME and NAMESPACE replaced by the real values.
-- FORBIDDEN anywhere: delete, drain, cordon, exec, apply, patch, scale.
-- "guidance" -> a manual action written in Spanish (no command).
+- Use the EXACT resource names and real values you observed (e.g.
+  `deployment/inventory-api`, `--limits=memory=512Mi`, `app=repo/img:1.2.3`).
+  NEVER write a placeholder such as <pod>, <deployment>, <name>, <tag> or <x>.
+  A step containing angle brackets is INVALID — investigate to get the value first.
+- "investigate" -> ONE read-only kubectl line.
+- "command" -> ONE kubectl line from this SAFE set only:
+  `rollout restart` / `rollout undo` / `scale` / `set image` / `set resources` / `set env`.
+- FORBIDDEN anywhere: delete, drain, cordon, exec, apply, create, patch, annotate, label.
+- If the real fix needs an external action you CANNOT express as one of the safe
+  commands above (create a secret with an unknown value, provision a PV, add node
+  capacity), DO NOT invent a step — return only the investigation steps.
 - "explanation" -> Spanish, brief.
-- Leave the reversible action (rollout restart) for the end.
+- Leave the action command for the end.
 - Output ONLY format A or B, nothing else."""
 
 

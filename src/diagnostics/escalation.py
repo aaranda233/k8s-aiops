@@ -1,4 +1,5 @@
-"""Escalado a un modelo grande cuando el grafo de remediación no tiene plan (miss).
+"""Escalado a un modelo grande cuando el grafo de remediación no resuelve con un
+comando ejecutable (miss, o plan sin paso de acción).
 
 Pluggable por variables de entorno y **desactivado por defecto** (cero cambio en
 producción hasta que se configure):
@@ -8,12 +9,13 @@ producción hasta que se configure):
   ANTHROPIC_API_KEY / OPENAI_API_KEY   (según backend)
   OLLAMA_HOST                          (backend ollama, default localhost:11434)
 
-El modelo grande propone un PLAN multi-paso en JSON estricto; se parsea a Steps
-y se VALIDA: solo verbos de lectura (get/describe/logs/top/events) + la acción
-reversible `rollout restart`. Cualquier verbo destructivo (delete/drain/cordon/
-exec/apply/patch...) se rechaza — coherente con el modo shadow del sistema.
+El modelo grande propone un PLAN multi-paso; se parsea a Steps y se VALIDA contra
+un vocabulario seguro: verbos de lectura (get/describe/logs/top/events) + acciones
+reversibles/de-configuración (rollout restart/undo, scale, set image/resources/env).
+Cualquier verbo destructivo (delete/drain/cordon/exec/apply/create/patch...) se
+rechaza. **No existen pasos manuales** (`guidance`): cada paso es ejecutable.
 
-Devuelve None si está desactivado, falla la llamada, o el plan no valida.
+Devuelve None/[] si está desactivado, falla la llamada, o el plan no valida.
 """
 
 from __future__ import annotations
@@ -24,24 +26,35 @@ import re
 
 import httpx
 
-from src.remediation.remediation_graph import COMMAND, GUIDANCE, INVESTIGATE, Step
+from src.remediation.remediation_graph import COMMAND, INVESTIGATE, Step
+from src.remediation.risk_scorer import score
 
 _READ_VERBS = {"get", "describe", "logs", "top", "events"}
-_VALID_TYPES = {INVESTIGATE, COMMAND, GUIDANCE}
+# Acciones de escritura permitidas (reversibles L1 + configuración L2). Cada una
+# pasa por dry-run + aprobación por paso en el executor. Destructivos prohibidos.
+_SAFE_WRITE_PREFIXES = [
+    ("rollout", "restart"), ("rollout", "undo"), ("scale",),
+    ("set", "image"), ("set", "resources"), ("set", "env"),
+]
+_VALID_TYPES = {INVESTIGATE, COMMAND}
 
 _SYSTEM = """Eres un SRE experto en Kubernetes. Te doy un problema anómalo y debes
 proponer un PLAN de remediación MULTI-PASO (investigar → identificar → arreglar →
-verificar).
+verificar) totalmente EJECUTABLE — sin pasos manuales.
 
 Reglas estrictas:
 - Responde SOLO con un array JSON, sin texto alrededor.
-- Cada paso: {"type": "investigate"|"command"|"guidance", "action": "...", "explanation": "...", "risk": 0|1}
-- "command"/"investigate" → un comando kubectl en UNA línea. SOLO verbos de lectura
-  (get/describe/logs/top/events) o `kubectl rollout restart deployment/<x> -n <ns>`.
-- PROHIBIDO delete, drain, cordon, exec, apply, patch, scale u otros destructivos.
-- "guidance" → texto en español de una acción manual (sin comando).
+- Cada paso: {"type": "investigate"|"command", "action": "...", "explanation": "...", "risk": 0|1|2}
+- "investigate" → comando kubectl de SOLO LECTURA (get/describe/logs/top/events).
+- "command" → comando kubectl de acción, UNA línea, SOLO de este conjunto seguro:
+  `rollout restart` / `rollout undo` / `scale` / `set image` / `set resources` / `set env`.
+  Usa nombres y valores reales (lee el recurso antes para conocer imagen/límites actuales).
+- PROHIBIDO: delete, drain, cordon, exec, apply, create, patch, annotate, label.
+- NO uses pasos de texto/manuales: si el arreglo necesita una acción externa
+  (crear un secret, provisionar un PV, añadir un nodo), NO lo incluyas en el plan;
+  limítate a los pasos de investigación que sí puedes ejecutar.
 - explanation: español, breve.
-- 2 a 5 pasos. Empieza investigando, deja la acción reversible para el final."""
+- 2 a 5 pasos. Empieza investigando, deja la acción al final."""
 
 
 def is_enabled() -> bool:
@@ -107,17 +120,27 @@ def _call_backend(system: str, user: str) -> str | None:
 
 
 def _command_is_safe(action: str) -> bool:
+    """True si es un kubectl de lectura o del conjunto seguro de escritura.
+
+    Rechaza placeholders sin resolver y cualquier verbo fuera del vocabulario.
+    """
     parts = action.split()
     if len(parts) < 2 or parts[0] != "kubectl":
         return False
-    if "rollout restart" in action:
-        return True
+    if "<" in action and ">" in action:
+        return False  # placeholder sin resolver
     verb = parts[1].lower()
-    return verb in _READ_VERBS
+    if verb in _READ_VERBS:
+        return True
+    rest = [p.lower() for p in parts[1:]]
+    return any(rest[:len(p)] == list(p) for p in _SAFE_WRITE_PREFIXES)
 
 
 def _parse_plan(text: str) -> list[Step]:
-    """Extrae el array JSON y construye Steps validados (descarta inseguros)."""
+    """Extrae el array JSON y construye Steps validados (descarta inseguros).
+
+    Solo investigate/command; el riesgo se calcula con el risk_scorer real. Los
+    items `guidance` (manuales) u otros tipos se descartan."""
     if not text:
         return []
     m = re.search(r"\[.*\]", text, re.DOTALL)
@@ -136,16 +159,12 @@ def _parse_plan(text: str) -> list[Step]:
         action = str(item.get("action", "")).strip()
         if atype not in _VALID_TYPES or not action:
             continue
-        if atype in (INVESTIGATE, COMMAND):
-            if not _command_is_safe(action):
-                continue  # comando inseguro/destructivo → descartar
-            risk = 1 if "rollout restart" in action else 0
-        else:
-            risk = 0
+        if not _command_is_safe(action):
+            continue  # comando inseguro/destructivo/placeholder → descartar
         steps.append(Step(
             order=order, action_type=atype, action=action,
             explanation=str(item.get("explanation", "")).strip(),
-            risk_level=risk, source="escalated", verified=False,
+            risk_level=score(action).level, source="escalated", verified=False,
         ))
         order += 1
     return steps
@@ -171,13 +190,20 @@ def escalate(root_cause: str, evidence: str, namespace: str) -> list[Step]:
     return _parse_plan(text or "")
 
 
+def _has_command(steps) -> bool:
+    """True si el plan tiene al menos un paso de acción ejecutable (no solo lectura)."""
+    return any(getattr(s, "action_type", "") == COMMAND for s in (steps or []))
+
+
 def resolve_with_escalation(evidence: str, namespace: str, root_cause: str = ""):
     """Punto de integración único para el pipeline.
 
-    Intenta el grafo (catálogo + embedding); si es miss y el escalado está
-    habilitado, pide un plan al modelo grande, lo persiste como provisional
-    (sin verificar) para reusarlo en futuros miss, y lo devuelve. Si todo falla,
-    None → el pipeline cae a su remediación determinista actual.
+    Intenta el grafo (catálogo + embedding). Escala al modelo grande cuando hay
+    miss **o** cuando el plan del catálogo no tiene un paso de acción ejecutable
+    (antes terminaba en un paso manual): el modelo investiga en vivo y propone un
+    comando concreto, que se persiste como provisional para reusarlo. Si el modelo
+    tampoco encuentra una acción segura, se devuelve el plan de investigación del
+    catálogo (la nota de "acción externa" la aporta la capa determinista).
     """
     import hashlib
 
@@ -185,13 +211,13 @@ def resolve_with_escalation(evidence: str, namespace: str, root_cause: str = "")
 
     g = get_graph()
     plan = g.resolve(evidence, namespace, root_cause)
-    if plan is not None:
+    if plan is not None and _has_command(plan.steps):
         return plan
     if not is_enabled():
-        return None
+        return plan  # plan de investigación del catálogo (sin acción) o None
     steps = escalate(root_cause, evidence, namespace)
-    if not steps:
-        return None
+    if not _has_command(steps):
+        return plan  # el modelo no halló acción segura → cae al catálogo / None
     key = "escalated:" + hashlib.md5((root_cause or "")[:200].encode()).hexdigest()[:10]
     g.add_provisional(key, steps, signature_text=f"{root_cause}\n{evidence[:400]}")
     return Plan(intent=key, namespace=namespace, steps=steps, source="escalated")

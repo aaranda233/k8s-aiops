@@ -60,27 +60,26 @@ def test_network_ingress_is_multistep(graph):
 
 
 @pytest.mark.unit
-def test_crash_secret_plan_has_guidance_and_namespace(graph):
+def test_crash_secret_plan_is_executable_no_guidance(graph):
     ev = "postgresql Pod/postgresql-0 FATAL: role does not exist"
     plan = graph.resolve(ev, namespace="postgresql", root_cause="el rol no existe")
     assert plan is not None
     assert plan.intent == "crash_secret"
-    # contiene una guía manual (crear/corregir el secret)
-    assert any(s.action_type == GUIDANCE for s in plan.steps)
+    # ya NO hay pasos manuales (guidance) en ningún plan
+    assert all(s.action_type != GUIDANCE for s in plan.steps)
     # los comandos llevan el namespace correcto
     for s in plan.steps:
-        if s.action_type != GUIDANCE:
-            assert "-n postgresql" in s.action or s.action.startswith("kubectl describe node")
+        assert "-n postgresql" in s.action or s.action.startswith("kubectl describe node")
 
 
 @pytest.mark.unit
 def test_step_without_resource_is_dropped(graph):
-    # crash_config sin Pod/ en la evidencia → el paso `logs {pod}` y el restart
-    # {workload} se descartan; queda al menos la guía.
+    # crash_config sin Pod/ en la evidencia → `logs {pod}` y el restart {workload}
+    # se descartan; sin pasos manuales que sobrevivan, el plan es un miss (None) y
+    # el pipeline lo deriva al escalado agéntico.
     ev = "default crashloopbackoff exit code 1 in configmap"
     plan = graph.resolve(ev, namespace="default", root_cause="crashloop por configmap")
-    assert plan is not None
-    assert all("{" not in s.action for s in plan.steps)  # sin placeholders sin resolver
+    assert plan is None
 
 
 @pytest.mark.unit

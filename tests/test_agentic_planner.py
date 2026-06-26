@@ -131,8 +131,8 @@ def test_plan_agentic_returns_empty_on_failure(monkeypatch):
 
 
 @pytest.mark.unit
-def test_drops_steps_with_unresolved_placeholders(monkeypatch):
-    """Un paso ejecutable con `<...>` sin resolver se descarta; la guía se conserva."""
+def test_drops_placeholders_and_guidance(monkeypatch):
+    """Se descarta el paso con `<...>` sin resolver Y el paso manual (guidance)."""
     monkeypatch.setattr(
         AgenticPlanner, "_call_llm",
         _scripted_llm(["""PLAN:
@@ -145,9 +145,8 @@ def test_drops_steps_with_unresolved_placeholders(monkeypatch):
     p = AgenticPlanner(tool=lambda c: _FakeToolResult(command=c), max_steps=1)
     steps = p.plan("rc", "ev", "web")
     actions = [s.action for s in steps]
-    assert "kubectl get pods -n web" in actions
-    assert all("<" not in a for a in actions if a.startswith("kubectl"))
-    assert any(s.action_type == "guidance" for s in steps)  # la guía manual sobrevive
+    assert actions == ["kubectl get pods -n web"]  # solo sobrevive el paso real
+    assert all(s.action_type != "guidance" for s in steps)  # sin pasos manuales
     assert [s.order for s in steps] == list(range(len(steps)))  # reindexado
 
 

@@ -116,7 +116,7 @@
 </main>
 
 <script>
-const TLABEL = {investigate:"Investigar", command:"Aplicar", guidance:"Manual", verify:"Verificar"};
+const TLABEL = {investigate:"Investigar", command:"Aplicar", verify:"Verificar"};
 const SRCLABEL = {catalog:"Catálogo", escalated:"Escalado"};
 let DATA = [];
 let filter = "all";
@@ -136,9 +136,7 @@ function toggleNode(intent){
 }
 
 function stepHtml(s, idx){
-  const body = s.action_type === "guidance"
-    ? `<div class="guidance-txt">${esc(s.action)}</div>`
-    : `<div class="cmd">${esc(s.action)}</div>`;
+  const body = `<div class="cmd">${esc(s.action)}</div>`;
   const risk = s.risk_level>0 ? `<span class="step-risk r${s.risk_level}">L${s.risk_level}</span>` : "";
   const ver = s.verified
     ? `<span class="vchip">✓ ${s.success_count}/${s.attempt_count}</span>` : "";
