@@ -101,7 +101,6 @@
       border:1px solid rgba(210,153,34,.4); border-radius:8px; padding:6px 12px; cursor:pointer; }
   .manualbtn:hover { background:rgba(210,153,34,.2); }
   .manual-done { margin-top:8px; font-size:12px; color:var(--ok); font-weight:600; }
-  .manual-hint { font-size:11.5px; color:var(--warn); margin-top:8px; }
   .stepplay { margin-left:auto; font-size:11.5px; font-weight:600; color:#03260f;
       background:linear-gradient(180deg,#3fb950,#2ea043); border:none; border-radius:7px;
       padding:5px 12px; line-height:1; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
@@ -132,13 +131,10 @@
   .invest { list-style:none; font-size:12.5px; color:var(--muted); font-family:var(--mono); }
   .invest li { padding:3px 0 3px 16px; position:relative; }
   .invest li::before { content:""; position:absolute; left:2px; top:9px; width:5px; height:5px; border-radius:50%; background:var(--teal); }
-  .actions { margin-top:17px; display:flex; gap:10px; }
   button { font-family:inherit; font-size:14px; font-weight:600; padding:10px 20px; border:none; border-radius:9px; cursor:pointer;
       display:flex; align-items:center; gap:7px; transition:.15s; }
   button:hover { filter:brightness(1.08); }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  .approve { background:linear-gradient(180deg,#3fb950,#2ea043); color:#03260f; }
-  .reject { background:var(--panel2); color:var(--error); border:1px solid rgba(248,81,73,.3); }
   .done { font-size:13px; color:var(--muted); margin-top:15px; font-style:italic; }
 </style>
 </head>
@@ -169,13 +165,7 @@ const STATUS_LABEL={pending_approval:"Pendiente",approved:"Aprobado",rejected:"R
 const STATUS_CLASS={pending_approval:"b-pending",approved:"b-approved",executed:"b-executed",resolved:"b-resolved",rejected:"b-rejected",failed:"b-failed",timeout:"b-timeout",escalated:"b-escalated",blocked:"b-blocked"};
 const RISK_LABEL={0:"lectura",1:"reversible",2:"configuración",3:"destructivo"};
 const pathId = location.pathname.match(/\/incidents\/(.+)$/)?.[1];
-const ICHECK='<svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>';
-const IX='<svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-
 function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function hasManual(i){ return (i.remediation_plan||[]).some(s=>s.action_type==="guidance"); }
-async function approve(id){ await act(id,"approve"); }
-async function reject(id){ await act(id,"reject"); }
 async function manualDone(id){
   try { await fetch(`/api/incidents/${id}/manual-done`,{method:"POST"}); await load(); } catch(e){}
 }
@@ -199,29 +189,6 @@ function toggleLogs(id){
   if(openLogs.has(id)) openLogs.delete(id); else openLogs.add(id);
   const b=document.getElementById("pl-"+id);
   if(b) b.style.display = openLogs.has(id) ? "block" : "none";
-}
-function toggleCorrect(id){
-  const b=document.getElementById("cb-"+id);
-  b.style.display = b.style.display==="none" ? "flex" : "none";
-}
-async function correct(id){
-  const rc=(document.getElementById("rc-"+id).value||"").trim();
-  const kc=(document.getElementById("kc-"+id).value||"").trim();
-  const msg=document.getElementById("cmsg-"+id);
-  if(!rc && !kc){ msg.textContent="Escribe la causa o el comando"; return; }
-  msg.textContent="Guardando…";
-  try{
-    const r=await fetch(`/api/incidents/${id}/correct`,{method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({root_cause:rc, kubectl:kc})});
-    msg.textContent = r.ok ? "Guardado — el modelo lo aprende (RAG al instante)" : "Error";
-    if(r.ok) setTimeout(load, 1500);
-  }catch(e){ msg.textContent="Error al guardar"; }
-}
-async function act(id,verb){
-  document.querySelectorAll(`[data-inc="${id}"] button`).forEach(b=>b.disabled=true);
-  try { await fetch(`/api/incidents/${id}/${verb}`,{method:"POST"}); await load(); }
-  catch(e){ document.querySelectorAll(`[data-inc="${id}"] button`).forEach(b=>b.disabled=false); }
 }
 function renderStats(items){
   const pending=items.filter(i=>i.status==="pending_approval").length;
@@ -308,23 +275,12 @@ function card(i){
   const invest=(i.investigation||[]).map(s=>`<li>${esc(s)}</li>`).join("");
   const inflight=i.status==="approved"||i.status==="executed";
   let actions;
-  if (pending) {
-    const needManual = hasManual(i) && !i.manual_confirmed;
-    const approveBtn = needManual
-      ? `<button class="approve" disabled title="Confirma primero el paso manual del plan">${ICHECK} Aprobar y ejecutar</button>`
-      : `<button class="approve" onclick="approve('${i.id}')">${ICHECK} Aprobar y ejecutar</button>`;
-    const hint = needManual ? `<div class="manual-hint">Haz el paso manual del plan y márcalo antes de ejecutar la acción.</div>` : "";
-    actions=`
-    <div class="actions">
-      ${approveBtn}
-      <button class="reject" onclick="reject('${i.id}')">${IX} Rechazar</button>
-    </div>${hint}`;
-  } else if (i.response==="approved") {
+  if (i.response==="approved") {
     actions=inflight
-      ? `<div class="done">⏳ Aprobado — ejecutando y verificando… (≈90&nbsp;s)</div>`
-      : `<div class="done">✓ Aprobado por el operador — ${i.verified===true?"anomalía resuelta":i.verified===false?"la anomalía persiste tras el fix":"ejecutado"}.</div>`;
+      ? `<div class="done">⏳ Ejecutando y verificando… (≈90&nbsp;s)</div>`
+      : `<div class="done">✓ ${i.verified===true?"anomalía resuelta":i.verified===false?"la anomalía persiste tras el fix":"ejecutado"}.</div>`;
   } else if (i.response==="rejected") {
-    actions=`<div class="done">Rechazado por el operador.</div>`;
+    actions=`<div class="done">Descartado.</div>`;
   } else {
     actions="";
   }
@@ -344,18 +300,10 @@ function card(i){
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
     ${solutionSection(i)}
     ${exec}${actions}
-    <div class="teach">
-      ${i.prompt_user?`<button class="teachbtn" onclick="toggleLogs('${i.id}')">📄 Ver logs del problema</button>`:""}
-      <button class="teachbtn" onclick="toggleCorrect('${i.id}')">✎ Enseñar la solución correcta</button>
-      ${i.human_correction?`<span class="taught">✓ corregido</span>`:""}
-      ${i.prompt_user?`<div class="problemlogs" id="pl-${i.id}" style="display:${openLogs.has(i.id)?'block':'none'}">${esc(i.prompt_user)}</div>`:""}
-      <div class="correctbox" id="cb-${i.id}" style="display:none">
-        <textarea id="rc-${i.id}" rows="2" placeholder="Causa raíz correcta (lo que aprendiste investigando)…"></textarea>
-        <input id="kc-${i.id}" placeholder="kubectl … (acción correcta)">
-        <button class="approve" onclick="correct('${i.id}')">Guardar — enseñar al modelo</button>
-        <span id="cmsg-${i.id}" class="cmsg"></span>
-      </div>
-    </div>
+    ${i.prompt_user?`<div class="teach">
+      <button class="teachbtn" onclick="toggleLogs('${i.id}')">📄 Ver logs del problema</button>
+      <div class="problemlogs" id="pl-${i.id}" style="display:${openLogs.has(i.id)?'block':'none'}">${esc(i.prompt_user)}</div>
+    </div>`:""}
   </div>`;
 }
 let allItems=[];
@@ -404,10 +352,6 @@ load(); setInterval(load, 3000);
   padding:11px 13px;font-family:var(--mono);font-size:12px;color:#9fb3c8;white-space:pre-wrap;
   line-height:1.5;max-height:280px;overflow:auto}
 .teachbtn{cursor:pointer;border:1px solid var(--border);background:var(--panel);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px}
-.teachbtn:hover{border-color:var(--teal);color:var(--teal)}
-.taught{color:var(--ok);font-weight:600}
-.correctbox{display:flex;flex-direction:column;gap:8px;width:100%;margin-top:8px}
-.correctbox textarea,.correctbox input{width:100%;background:var(--rail);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-family:var(--mono);font-size:12px}
-.cmsg{color:var(--muted);font-style:italic}</style>
+.teachbtn:hover{border-color:var(--teal);color:var(--teal)}</style>
 </body>
 </html>

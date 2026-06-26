@@ -149,13 +149,6 @@ def test_correct_unknown_incident_404(client):
 
 
 @pytest.mark.unit
-def test_incidents_page_has_correction_ui(client):
-    html = client.get("/incidents").text
-    assert "Enseñar la solución correcta" in html
-    assert "toggleCorrect" in html and "function correct(" in html
-
-
-@pytest.mark.unit
 def test_reject_existing_incident(client):
     import time
 
