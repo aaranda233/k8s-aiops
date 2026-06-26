@@ -1,1158 +1,203 @@
-# K8s-AIOps: An On-Premise Closed-Loop AIOps Pipeline for Kubernetes — Fine-Tuned Small-Model Diagnosis, an Executable Remediation Graph, and Agentic Escalation
-
-**Status:** Final version (2026-06-25) — full closed-loop system in production
-**Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [aaranda233/k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo) (diagnosis) · `qwen2.5-coder:14b` (agentic remediation planner, on-demand)
-**Hardware:** NVIDIA A30 (24GB VRAM) training + on-demand agentic planner · Intel Xeon Gold 6526Y inference (expert single-shot, CPU-viable)
-
----
+# K8s-AIOps: An On-Premise Closed-Loop AIOps Pipeline for Kubernetes — Small-Model Diagnosis, an Executable Remediation Graph, and Agentic Escalation
 
 ## Abstract
 
-This work presents an end-to-end AIOps pipeline for Kubernetes environments that combines unsupervised anomaly detection with automated root cause analysis (RCA). The system collects raw Kubernetes events continuously, detects anomalous time windows using Isolation Forest, and routes flagged windows to a domain-specific diagnostics layer. The diagnostics layer has evolved through ten experiments across three paradigms: (1) single-shot fine-tuned SLM (SFT, DPO, ORPO, KTO); (2) grammar-constrained decoding; and (3) a two-phase Hybrid ReAct Agent. The base SLM is derived from `Qwen2.5-1.5B-Instruct` fine-tuned via QLoRA with ORPO on a curated dataset of ~986 Kubernetes incident scenarios covering 14 failure categories.
+This work presents an end-to-end, on-premise AIOps pipeline for Kubernetes that closes the loop from **detection** to **diagnosis** to **remediation** to **verification** to **consolidation**, without any observability infrastructure (no Loki, Prometheus, or in-cluster agents) and without a GPU on the diagnosis path. Anomalies are detected per `(namespace, window)` with Isolation Forest over control-plane events and application logs. Root-cause diagnosis runs on a **single fine-tuned small language model** — `Qwen2.5-1.5B` aligned with ORPO, served under a GBNF grammar and enriched by a zero-cost deterministic *evidence digest* — chosen because it produces specific, format-correct diagnoses while remaining viable on CPU (~0.7 s on GPU, ~32 s on CPU, one LLM call). The model **diagnoses but never decides the action**: remediation is served by a deterministic, auditable **executable knowledge graph** that maps each problem signature to a multi-step plan (investigate → fix → verify), risk-scored and gated by dry-run plus per-step human approval under shadow mode. For novel problems the graph does not cover, an **agentic escalation planner** (a larger local code model, `qwen2.5-coder:14b`, loaded on-demand on the same GPU that hosts the resident expert) **investigates the live cluster** read-only and proposes a concrete, real-name-bound plan from a curated safe-write vocabulary — there are **no manual steps**: every plan step is an executable command, and genuinely external fixes surface as a note rather than a checkbox. Outcomes verify plans by re-detection and feed a closed learning loop that consolidates verified diagnoses back into the model. The same read-only investigation pipeline also powers an operational console (live dashboard, incident inbox with step-by-step execution, cluster topology, a security-posture scanner, and a browsable view of the remediation graph). A condensed account of the alignment study that produced the diagnosis model is included; the full ten-experiment development log is preserved separately in `RESEARCH_v1.md`.
 
-The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. A two-phase **Hybrid ReAct Agent** (a vanilla `qwen2.5:1.5b` investigator + a fine-tuned ORPO expert under GBNF grammar) demonstrated this empirically, matching the unspecialized baseline (**Keyword%=92.9%**, **Parse%=98.6%**). However, its multi-call path costs >60 s on CPU-only nodes — over the detection budget — so the **production configuration is the single-shot expert alone**: the ORPO model under GBNF grammar, enriched by a zero-cost deterministic *evidence digest*, reaching **Keyword%=83.3%** at ~0.7 s on GPU / ~32 s on CPU with a single LLM call and full determinism in the action layer. The hybrid remains available where a GPU latency budget allows.
+## Introduction
 
-Beyond detection and diagnosis, the system extends to a full **operational console** built entirely on read-only access to the Kubernetes API (no observability infrastructure required): dual detection sources (control-plane events + application logs), auto-remediation with human-in-the-loop approval via ChatOps (Microsoft Teams) and step-by-step plan execution, an **executable remediation knowledge graph** with a browsable view, a live topology view, and a rule-based security posture scanner. The final-version remediation layer adds an **agentic escalation planner**: when a novel failure misses the deterministic graph, a larger local code model (`qwen2.5-coder:14b`, loaded on-demand on the same A30 alongside the resident ORPO expert) **investigates the live cluster** with read-only `kubectl` and proposes a validated, real-name-bound multi-step plan that fills the graph — the small expert keeps diagnosing, the large model only acts on the long tail. The same investigation pipeline that diagnoses operational anomalies thus also audits security posture — all without GPU at inference time for the diagnosis path and without deploying agents into the cluster.
+Site Reliability Engineers operating Kubernetes clusters spend a large share of their time triaging alert noise. A production cluster emits thousands of events per hour, of which only a fraction are actionable; correlating those signals to a root cause and a safe remediation requires expertise that rule engines capture poorly. General-purpose Large Language Models can help, but using them as real-time triage components carries operational cost (API latency and spend, hardware, and — decisively for many on-premise operators — sending cluster internals to a third party).
 
----
+This system takes a different stance, built on three principles:
 
-## 1. Motivation
+1. **Small, local, specialised.** A 1.5B-parameter model, fine-tuned on Kubernetes incidents, runs the diagnosis on commodity CPU. No GPU is required at inference time for diagnosis, and nothing leaves the cluster's network.
+2. **The model diagnoses; deterministic code acts.** A small model cannot be made reliable enough to *choose and execute* a cluster-mutating action. So the action is never the model's free-text output: it is resolved from an auditable knowledge graph and validated/risk-scored before any execution, with a human in the loop.
+3. **Closed loop, infrastructure-free.** Everything runs on read-only access to the Kubernetes API. Detection, diagnosis, remediation, verification and learning form a cycle that improves with use, and the only writes to the cluster are reversible/configuration actions a human approves.
 
-Site Reliability Engineers (SREs) managing Kubernetes clusters spend a significant portion of their time triaging alert noise. Production clusters generate thousands of events per hour; only a fraction correspond to actionable anomalies, and correlating those events to a root cause requires domain expertise that is hard to encode in rule-based systems.
+The remainder of the paper describes the system as it runs today. A condensed alignment study (the empirical basis for the diagnosis model) is given in the *Diagnosis* section; the exhaustive development history — ten fine-tuning experiments across SFT, DPO, ORPO, KTO, grammar-constrained decoding and a two-phase Hybrid ReAct Agent — lives in `RESEARCH_v1.md`.
 
-Large Language Models (LLMs) have demonstrated strong performance in code understanding and system administration tasks, but their operational cost (API latency, inference hardware, data privacy) makes them impractical as real-time triage components. Smaller, domain-specialized models offer a viable alternative: faster inference, lower resource consumption, and the ability to run on-premise.
+## System Overview
 
-This work explores whether a 1.5B-parameter model, fine-tuned on a relatively small dataset (~1,000 samples), can produce accurate RCA output for common Kubernetes failure patterns.
-
----
-
-## 2. System Architecture
-
-The pipeline consists of four sequential layers:
+The pipeline is a closed loop. Each stage uses only read-only Kubernetes API access; the single class of writes is a curated set of reversible/configuration remediation commands, each behind dry-run, shadow mode and explicit per-step human approval.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Kubernetes Cluster                    │
-└───────────────────────┬─────────────────────────────────┘
-                        │  Events API + pod logs
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│  Layer 1 — Collector  (src/collector/k8s_collector.py)  │
-│  • Kubernetes Python client                              │
-│  • Sliding window: 60s, stride 30s                      │
-│  • Captures: reason, message, involvedObject, namespace  │
-└───────────────────────┬─────────────────────────────────┘
-                        │  Structured event stream
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│  Layer 2 — Detector   (src/detector/)                   │
-│  • Log parser: drain3 template mining                    │
-│  • Feature extraction: event frequency, warning ratio,  │
-│    unique reasons, backoff count, error rate             │
-│  • Isolation Forest (contamination=0.05, n_estimators=  │
-│    100): flags windows with anomaly score > threshold    │
-└───────────────────────┬─────────────────────────────────┘
-                        │  Anomalous window (raw events)
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│  Layer 3 — Diagnostics  (src/diagnostics/)              │
-│  Three modes (REACT_MODE env var):                      │
-│  • single_shot — one call to fine-tuned ORPO model      │
-│  • react       — ReAct loop with fine-tuned model       │
-│  • hybrid ⭐   — qwen2.5:1.5b investigates (THOUGHT/    │
-│                  ACTION), ORPO expert diagnoses with    │
-│                  GBNF grammar (ROOT CAUSE + KUBECTL)    │
-└───────────────────────┬─────────────────────────────────┘
-                        │  RCA report
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│  Layer 4 — Web UI  (web/)                               │
-│  • FastAPI + Server-Sent Events                         │
-│  • Real-time anomaly feed                               │
-│  • RCA cards with kubectl commands                      │
-└─────────────────────────────────────────────────────────┘
+            ┌──────────────────────── Kubernetes API (read-only) ────────────────────────┐
+            │                                                                              │
+            ▼                                                                              │
+   ┌──────────────────┐   events + app logs   ┌──────────────────┐   (ns, window)         │
+   │   DETECT          │ ────────────────────▶ │  Drain3 + Isolation Forest                │
+   │  collector/       │                       │  per-namespace anomaly scoring            │
+   └──────────────────┘                       └─────────┬────────┘                         │
+                                                         │ anomalous (namespace, window)    │
+                                                         ▼                                  │
+                                              ┌──────────────────────────┐                 │
+                                              │   DIAGNOSE                │                 │
+                                              │  ORPO expert (1.5B)       │   single LLM    │
+                                              │  + GBNF grammar           │   call, CPU-    │
+                                              │  + deterministic digest   │   viable        │
+                                              └─────────┬────────────────┘                 │
+                                                        │ root cause + intent              │
+                                                        ▼                                  │
+                                  ┌─────────────────────────────────────────┐             │
+                                  │   REMEDIATE                              │             │
+                                  │  Executable remediation graph (catalog)  │             │
+                                  │   • multi-step plan: investigate→fix→verify             │
+                                  │   • risk-scored (L0–L3), dry-run, shadow │             │
+                                  │  miss / no executable action ──▶ AGENTIC PLANNER        │
+                                  │   • qwen2.5-coder:14b investigates live (read-only)     │
+                                  │   • emits concrete real-name commands; fills the graph  │
+                                  └─────────┬───────────────────────────────┘             │
+                                            │ human approves each step (HITL, Teams)        │
+                                            ▼                                              │
+                                  ┌──────────────────┐   re-detect    ┌──────────────────┐ │
+                                  │   EXECUTE         │ ─────────────▶ │   VERIFY          │ │
+                                  │  dry-run + apply  │   (Modo B)     │  outcome signal   │─┘
+                                  └──────────────────┘                └─────────┬────────┘
+                                                                                │ verified
+                                                                                ▼
+                                                                     ┌──────────────────┐
+                                                                     │   CONSOLIDATE     │
+                                                                     │  verified RCA →   │
+                                                                     │  ORPO (offline)   │
+                                                                     └──────────────────┘
 ```
 
-> **Current production configuration.** This paper documents the full design space, including ten fine-tuning experiments (§8) and the Hybrid ReAct Agent (§10). The *deployed* system, however, runs the **single-shot ORPO expert + GBNF grammar + a deterministic evidence digest** for diagnosis (§17.9 — chosen for CPU-viability), and an **executable remediation knowledge graph** (§19) with an **agentic escalation planner** (§19.3.1) for remediation, under shadow-mode human-in-the-loop. The Hybrid ReAct Agent and the alternative `react_mode`s remain selectable but are not the default. Sections §3–§16 describe how the diagnosis model was built and why; §17–§19 describe the system as it runs today.
-
----
-
-## 3. Dataset Construction
-
-### 3.1 Sources
-
-The training dataset combines two sources:
-
-| Source | Samples | Method |
-|--------|---------|--------|
-| Synthetic (generic names) | 420 | Template-based generator with 14 scenario types |
-| Real cluster + synthetic real names | 566 | `real_extractor.py` against live cluster; names extracted from actual deployments, services and namespaces |
-| **Total** | **986** | |
-
-### 3.2 Scenario Coverage
-
-14 Kubernetes failure categories, 70 samples each:
-
-| Scenario | Description |
-|----------|-------------|
-| OOMKilled | Container exceeds memory limit, killed by cgroup |
-| CrashLoopBackOff | Container repeatedly crashing on startup |
-| ImagePullBackOff | Registry unreachable or image tag missing |
-| PVC Pending | PersistentVolumeClaim unbound, no matching PV |
-| Node NotReady | Node unreachable or failing health checks |
-| Node DiskPressure | Ephemeral storage exhausted, eviction triggered |
-| Network Policy Drop | Egress/ingress blocked by NetworkPolicy |
-| HPA ScalingFailure | HorizontalPodAutoscaler unable to scale |
-| Secret Missing | Pod references non-existent Secret |
-| Liveness Probe Failure | Probe timeout/failure causing restarts |
-| Deployment Rollout Stuck | New ReplicaSet unable to reach desired state |
-| ResourceQuota Exceeded | Namespace quota prevents pod scheduling |
-| DNS Resolution Failure | CoreDNS unreachable or NXDOMAIN errors |
-| Node MemoryPressure | Node-level memory exhaustion |
-
-### 3.3 Sample Format
-
-Each sample follows the Qwen2.5 chatml format:
-
-```json
-{
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are an expert Site Reliability Engineer (SRE) specialized in Kubernetes. [...]"
-    },
-    {
-      "role": "user",
-      "content": "Events from namespace production, pod api-gateway-7d9f8c-xk2p:\n2024-01-15T10:23:41Z Warning BackOff Back-off restarting failed container\n2024-01-15T10:23:41Z Warning Failed Error: OOMKilled\n[...]"
-    },
-    {
-      "role": "assistant",
-      "content": "ROOT CAUSE: The api-gateway container is being OOMKilled because its memory usage (267Mi) exceeds the configured limit (256Mi). Kubernetes restarts it in a CrashLoopBackOff cycle.\nKUBECTL: kubectl set resources deployment/api-gateway --limits=memory=512Mi -n production"
-    }
-  ]
-}
-```
-
-### 3.4 Dataset Quality Metrics
-
-Evaluated with `dataset/evaluate_dataset.py` prior to training:
-
-| Metric | Value | Interpretation |
-|--------|-------|----------------|
-| Mean cosine distance (TF-IDF) | 0.965 | Excellent semantic diversity |
-| Near-duplicate pairs (dist < 0.1) | 0.0% | No deduplication needed |
-| Unique kubectl patterns | 157 | Good command coverage |
-| Type-Token Ratio (TTR) | 0.024 | Expected low for domain-specific corpus |
-| Samples with ROOT CAUSE | 986/986 | 100% format compliance |
-| Samples with KUBECTL | 986/986 | 100% format compliance |
-
----
-
-## 4. Fine-Tuning
-
-### 4.1 Setup
-
-| Parameter | Value |
-|-----------|-------|
-| Base model | `Qwen/Qwen2.5-1.5B-Instruct` |
-| Framework | [unsloth](https://github.com/unslothai/unsloth) 2026.5.9 + TRL 0.24.0 |
-| Hardware | NVIDIA A30 (24GB VRAM) |
-| Quantization (training) | NF4 4-bit (QLoRA) |
-| LoRA rank (r) | 16 |
-| LoRA alpha | 32 |
-| LoRA dropout | 0.05 |
-| Target modules | q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj |
-| Trainable parameters | 18,464,768 / 1,562,179,072 (1.18%) |
-| Batch size (per device) | 4 |
-| Gradient accumulation | 4 (effective batch = 16) |
-| Learning rate | 2e-4 |
-| LR scheduler | Cosine |
-| Warmup steps | 10 |
-| Epochs | 3 |
-| Max sequence length | 1024 tokens |
-| Optimizer | adamw_8bit (bitsandbytes) |
-| Precision | bfloat16 |
-| Total steps | 186 |
-| Training time | ~8 minutes |
-
-### 4.2 Training Loss
-
-| Step | Loss | LR |
-|------|------|----|
-| 10 | 0.7994 | 1.80e-04 |
-| 20 | 0.3536 | 1.99e-04 |
-| 30 | 0.1749 | 1.94e-04 |
-| 40 | 0.1294 | 1.87e-04 |
-| 60 | 0.0979 | 1.64e-04 |
-| 90 | 0.0864 | 1.16e-04 |
-| 130 | 0.0929 | 4.74e-05 |
-| 180 | 0.0898 | 7.80e-07 |
-
-Loss converged from 0.80 to ~0.08 in 186 steps, indicating strong memorization of the output format and domain vocabulary.
+**Operational console.** A FastAPI + WebSocket console exposes five read-only views (Dashboard, Incidents, Topology, Security, Graph). It is the human-in-the-loop control point: Microsoft Teams notifications alert and deep-link here, and approvals/executions happen in the authenticated console.
 
-### 4.3 Deployment Format
+**Current production configuration.** Diagnosis runs the single-shot ORPO expert under GBNF grammar with a deterministic evidence digest. Remediation runs the executable graph plus the agentic escalation planner. The Hybrid ReAct Agent and the alternative diagnosis modes (documented in `RESEARCH_v1.md`) remain selectable but are not the default — the hybrid's multi-call investigation exceeds the CPU detection budget (see *Diagnosis*).
 
-After training, LoRA adapters (~70MB) are merged with the base model and exported to GGUF format for CPU inference via llama.cpp/Ollama:
+## Detection
 
-| Format | Size | Notes |
-|--------|------|-------|
-| LoRA adapters (safetensors) | 70MB | For further fine-tuning |
-| GGUF Q4_K_M | 941MB | 4-bit quantization — **not recommended for 1.5B models** |
-| GGUF Q8_0 | 1.6GB | 8-bit quantization — **production-recommended** |
+Detection consumes two read-only sources and feeds a single unsupervised pipeline.
 
-**Finding:** Q4_K_M quantization causes significant quality degradation on 1.5B parameter models. Q8_0 preserves output quality while remaining deployable on commodity hardware. This is consistent with the general recommendation that aggressive quantization (≤4-bit) requires models of at least 7B parameters to maintain acceptable output fidelity.
+- **Control-plane events** via the Kubernetes Watch API (`Pulled`, `BackOff`, `OOMKilling`, `FailedScheduling`, …). Events are sparse: a healthy cluster emits very few.
+- **Application logs** (`read_namespaced_pod_log`, bounded by `since_seconds`/`tail_lines`/`max_pods`). This captures app-level signal — errors, stack traces, failed init — that never surfaces as a Kubernetes event. On the production cluster, enabling logs raised per-window signal from 1–2 events to 600+ lines across 34 namespaces.
 
----
-
-## 5. Inference
+Both streams are templated with **Drain3** (online log-template mining) and aggregated into 60 s sliding windows (stride 30 s). Per window, features include event frequency, warning ratio, distinct templates, backoff count and error rate, scored by an **Isolation Forest** (`contamination=0.05`, `n_estimators=100`) retrained continuously.
 
-The model is served via [Ollama](https://ollama.com) with an explicit chatml template (required for Ollama ≤0.24.0 which does not auto-detect Qwen2.5's template from GGUF metadata):
+Two hardening decisions are load-bearing:
 
-```
-TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ range .Messages }}<|im_start|>{{ .Role }}
-{{ .Content }}<|im_end|>
-{{ end }}<|im_start|>assistant
-"""
-```
+- **Per-namespace scoring.** The unit of analysis is `(namespace, window)`, not `window`. Each namespace is scored separately and the culprit is the arg-max, so a single noisy namespace cannot mask or trigger false anomalies elsewhere.
+- **Absolute anomaly score.** The detector uses Isolation Forest's `decision_function` (an absolute reference) instead of per-batch min–max normalisation. This eliminated an anomaly *flood*: normal windows score low in absolute terms, and only genuinely anomalous namespaces fire.
 
-Inference parameters: `temperature=0.1`, `top_p=0.9`, `repeat_penalty=1.1`, `num_ctx=2048` (updated from 1024 — required for hybrid agent enriched context).
+A novelty warm-up after every (re)start prevents the first windows — when the model has seen little — from over-firing.
 
-For grammar-constrained inference (the expert call, in both single-shot and hybrid modes), the `/api/generate` endpoint is used with the `grammar` field containing the GBNF definition. This guarantees format at the token level and decouples format correctness from model capacity.
+## Diagnosis: a single fine-tuned small model
 
----
+The diagnosis layer answers, for an anomalous `(namespace, window)`: *what is the root cause, and what is the relevant kubectl command?* It runs **one** call to a fine-tuned expert and emits a `ROOT CAUSE` (Spanish, specific) plus a `KUBECTL` line.
 
-## 6. Qualitative Results
+### The model
 
-Three representative inference examples with the Q8_0 model:
+The base is `Qwen2.5-1.5B-Instruct`, fine-tuned with **QLoRA + ORPO** on ~986 curated Kubernetes incident scenarios spanning 14 failure categories, served as a Q8_0 GGUF (~1.6 GB) via Ollama. Two mechanisms make its output reliable:
 
-### 6.1 OOMKilled
+- **GBNF grammar.** The expert is called through Ollama's `/api/generate` with a grammar that constrains output to the `ROOT CAUSE: … / KUBECTL: …` shape. This guarantees format at the token level and decouples format correctness from model capacity.
+- **Deterministic evidence digest.** Before the call, `evidence_digest()` counts the dominant Kubernetes failure reasons already present in the evidence (OOMKilling / Evicted / FailedScheduling / ImagePullBackOff …) and prepends them to the prompt. It is pure code — no second LLM, no cluster access — and recovers most of the diagnostic accuracy a separate investigator model would add.
 
-**Input events:**
-```
-Events from namespace production, pod api-gateway-7d9f8c-xk2p:
-2024-01-15T10:23:41Z Warning BackOff Back-off restarting failed container
-2024-01-15T10:23:41Z Warning Failed Error: OOMKilled
-2024-01-15T10:21:15Z Warning OOMKilling Memory cgroup out of memory: Kill process 18234 score 987
-Memory limit: 256Mi, Usage: 267Mi
-```
+### Why a single model: the Parse%/Keyword% trade-off (condensed)
 
-**Model output:**
-```
-ROOT CAUSE: Memory pressure en el contenedor api-gateway-7d9f8c-xk2p. K8s lo mata con
-OOMKilled porque supera el límite de memoria configurado (256Mi). El proceso está
-consumiendo más memoria del permitido.
-KUBECTL: kubectl set resources deployment/api-gateway --limits=memory=300Mi -n production
-```
+The alignment study behind this choice (full log in `RESEARCH_v1.md`) found a persistent **Parse%/Keyword% trade-off**: methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format. The trade-off is not fundamental — it is the cost of solving both objectives with one small model on a restricted dataset. ORPO under a grammar gives the best single-model balance; a two-phase Hybrid ReAct Agent (a vanilla investigator feeding the ORPO expert) matched the unspecialised baseline on diagnostic accuracy, proving the trade-off is separable — but at a multi-call latency that does not fit a CPU budget.
 
-### 6.2 ImagePullBackOff
+| Configuration | Parse% | Keyword% | NS-ok% | Latency (GPU) |
+|---|:---:|:---:|:---:|:---:|
+| Baseline `qwen2.5:1.5b` | 38.6% | 92.4% | 1.4% | 1.00 s |
+| ORPO + grammar | **100.0%** | 78.1% | 89.5% | **0.71 s** |
+| Hybrid ReAct + grammar | 98.6% | **92.9%** | 73.3% | 2.04 s |
+| **Single-shot expert + grammar + digest** | ~100% | **83.3%** | 97.6% | ~0.86 s |
 
-**Input events:**
-```
-Events from namespace staging, pod checkout-6f8b9-p2kl:
-2024-01-15T11:05:12Z Warning Failed Failed to pull image checkout-service:v3.2.1-hotfix:
-  rpc error: code = NotFound
-2024-01-15T11:05:12Z Warning Failed Error: ErrImagePull
-2024-01-15T11:05:42Z Warning BackOff Back-off pulling image checkout-service:v3.2.1-hotfix
-```
+*Metrics on a held-out blind test set (Parse/Keyword/NS-ok over 210 samples; the digest row measured on a 42-sample held-out subset). Latencies are GPU-accelerated.*
 
-**Model output:**
-```
-ROOT CAUSE: ImagePullBackOff por error de registro. El registry 'checkout-service' no
-responde o la imagen 'checkout-service:v3.2.1-hotfix' no existe en el registry.
-KUBECTL: kubectl set image deployment/checkout-frontend --image=checkout-service:latest -n staging
-```
+### Why single-shot for production: the CPU budget
 
-### 6.3 Node DiskPressure
+Latencies above are GPU-accelerated (Ollama offloads to the A30 if present). On CPU-only nodes the picture changes: the single-shot expert runs in ~32 s, while the hybrid's multi-call path exceeds **60 s** — over the detection window budget. The deployed configuration is therefore the **single-shot expert + grammar + digest**: one LLM call, full determinism in the action layer, CPU-viable, and quality (Keyword 83.3%, NS-ok 97.6%) close to the hybrid. The hybrid remains available where a GPU latency budget allows.
 
-**Input events:**
-```
-Events from node worker-node-03:
-2024-01-15T12:30:01Z Warning NodeNotReady Node worker-node-03 status is now: NodeNotReady
-2024-01-15T12:30:01Z Normal NodeHasDiskPressure Node worker-node-03 status is now: NodeHasDiskPressure
-2024-01-15T12:29:55Z Warning EvictionThresholdMet Attempting to reclaim ephemeral-storage
-Disk usage: 94% of 200Gi
-```
+| CPU allocation | Mean latency | p95 | Mode |
+|---|:---:|:---:|:---:|
+| 4 vCPU (2 physical cores) | 36.2 s | 50.4 s | single-shot ORPO Q8 + grammar |
+| 8 vCPU (4 physical cores) | 32.6 s | 38.9 s | single-shot ORPO Q8 + grammar |
 
-**Model output:**
-```
-ROOT CAUSE: DiskPressure en nodo worker-node-03 por falta de espacio en disco efímero.
-K8s está eviccionando pods para liberar espacio.
-KUBECTL: kubectl debug node/worker-node-03 -it -- df -h
-```
+### Deterministic guardrails on the diagnosis output
 
----
+Diagnosis quality is made independent of model variance by post-processing:
 
-## 7. Key Engineering Findings
+- **Deterministic command builder.** A catalog maps the detected intent to a targeted, namespace-correct kubectl command, extracting the real resource from the evidence and discarding fragile commands. This lifts command quality from the raw model's NS-ok 33% / Verb-ok 41% to **85.7% / 92.9%**, and attaches a natural-language explanation of what each command does and what to look for.
+- **Anti-drift fallback.** If the model output is unusable (apology/drift markers), the root cause is synthesised deterministically from the dominant error template, so the system never shows "no determinable cause" when real errors exist.
+- **Incident classification & deduplication.** Each incident is tagged App vs Platform and deduplicated by fingerprint with an occurrence counter, preserving event+log correlation in a single store.
 
-### 7.1 Quantization Sensitivity in Small Models
+## Remediation: an executable knowledge graph
 
-Q4_K_M quantization, while standard for 7B+ models, causes severe quality degradation in 1.5B models. Symptoms observed: repetition of input tokens, language mixing (Spanish/English/Chinese), non-adherence to output format. Q8_0 resolves these issues while adding only ~700MB to the model size. This suggests a minimum effective quantization level dependent on model parameter count.
+A diagnosis maps to *one* command, but real failures often need a *sequence* — investigate → identify → fix → verify — and one command rarely resolves them (an ingress 5xx is not fixed by restarting the controller if the backend has no Ready endpoints or a NetworkPolicy drops the traffic). The remediation layer is therefore a **non-parametric, structured, executable memory**: a knowledge graph of multi-step plans, mirroring the closed learning loop but for *remediation* rather than diagnosis.
 
-### 7.2 unsloth + SFTTrainer API Compatibility
+- **Node = abstract problem signature** (intent + workload class), portable across clusters.
+- **Edge = a remediation step** with an action *template* (placeholders `{ns}`, `{pod}`, `{workload}`, `{service}`, `{pvc}`, `{node}`), a `risk_level` and a `source` (`catalog` or `escalated`).
+- **Binding** (real namespace/resources) is resolved at runtime by the same deterministic extractors as the diagnosis layer. **Retrieval is done by code** (intent detection + lookup, with an embedding nearest-neighbour fallback for escalated nodes), never by the small model — which never loads the graph into its context. The store is SQLite (`src/remediation/remediation_graph.py`).
 
-When using unsloth 2026.5.x with TRL 0.24.0, `SFTTrainer` requires an explicit `formatting_func` — the `messages` field alone is insufficient. The function must handle both single-example (dict) and batched (dict-of-lists) inputs, as unsloth calls it once in single-example mode during dataset preparation:
+The graph is **seeded from the existing command catalog** (idempotent), so it starts full with everything the system already knew how to do — introducing it cannot regress command quality. Each step type is `investigate` (read-only) or `command` (a reversible/config write). **There are no manual (`guidance`) steps**: every step is executable. Where a failure's only fix is genuinely external, the plan returns the investigation steps plus an "external action required" note — never a checkbox.
 
-```python
-def formatting_func(examples):
-    messages = examples["messages"]
-    if isinstance(messages[0], dict):          # single example
-        return [tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)]
-    return [                                    # batch
-        tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
-        for msgs in messages
-    ]
-```
+### Risk taxonomy and execution
 
-### 7.3 Docker for Reproducible GPU Training
+Every command is risk-scored before it can run:
 
-Running training inside Docker with `--gpus all` and `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel` as base image ensures reproducibility across GPU environments. unsloth upgrades PyTorch to 2.10 during installation, which is expected and non-breaking. GPU access is only required at `docker run` time — `docker build` must not import unsloth.
+| Level | Class | Examples | Execution |
+|---|---|---|---|
+| L0 | Read-only | `get`, `describe`, `logs`, `top`, `events` | Runs freely (investigation) |
+| L1 | Reversible | `rollout restart`/`undo`, `scale` | Dry-run + per-step approval |
+| L2 | Configuration | `set image`, `set resources`, `set env` | Dry-run + per-step approval |
+| L3 | Destructive | `delete`, `drain`, `cordon`, `exec`, `apply`, `create`, `patch` | **Never executed** (notified for human action) |
 
-### 7.4 Dataset Size vs. Loss
+Execution always runs a dry-run first (for commands that support it), then the real command, under **shadow mode** with explicit per-step operator approval. A circuit breaker blocks repeated attempts on the same fingerprint (3 in 10 min) to prevent loops.
 
-986 samples × 3 epochs = 186 gradient steps at batch size 16. Despite the small scale, training loss converged to ~0.08, indicating the dataset format is highly consistent and the model capacity is sufficient for this narrow task. Larger datasets or more epochs would likely improve generalization.
+## Agentic escalation: the large model on the long tail
 
----
+When the graph has no plan for a signature (a miss), or the resolved plan has no executable action (the case that used to end in a manual instruction), the system **escalates** to an agentic planner — disabled by default, pluggable across `anthropic`/`openai`/`ollama` backends, and in production set to a **local** model.
 
-## 8. Alignment Experiments — DPO, ORPO, KTO
+The planner runs a ReAct loop: THOUGHT → ACTION (read-only `kubectl` through the same allow-listed toolbox) → OBSERVATION, repeated up to a step budget, and then emits a multi-step plan that uses the **real resource names it observed** — eliminating the `<pod>`/`<deployment>` placeholders a blind single call tends to produce. The plan is validated against the same safe vocabulary as the catalog (read verbs plus `rollout restart`/`undo`, `scale`, `set image`/`resources`/`env`); destructive verbs and unresolved placeholders are rejected. If the only fix needs a forbidden verb (create a secret with an unknown value, provision a PV, add node capacity), the planner returns investigation-only and the incident carries the "external action required" note. A validated plan is persisted as **provisional** in the graph (with a signature embedding) so future misses reuse it without another model call.
 
-After SFT v1 established that the model learns the `ROOT CAUSE/KUBECTL` format (Parse%=56.2%), six preference optimization experiments were conducted to recover the semantic vocabulary lost to memorization (Keyword% dropped from 92.4% to 60.0% after SFT).
+**On-demand on the A30.** In production the planner is `qwen2.5-coder:14b`, loaded on-demand on the same A30 that hosts the resident ORPO expert (~2 GB). On a miss, Ollama loads the coder (~15 GB resident, both models at 100% GPU, ~7 GB headroom), it investigates and persists the plan, then idle-unloads — so steady-state VRAM cost is just the small expert. This preserves the thesis: the **diagnosis** path stays on the small CPU-viable expert, and the **large model only acts on the long tail**, producing an auditable, real-name-bound, read-only-then-reversible plan rather than free-form text. A live production miss produced, for an `inventory-api` CrashLoopBackOff diagnosed as OOM, a concrete `kubectl set resources deployment/inventory-api --limits=memory=256Mi` after investigating the pod's current limits — visible in the Graph view under the *escalated* filter, awaiting outcome verification.
 
-### 8.1 Central Finding: Parse%/Keyword% Trade-off
+## Closed-loop learning
 
-All alignment methods exhibit an empirical trade-off between format compliance and semantic coverage:
+The loop that improves diagnosis is driven by a **free outcome signal**, not new labels.
 
-| Method | Parse% | Keyword% | Outcome |
-|--------|:------:|:--------:|---------|
-| Baseline (vanilla) | 38.6% | **92.4%** | No format, full vocabulary |
-| SFT v1 | 56.2% | 60.0% | Format learned, vocabulary lost |
-| DPO v1 | 16.2% | 82.9% | Format destroyed, vocabulary recovered |
-| DPO v2 | 8.1% | 87.1% | Mode collapse at step 20 |
-| SimPO | 16.7% | 86.7% | High β destroys format |
-| KTO | 0.0% | 0.0% | Complete collapse — no L_SFT anchor |
-| **ORPO** | **58.1%** | **67.1%** | Best single-model balance |
+- **Verify by re-detection (Modo B).** After an approved plan executes, the system waits and re-runs detection on the same target. Resolution (the anomaly clears) or persistence is recorded against the incident.
+- **Graph verification.** When an incident whose plan came from the graph reaches a terminal state, its edges are marked **verified** (resolved + approved) or the failed attempt is recorded — reusing the same signal across both halves of the incident.
+- **Consolidation into weights.** `graph_to_orpo.py` exports, offline, only the **diagnoses** whose solution came from the graph and was verified by outcome, as an ORPO dataset. It deliberately does not retrain *solutions* (the graph serves those deterministically and auditably) — only the diagnostic prose, labelled by causes that remediation confirmed. A fast RAG memory captures human corrections instantly; consolidation into weights is the slow path, behind a non-regression gate.
 
-### 8.2 Why ORPO Succeeds Where DPO Fails
+The system thus consolidates **both halves** of an incident — the diagnosis (via ORPO) and the remediation (via the graph) — each backed by the same outcome-verified, human-in-the-loop signal.
 
-ORPO (Hong et al., 2024) is the only method that avoids format collapse. The key is the joint loss function:
+## Operational console
 
-```
-L_ORPO = L_SFT + λ · L_OR
-
-L_SFT = cross-entropy over chosen tokens  →  anchors format at every step
-L_OR  = log(odds_chosen / odds_rejected)  →  pushes vocabulary towards correct concepts
-```
-
-DPO and KTO optimize preferences without an explicit format anchor. With a small 1.5B model trained on a restricted dataset (986 samples, loss→0.08), the attention layers encoding the `ROOT CAUSE/KUBECTL` structure are extremely fragile. Any preference gradient — regardless of β or dataset quality — perturbs them irreversibly.
-
-**Hypothesis confirmed by three independent failure modes:**
-- DPO: near-zero gradient signal corrupts format weights
-- SimPO (β=2.0): aggressive margin pushes log π(rejected) → −∞, destroying format
-- KTO: no pairwise comparison and no L_SFT → distribution drift without anchor
-
-### 8.3 Grammar-Constrained Decoding
-
-GBNF grammar applied via Ollama's `/api/generate` endpoint forces the output format at the token level, decoupling format from model capacity:
-
-```gbnf
-root         ::= "ROOT CAUSE: " rc-text "\nKUBECTL: " kubectl-text
-rc-text      ::= [^\n]+ (" " [^\n]+)*
-kubectl-text ::= "kubectl " [^\n]+
-```
-
-With grammar active on the ORPO model: Parse%: 58.1% → **100.0%**, Keyword%: 67.1% → **78.1%**, NS-ok%: 48.1% → **89.5%**. Grammar resolves format independently of model quality and removes it as a confounding variable in downstream evaluation.
-
----
-
-## 9. Quantitative Evaluation
-
-**Harness:** `eval/run_eval.py` · 210 blind samples (seed=99, distinct from training seed=42) · 14 scenarios × 15 samples · Intel Xeon Gold 6526Y. ⚠️ The `Lat.` column in §9.2 is **GPU-accelerated** (Ollama auto-uses the A30 when present); §9.4 reports the measured CPU-only latency. Quality metrics are hardware-independent.
-
-### 9.1 Metrics
-
-| Metric | Definition |
-|--------|-----------|
-| **Parse%** | Response contains both `ROOT CAUSE:` and `KUBECTL:` prefixes |
-| **Keyword%** | Root cause mentions at least one canonical keyword for the scenario (e.g. "OOMKilled", "ImagePullBackOff") |
-| **ROUGE-L** | Longest common subsequence F1 between generated and reference root cause |
-| **NS-ok%** | kubectl command contains the correct namespace |
-| **Verb-ok%** | kubectl command uses a semantically appropriate verb for the scenario |
-
-### 9.2 Results — All Models
-
-| Model | Parse% | Keyword% | ROUGE-L | NS-ok% | Verb-ok% | Lat. |
-|-------|:------:|:--------:|:-------:|:------:|:--------:|:----:|
-| Baseline (Qwen2.5-1.5B) | 38.6% | 92.4% | 2.5% | 1.4% | 1.9% | 1.00s |
-| SFT v1 | 56.2% | 60.0% | 56.7% | 32.9% | 41.0% | 0.86s |
-| SFT v2 | 35.2% | 64.3% | 41.2% | 22.4% | 43.3% | 0.89s |
-| DPO v1 | 16.2% | 82.9% | 2.4% | — | — | — |
-| SimPO | 16.7% | 86.7% | 57.7% | — | — | — |
-| DPO v2 | 8.1% | 87.1% | 21.7% | 6.2% | 31.9% | 0.81s |
-| ORPO Q8_0 | 58.1% | 67.1% | 16.2% | 48.1% | 49.5% | 0.89s |
-| ORPO Q4_K_M | 59.5% | 76.2% | 14.7% | 45.7% | 44.8% | 0.85s |
-| KTO | 0.0% | 0.0% | 0.0% | 0.0% | 28.6% | 0.49s |
-| ORPO + grammar | **100.0%** | 78.1% | 19.3% | **89.5%** | **56.7%** | **0.71s** |
-| **Hybrid ReAct + grammar** | 98.6% | **92.9%** | 5.9% | 73.3% | 42.4% | 2.04s |
-
-*210 samples per model · seed=99*
-
-### 9.3 Key Observations
-
-1. **ROUGE-L is inversely correlated with generalization.** SFT v1 achieves ROUGE-L=56.7% by memorizing reference answers. The hybrid model achieves ROUGE-L=5.9% because it generates specific, context-grounded diagnoses that diverge from generic reference templates — a better real-world outcome than high textual similarity.
-
-2. **NS-ok% is the most sensitive metric to model capability.** It requires the model to extract the correct namespace from the event context and reproduce it in the kubectl command. ORPO+grammar achieves 89.5% by combining domain knowledge (ORPO) with format guarantee (grammar).
-
-3. **Keyword% is the best proxy for diagnostic quality.** It measures whether the model identified the correct failure type regardless of phrasing — closer to what an SRE actually cares about.
-
-### 9.4 CPU vs GPU latency (measured 2026-06-25)
-
-The `Lat.` column in §9.2 is **GPU-accelerated** — Ollama automatically offloads to the A30 when a GPU is present. Re-running the *same* harness with the GPU disabled (`AIOPS_EVAL_NUM_GPU=0` → `num_gpu:0`) on the Xeon Gold 6526Y VM gives the honest **CPU-only** latency for the production single-shot config (ORPO Q8 + grammar):
-
-| CPU allocation | Lat. mean | Lat. p95 | N |
-|----------------|:---------:|:--------:|:-:|
-| 4 vCPU (2 physical cores) | 36.2 s | 50.4 s | 14 |
-| 8 vCPU (4 physical cores) | 32.6 s | 38.9 s | 4 |
-
-Findings:
-
-- **Quality is hardware-independent.** CPU yields the same Parse%/Keyword%/NS-ok% as GPU (identical weights and Q8 quantization); the hardware only changes *where* the same computation runs. The CPU cost is **latency, not quality** — GPU (~0.7–2 s) is optional acceleration, not a quality requirement.
-- **CPU is productive for triage.** p95 ≈ 39 s sits within the 60 s anomaly-detection window, so a diagnosis completes before the next window. AIOps triage tolerates seconds, not milliseconds.
-- **Latency is memory-bandwidth / context-prefill bound, not core bound.** Doubling physical cores (2→4) cut latency only ~10%; the runner saturates all physical cores (384% CPU @ 2.8 GHz) yet stalls on memory bandwidth and the ~2 k-token event prefill. More cores give diminishing returns.
-- **Q4 gives no latency benefit on CPU.** A quick check of `k8s-rca-orpo-q4` measured 39.9 s mean — *not faster* than Q8's 32.6 s — because unoptimised 4-bit dequant costs more per token than Q8 on this CPU. (The same 4-sample run also showed format breakage under grammar, but that conflicts with the 210-sample §9.2 result where single-shot Q4 parses at 59.5%, so the quality point needs confirmation on a larger sample.) With no speedup on CPU plus §5's quality caveat, **Q8 remains the default**.
-
-*Small samples on an undersized shared VM → indicative figures; the representative on-prem-node number (8–16 dedicated cores) is left for future consolidation. The only remaining CPU lever is trimming the input context (less prefill).*
-
----
-
-## 10. Hybrid ReAct Agent
-
-### 10.1 Motivation
-
-The Parse%/Keyword% trade-off documented in Section 8 has a structural cause: fine-tuning a 1.5B model on ~1,000 samples for structured output memorizes the format at the expense of generalizable semantic knowledge. No single-model training approach resolved this in nine experiments.
-
-The key insight is that **format compliance** and **domain investigation** are separable capabilities:
-- A vanilla instruction-following model can reason about K8s events and plan investigations without format constraints
-- A fine-tuned model has K8s domain knowledge and can produce structured output when guided by grammar
-
-### 10.2 Architecture
-
-```
-Anomaly detected (score ≥ threshold)
-        │
-        ▼
-Phase 1 — Investigator (qwen2.5:1.5b vanilla)
-  System: ReAct-style prompt (THOUGHT/ACTION/DONE)
-  Input:  anomalous event window (raw logs, score, namespaces)
-  Loop (max 3 steps):
-    → THOUGHT: reasoning about what to investigate
-    → ACTION:  kubectl <read-only command>
-    → [OBSERVATION: tool result if dry_run=False]
-  Exit: DONE or max_steps reached
-        │
-        ▼  investigation plan (list of THOUGHT + ACTION lines)
-        │
-        ▼
-Phase 2 — Expert (k8s-rca-orpo + GBNF grammar)
-  Input:  original event context + investigation plan appended
-  Endpoint: /api/generate (grammar parameter available here)
-  Grammar: ROOT CAUSE: <text>\nKUBECTL: kubectl <command>
-  num_ctx: 2048 (increased from 1024 to fit enriched context)
-        │
-        ▼
-  DiagnosisResult(root_cause, kubectl_command, confidence,
-                  steps_taken, react_trace, mode="hybrid")
-```
-
-The `kubectl_toolbox.py` enforces read-only safety: `apply`, `delete`, `patch`, `create`, `exec`, and 10 other write verbs are rejected before execution. Write commands are only proposed by the expert (as remediation suggestions), never executed.
-
-### 10.3 Key Result: network_policy_block 0% → 73.3%
-
-`network_policy_block` was the systematic blind spot of ORPO alone — it produced correctly formatted responses that never mentioned network policy, blocking, or egress/ingress concepts. The investigator's reasoning steps provide the expert with the conceptual frame needed to identify the failure type.
-
-Comparison across all scenarios (Keyword%, n=15 per scenario):
-
-| Scenario | ORPO+grammar | Hybrid+grammar | Δ |
-|----------|:-----------:|:--------------:|:---:|
-| crash_oom | 80.0% | **100.0%** | +20 pp |
-| image_auth | 80.0% | **100.0%** | +20 pp |
-| image_registry_down | 60.0% | **100.0%** | +40 pp |
-| **network_policy_block** | 0.0% | **73.3%** | **+73 pp** |
-| node_pressure_memory | 60.0% | **100.0%** | +40 pp |
-| readiness_failing | 73.3% | **100.0%** | +27 pp |
-| crash_config | **66.7%** | 46.7% | −20 pp |
-| crash_probe | **100.0%** | 93.3% | −7 pp |
-
-The regression in `crash_config` (−20 pp) is attributable to investigation notes about ConfigMap/environment variables saturating the expert's attention window, displacing the diagnostic keywords. A future fix is to limit the investigation notes to the 2 most relevant steps.
-
-### 10.4 Iterative Development
-
-**v1 (no grammar, num_ctx=1024):** Parse%=32.4%, Keyword%=72.9%. The enriched context exceeded the model's 1024-token context window, causing truncation and format failure. Keyword% improvement (+7.2 pp over ORPO alone) confirmed the investigation plan provides genuine semantic value.
-
-**v2 (GBNF grammar + num_ctx=2048):** Parse%=98.6%, Keyword%=92.9%. Two fixes applied simultaneously: model recreated with `num_ctx=2048` and expert call migrated from `/api/chat` to `/api/generate` with grammar parameter.
-
-### 10.5 Conclusion
-
-> The Hybrid ReAct Agent achieves Keyword%=92.9% — statistically equivalent to the unspecialized baseline (92.4%) — while maintaining Parse%=98.6% and structured kubectl output. This demonstrates that the Parse%/Keyword% trade-off observed across all fine-tuning experiments is not a fundamental constraint but a consequence of attempting to solve both objectives within a single small model trained on a restricted dataset. Role separation (instruction-following investigator + domain-specialized expert) resolves them simultaneously without additional fine-tuning.
-
-**Note on the production configuration.** The hybrid is the strongest *diagnostic* configuration, but its multi-call investigation costs >60 s on CPU-only nodes (§9.4) — beyond the 60 s detection budget. The deployed system therefore runs the **single-shot expert alone**, recovering most of the hybrid's Keyword% with a zero-cost deterministic *evidence digest* (§17.9). The hybrid is documented here as the experiment that proved role separation works and remains selectable (`react_mode: hybrid`) where a GPU latency budget allows; it is no longer the default diagnosis path.
-
----
-
-## 11. Additional Engineering Findings
-
-### 11.1 num_ctx Must Match Context Size
-
-The Hybrid ReAct Agent's expert call failed with Parse%=32% when `num_ctx=1024` was insufficient for the enriched prompt (original events + investigation notes). Always set `num_ctx` ≥ expected prompt length. The Modelfile parameter is a ceiling, not a suggestion; truncation is silent.
-
-### 11.2 Grammar Requires `/api/generate`, Not `/api/chat`
-
-Ollama's `grammar` parameter is only available in the `/api/generate` endpoint. When migrating a model from `/api/chat` to `/api/generate`, the ChatML prompt must be constructed manually:
-
-```python
-prompt = (
-    f"<|im_start|>system\n{system}<|im_end|>\n"
-    f"<|im_start|>user\n{user}<|im_end|>\n"
-    f"<|im_start|>assistant\n"
-)
-```
-
-### 11.3 Role Separation as an Alternative to Multi-Objective Fine-Tuning
-
-When a fine-tuned model excels at one objective (format) but fails at another (vocabulary), adding more training data or preference optimization is not the only path. Delegating each objective to the model best suited for it — a general instruction-follower for flexible reasoning, a specialized model for structured output — can outperform any single-model approach at the cost of additional inference latency.
-
----
-
-## 12. Reproducibility
-
-### Training
-
-```bash
-# 1. Build image (A30 or any CUDA 12.4 machine)
-cd finetune/
-docker build -t k8s-rca-train .
-
-# 2. Generate dataset
-python dataset/generator.py
-python dataset/real_extractor.py       # requires kubeconfig
-python dataset/combine.py
-
-# 3. Evaluate dataset quality
-python dataset/evaluate_dataset.py dataset/output/combined.jsonl --no-perplexity
-
-# 4. Train (mounts output/ for persistence)
-docker run --gpus all --rm \
-  -v $(pwd)/dataset/output:/workspace/output \
-  -v $(pwd)/finetune/train.py:/workspace/train.py:ro \
-  -v ~/.cache/huggingface:/workspace/.cache/huggingface \
-  k8s-rca-train \
-  python train.py --dataset output/combined.jsonl --epochs 3
-
-# 5. Quantize to Q8_0 (recommended over Q4_K_M for 1.5B)
-docker run --gpus all --rm \
-  -v $(pwd)/finetune/output/k8s-rca-slm:/workspace/adapters:ro \
-  -v $(pwd)/finetune/output:/workspace/output \
-  -v ~/.cache/huggingface:/workspace/.cache/huggingface \
-  k8s-rca-train \
-  bash -c "apt-get install -y -qq libssl-dev curl libcurl4-openssl-dev && python convert_gguf.py"
-```
-
-### Inference
-
-```bash
-# Via Ollama (recommended)
-ollama create k8s-rca-slm -f finetune/Modelfile
-ollama run k8s-rca-slm
-
-# Direct download from HuggingFace
-ollama run hf.co/aaranda233/k8s-rca-slm
-```
-
----
-
-## 13. Auto-Remediation with Human-in-the-Loop
-
-### 12.1 Motivation
-
-Diagnosis without action only automates half the SRE workflow. The natural extension of the diagnosis layer is a remediation loop that acts on the diagnosis, verifies the result, and escalates when intervention is needed. The key design question is not *whether* to automate, but *how much* to automate safely.
-
-Full autonomy is not the correct objective for production AIOps. Enterprise environments have compliance requirements (SOC2, ISO27001) mandating human traceability for infrastructure changes. A system that explains its reasoning and asks for confirmation on risky actions is more deployable than one that acts without oversight.
-
-### 12.2 Risk Taxonomy
-
-All kubectl commands are classified into four levels before execution:
-
-| Level | Label | Examples | Policy |
-|-------|-------|----------|--------|
-| 0 | Read-only | `describe`, `get`, `logs`, `top` | Execute freely |
-| 1 | Reversible | `rollout restart`, `scale`, `rollout undo` | Execute automatically |
-| 2 | Config change | `set resources`, `patch`, `set image` | Require human approval (ChatOps) |
-| 3 | Destructive | `delete`, `drain`, `cordon`, `exec` | Never execute automatically |
-
-The classification is conservative: unknown verbs default to Level 2. This follows the principle of least privilege — the agent assumes more risk, not less, when uncertain.
-
-### 12.3 Architecture
-
-```
-Anomaly detected → Hybrid ReAct diagnosis → kubectl proposed
-        │
-        ▼
-[Circuit Breaker] — same anomaly seen 3+ times in 10 min? → escalate + stop
-        │
-        ▼
-[Risk Scorer] — classify kubectl (Level 0-3)
-        │
-        ├─ Level 0 → no action (read-only, already done in investigation)
-        │
-        ├─ Level 1 → dry-run → execute → wait 90s → verify
-        │            success: notify "resolved" + reset circuit breaker
-        │            failure: notify "fix failed" + record attempt
-        │
-        ├─ Level 2 → Teams card with [APPROVE] / [REJECT] buttons
-        │            approved: execute → verify
-        │            rejected: record + close
-        │            no response in 30min: discard + notify
-        │
-        └─ Level 3 → notify "manual action required" + exact command
-                     never executes
-```
-
-All remediation runs in a background thread — the main pipeline continues processing events regardless of remediation outcome.
-
-### 12.4 Anti-Loop Protections
-
-Three independent mechanisms prevent remediation loops:
-
-**Circuit Breaker (`src/remediation/circuit_breaker.py`):**
-Tracks attempts per anomaly fingerprint (hash of namespace + root cause prefix). After 3 attempts in 10 minutes, blocks all automatic action for that fingerprint and sends an escalation alert.
-
-**Mandatory Dry-Run (`src/remediation/executor.py`):**
-Every Level 1+ command runs `--dry-run=client` first. If dry-run fails, the real command is never attempted. Output is compared for sanity before proceeding.
-
-**Post-Fix Verification:**
-After Level 1 execution, the system waits 90 seconds and queries the affected resource. If replicas are not Ready or Warning events persist, the attempt is recorded as failed and the circuit breaker counter increments.
-
-### 12.5 Pluggable Notification — ChatOps (Teams) as Primary Channel
-
-Notification serves two purposes: transparency (the operator always knows what happened) and control (Level 2 actions require explicit approval). The notification layer is **pluggable** behind a common interface (`BaseNotifier`), with three implementations:
-
-| Channel | Implementation | Mechanism |
-|---------|---------------|-----------|
-| **Microsoft Teams** (primary) | `TeamsNotifier` | Adaptive Cards via Incoming Webhook |
-| Email (fallback) | `EmailNotifier` | HTML email via SMTP |
-| Both | `CompositeNotifier` | Fan-out with a shared approval token |
-
-Selected via `NOTIFY_CHANNEL=teams|email|both|none`. Email-based approval has known weaknesses in production (no authentication on the link, buried in inboxes, slow). ChatOps via Teams is the industry standard: the on-call engineer already lives in the channel, identity is handled by the platform, and the thread serves as an audit trail.
-
-Level 2 posts an Adaptive Card to the ops channel:
-
-```
-⚠️ K8s-AIOps — Aprobación requerida · namespace: producción · INC-A3F2
-
-Investigación:
-  • THOUGHT: Multiple pods evicted, likely memory pressure on node
-  • ACTION:  kubectl describe node node-1 -n producción
-  • THOUGHT: Node at 97% memory, scheduler pod at 498Mi/512Mi
-
-Diagnóstico: Memory limit insuficiente en deployment/scheduler
-
-Acción propuesta (Level 2):
-  kubectl set resources deployment/scheduler --limits=memory=1Gi -n producción
-
-[ ✅ APROBAR ]   [ ❌ RECHAZAR ]
-
-Sin respuesta en 30 min → la acción se descarta.
-```
-
-The buttons (`Action.OpenUrl`) call `GET /remediation/approve/{token}` on the web server, which updates a shared in-memory store polled by the remediation thread. The same token mechanism is reused across all channels.
-
-**Security note on the approval token:** the command tied to a token is re-validated by the risk scorer before execution — a token cannot be used to execute a command different from the one originally proposed.
-
-**Design limitation:** with an Incoming Webhook, buttons open the approval endpoint in a browser tab. Inline confirmation (the card updating in place within Teams) requires a registered Bot Framework bot — out of scope for the current implementation but a natural extension.
-
-### 12.6 Configuration
-
-```bash
-# Minimal — Level 1 auto with Teams notifications
-REMEDIATION_ENABLED=true
-NOTIFY_CHANNEL=teams
-TEAMS_WEBHOOK_URL=https://prod.westeurope.logic.azure.com/workflows/...
-WEBHOOK_BASE_URL=https://k8s-aiops.company.com  # public URL for approval links
-
-# Optional tuning
-REMEDIATION_MAX_LEVEL=2        # allow Level 2 with approval
-
-# Email channel / fallback (NOTIFY_CHANNEL=email|both)
-SMTP_USER=alerts@company.com
-SMTP_PASS=app_password
-NOTIFY_EMAIL=sre-team@company.com
-```
-
-By default `REMEDIATION_ENABLED=false` — the pipeline behaves exactly as before unless explicitly activated.
-
-### 12.7 System Levels — Comparison with Literature
-
-The remediation module advances the system from diagnosis to closed-loop operation:
-
-| Level | Capability | This system |
-|-------|-----------|-------------|
-| L1 | Anomaly detection | ✅ Isolation Forest |
-| L2 | Root cause diagnosis | ✅ Hybrid ReAct + grammar |
-| L3 | Remediation proposal | ✅ kubectl suggested |
-| L4 | Autonomous remediation | ✅ Level 1 actions |
-| L4+ | Human-gated remediation | ✅ Level 2 ChatOps approval (Teams) |
-| L5 | Post-fix verification | ✅ 90s verify loop |
-| L5+ | Learning from outcomes | ◻ Future work |
-
-Most published AIOps systems reach L2-L3. Commercial products (Dynatrace Davis AI, PagerDuty AIOps) reach L3-L4 but require cloud connectivity and proprietary models. This system reaches L5 running entirely on-premise on CPU with open models.
-
-### 12.8 Reproducible Demonstration of Both Remediation Modes
-
-To demonstrate human-approval and automatic remediation deterministically — without waiting for a natural anomaly whose proposed command happens to be Level 1 — a demo trigger is provided, gated behind `AIOPS_DEMO=true`:
-
-```
-POST /api/demo/incident?mode=auto    # shadow OFF: executes + verifies, no human
-POST /api/demo/incident?mode=human   # shadow ON: stays pending_approval in /incidents
-```
-
-It injects a synthetic Level 1 incident (`rollout restart`) through the **real** remediation path, sharing the console's incident store, targeting a disposable `nginx-demo` deployment in an `aiops-demo` namespace. The operator then approves/rejects in the web console (or via `POST /api/incidents/{id}/{approve,reject}`):
-
-- **Automatic** — the rollout restart executes immediately; verification confirms the new pod is ready → `resolved`.
-- **Approve** — the incident waits in `pending_approval`; on approval the restart executes and verifies → `resolved`.
-- **Reject** — the incident is marked `rejected`; nothing is executed (the pod is untouched).
-
-This validation surfaced a real executor bug: `kubectl rollout restart` does not accept `--dry-run`, so the blanket dry-run gate silently blocked the most common Level 1 action. The executor now skips the dry-run gate only for commands that cannot support it (`rollout restart`/`undo`), which are already reversible and risk-classified.
-
----
-
-## 14. Operational Console and Extended Capabilities
-
-Beyond the detection→diagnosis→remediation core, the system grew into a full operational console. Every capability below uses **only read-only Kubernetes API access** for data gathering (native Python client; the `kubectl` CLI whitelisted to read-only verbs for investigation). The only writes are a curated set of reversible/config remediation actions (`rollout restart`/`undo`, `scale`, `set image`/`resources`/`env`) — each behind dry-run + shadow mode + explicit per-step operator approval, with all destructive verbs forbidden. No Loki, Prometheus, or agents are deployed — the system stays portable and infrastructure-free.
-
-### 14.1 Dual Detection Source — Events + Application Logs
-
-Detection originally consumed only Kubernetes **Events** (control-plane signals: `Pulled`, `BackOff`, `OOMKilling`). Events are sparse — a healthy cluster emits very few. A second source was added: **application logs** (`LogCollector`, `read_namespaced_pod_log`), feeding the same Drain3 + Isolation Forest pipeline. This captures app-level signal (errors, stack traces, failed init) that never surfaces as a K8s event.
-
-Design constraints (safety-first): read-only, bounded by `since_seconds`/`tail_lines`/`max_pods`, polling (not N persistent streams), opt-in, cluster-wide or scoped to namespaces. On the production cluster, enabling logs raised per-window signal from 1-2 events to 600+ lines across 34 namespaces. Known limitation: `tail_lines` under-samples very high-volume pods — mitigated by tuning, or by swapping the source for a Loki-backed collector (the layer-1 source is pluggable; deliberately not adopted, as it adds infrastructure for capabilities the real-time use case does not require).
-
-### 14.2 Web Console — Five Views
-
-A FastAPI + WebSocket console exposes the system through five navigable views:
+A FastAPI + WebSocket console, built entirely on read-only API access, exposes five views:
 
 | View | Purpose |
-|------|---------|
-| **Dashboard** | Watch the algorithm live: Drain3 templates, Isolation Forest PCA, scored windows |
-| **Incidencias** | Operations inbox: incidents with diagnosis + multi-step plan, per-step execution, approve/reject |
-| **Topología** | Live cluster map (graph + electrical-panel views) coloured by health |
-| **Seguridad** | Security posture findings by severity |
-| **Grafo** | Browse the remediation knowledge graph: problem signatures, multi-step plans, source (catalog vs agentic-escalated) and verification state |
+|---|---|
+| **Dashboard** | The algorithm live: Drain3 templates, Isolation Forest PCA scatter, scored windows |
+| **Incidents** | Operations inbox: diagnosis + multi-step plan with **per-step play buttons** (live `▶ → ⟳ → ✓`), under shadow mode |
+| **Topology** | Live cluster map (flow graph + "electrical panel") coloured by health, from 5 read-only list calls |
+| **Security** | Rule-based posture scanner: ~10 deterministic checks by severity |
+| **Graph** | Browse the remediation graph: problem signatures, multi-step plans, source (catalog vs agentic-escalated) and verification state |
 
-The console is the human-in-the-loop control point: notifications (Teams) only alert and deep-link here; the actual decision (approve/reject/investigate) happens in the authenticated console, not in anonymous notification links.
+Notifications are pluggable (Microsoft Teams primary, email fallback): they alert and deep-link, and the human decision happens in the authenticated console. The **security scanner** extends the same read-only investigation from operational anomalies to security risk (privileged containers, hostNetwork/hostPath, mutable image tags, missing limits, cluster-admin bindings, namespaces without NetworkPolicy); on the production cluster it surfaced 353 findings (31 critical) in under a second, with nothing installed.
 
-### 14.3 Remediation Graph View and Step-by-Step Execution
+## Results
 
-The **Grafo** view makes the executable remediation knowledge graph of §19 directly inspectable by the operator. It reads `GET /api/graph` (a read-only `RemediationGraph.dump()`) and renders each node as a collapsible card: the problem signature (intent + namespace class), a source badge (**catalog** vs **agentic-escalated**), the verification state (`✓ successes/attempts`), and — on expand — the full multi-step plan with each step's type (investigate/command/guidance/verify), risk level (L0–L3) and bound command. A filter separates the seeded catalog plans from those the agentic planner has learned, so the operator can watch the system's remediation knowledge grow over time.
+**Diagnosis.** The production single-shot expert + grammar + digest reaches Parse ≈100%, Keyword 83.3%, NS-ok 97.6% on held-out evaluation, at ~0.86 s on GPU and ~32 s on CPU with a single LLM call (table in *Diagnosis*). The deterministic command builder lifts command quality to NS-ok 85.7% / Verb-ok 92.9%.
 
-On the **Incidencias** view, the multi-step plan is no longer a static suggestion: **every step is executable** (no manual checkboxes) and has its own **play button** with live state derived from the incident's `execution_log` — `▶ Ejecutar` → `⟳ Ejecutando…` → `✓ Hecho` (or `✗ Falló`/`▶ Reintentar`). Each click runs that step under dry-run + shadow mode; L2 config writes (`set image`/`resources`/`env`) are gated by the operator's per-step approval. When a failure can only be fixed outside the cluster, an "⚠ Requiere acción externa" note replaces what used to be a manual step.
+**Remediation graph.** Over the 14 project failure scenarios the catalog returns a correct-intent, namespace-bound plan for **every** scenario (coverage 100%, intent 100%, NS-ok 100%). About 50% of plans are multi-step *by design*: classes with an in-cluster reversible fix (config, secret, probe, OOM, network, readiness) resolve fully in the catalog, while the rest (image pull, node pressure, PVC binding, insufficient CPU, registry auth) return investigation-only and are handed to the agentic planner, which emits a concrete config write where one exists or an "external action required" note otherwise. No step is ever a manual checkbox.
 
-**Note (final version).** An earlier release exposed a free-form conversational agent ("chat with the cluster") that wrapped the same read-only `kubectl_toolbox` as a Q&A surface. It was **removed** in the final version: the expert-only diagnosis (§17.9) plus the agentic remediation planner (§19.3) cover the same investigation need but *act* — producing verifiable plans that fill the graph — rather than returning prose, and the deterministic scaffolding the small chat model required is now embedded in the planner's structured loop. The read-only toolbox it relied on remains, reused by both the agentic planner and the per-step executor.
+**Production.** Running continuously on a ~34-namespace cluster, the system sustains per-namespace detection with dual event+log signal, expert-only diagnosis in Spanish with zero grammar parse failures, deterministic targeted commands, and on-demand agentic escalation that has already filled the graph with a verified-pending real-name plan.
 
-### 14.4 Cluster Topology — the "Electrical Panel"
+## Related work
 
-`TopologyCollector` builds a graph from 5 read-only list calls (node, pod, service, endpoints, ingress) with relationships Ingress→Service→Pod→Node and per-node health. The view offers two renderings: a layered flow graph (connectivity) and an "electrical panel" where each namespace is a board and each pod a breaker coloured by health — faults light up red at a glance.
+Recent agentic SRE tooling — HolmesGPT (ReAct over observability data), K8sGPT (scanner + LLM explanation), Aurora (LangGraph workflows) — is largely BYO-LLM and oriented to cloud/GPU models and existing observability stacks. This system's differentiators are: (1) a **fine-tuned small model on CPU**, on-premise, no data egress; (2) a **deterministic, auditable action layer** (the model never executes free-text commands); (3) a **closed loop** with outcome-verified consolidation; and (4) **infrastructure-free** operation on read-only API access, with the large model confined to on-demand escalation on the long tail.
 
-### 14.5 Security Posture Scanner
+## Limitations and future work
 
-`SecurityScanner` extends the read-only investigation from operational anomalies to **security risk**. It applies ~10 deterministic, rule-based checks over the API: privileged containers, runAsRoot, hostNetwork/PID/IPC, hostPath volumes, dangerous capabilities, mutable image tags, hardcoded secrets in env, missing resource limits, cluster-admin bindings to non-system subjects, and namespaces without NetworkPolicy. Findings carry severity (critical/high/medium/low) and a concrete recommendation.
+- **Diagnosis accuracy ceiling.** Single-shot Keyword% (83.3%) trails the hybrid (92.9%); the gap is the investigator's reasoning, which a deterministic digest cannot fully replicate. Closing it without re-introducing CPU latency is open.
+- **External fixes remain external.** Failures whose remediation lives outside the cluster (provision a PV, add node capacity, create a secret with an unknown value) are surfaced as notes, not automated — by design.
+- **Next.** Integration testing with chaos injection on a live cluster and MTTR measurement; a benchmark of the diagnosis model against GPT-4o/Claude on the same blind test set; periodic consolidation of the verified graph into ORPO; and scaling the base model (7B) if a GPU inference budget becomes available.
 
-Rule-based by design (like `trivy`/`kubescape`/`kube-bench`): security detection must be deterministic, auditable, and free of LLM hallucination. The LLM's role is complementary and *post*-detection — contextualizing and prioritizing findings (distinguishing a legitimately-privileged CNI pod from a suspicious application pod). On the production cluster the scanner surfaced 353 findings (31 critical) in under a second, with no infrastructure installed.
+## Conclusion
 
----
+A 1.5B model, fine-tuned and grammar-constrained, is enough to *diagnose* Kubernetes incidents accurately on CPU — provided the *action* is taken out of the model and given to a deterministic, auditable, human-gated remediation graph, with a larger local model confined to on-demand escalation on the long tail. The result is a closed loop — detect, diagnose, remediate, verify, consolidate — that runs on-premise, without GPU on the diagnosis path, without observability infrastructure, and without ever letting a small model execute a free-text command against a production cluster.
 
-## 15. Artifacts
-
-| Artifact | Location |
-|----------|----------|
-| Source code | This repository |
-| Dataset (combined.jsonl) | `dataset/output/` (gitignored — regenerable) |
-| SFT LoRA adapters | `finetune/output/k8s-rca-slm/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| ORPO LoRA adapters | `finetune/output/k8s-rca-orpo/` + [HF Hub](https://huggingface.co/aaranda233/k8s-rca-orpo) |
-| GGUF Q8_0 — SFT | [HF Hub — k8s-rca-slm-Q8_0.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| GGUF Q4_K_M — SFT | [HF Hub — k8s-rca-slm-Q4_K_M.gguf](https://huggingface.co/aaranda233/k8s-rca-slm) |
-| GGUF Q8_0 — ORPO ⭐ | [HF Hub — k8s-rca-orpo-gguf](https://huggingface.co/aaranda233/k8s-rca-orpo-gguf) (private until publication) |
-| Evaluation harness | `eval/run_eval.py` · `eval/runner.py` · `eval/test_set.jsonl` |
-| Hybrid ReAct Agent | `src/diagnostics/hybrid_react_agent.py` · `src/diagnostics/kubectl_toolbox.py` |
-| Expert single-shot + grammar + digest | `src/diagnostics/ollama_rca.py` (production diagnosis path) |
-| Remediation knowledge graph | `src/remediation/remediation_graph.py` (SQLite, seed + escalated nodes) |
-| Escalation + agentic planner | `src/diagnostics/escalation.py` · `src/diagnostics/agentic_planner.py` (live read-only investigation → validated plan) |
-| Auto-Remediation | `src/remediation/` — risk_scorer, circuit_breaker, executor, auto_remediation, incident_store |
-| Notification (pluggable) | `src/remediation/` — base_notifier, teams_notifier (Teams), notifier (email) |
-| Log detection source | `src/collector/log_collector.py` (read-only application logs) |
-| Topology | `src/collector/topology_collector.py` |
-| Security scanner | `src/security/scanner.py` |
-| Web console (5 views) | `web/server.py` · `web/static/{index,incidents,topology,security,graph}.html` |
-| Evaluation results | `eval/results/eval_20260609_103514.json` (ORPO+grammar vs Hybrid+grammar) |
-
----
-
-## 16. Continual Learning — Closed-Loop Fine-Tuning vs RAG
-
-The system implements two complementary mechanisms so the RCA expert improves
-from real operation, plus an empirical comparison between them. This realises the
-"L5+ Learning from outcomes" previously listed as future work.
-
-### 16.1 The learning signal is free
-
-Every incident already carries a supervision signal: the human decision
-(`response` = approved/rejected), the verification outcome (`status` = resolved/
-failed), and optionally an explicit human correction. The mapping is direct:
-approved+resolved → positive (chosen), rejected/failed → negative (rejected).
-
-The blocker was that `IncidentStore` was in-memory only. Fixed with an
-append-only JSONL log (`src/remediation/incident_log.py`) hooked into every
-state transition, which both survives restarts and feeds the learning loop.
-
-### 16.2 Approach A — Closed-loop preference fine-tuning (ORPO)
-
-Pipeline (offline, GPU batch): incident outcomes → `data/feedback/feedback.jsonl`
-(`dataset/feedback_capture.py`) → preference pairs `chosen`/`rejected`
-(`finetune/build_loop_dataset.py`, with **experience replay** of the base dataset
-to prevent catastrophic forgetting) → continual ORPO training
-(`finetune/loop_train.py`, reusing `train_orpo.py`, triggered by an N-new-examples
-threshold) → **non-regression gate** (`eval/gate.py`: promote only if
-parse_rate/keyword_hit do not regress on a blind test set) → versioned deploy with
-rollback (`finetune/deploy_model.py`: `k8s-rca-orpo-v{N}` + stable alias) →
-per-version metrics in MLflow (`log_loop_cycle` → improvement curve).
-
-Conceptually this is **continual preference fine-tuning with human feedback**
-(RLHF/RLAIF family, offline, no RL), with safeguards against degenerative loops
-(only verified positives / human corrections become `chosen`; gate + canary),
-catastrophic forgetting (replay + non-regression), and data poisoning
-(human-in-the-loop review). It changes the weights; requires a GPU; learns in
-cycles.
-
-### 16.3 Approach B — Retrieval-Augmented Generation (RAG)
-
-`src/diagnostics/incident_retriever.py` indexes resolved/validated incidents
-(TF-IDF over event text — sklearn, zero new dependencies, CPU-only) and retrieves
-the most similar past cases for a new incident, injecting them (bounded to fit
-`num_ctx=2048`) into the RCA prompt. The model improves by **context, not
-weights**: new knowledge is available instantly, with no GPU and no forgetting.
-Enabled via `RAG_ENABLED` and wired into `HybridReActAgent`.
-
-### 16.4 Empirical comparison (RAG vs plain, same model, same test set)
-
-`eval/compare_learning.py`, run live on CPU over the held-out test set, RAG corpus
-= 1960 past cases:
-
-| Model | parse_rate plain → RAG | keyword_hit plain → RAG |
-|-------|------------------------|-------------------------|
-| ORPO fine-tuned (`k8s-rca-orpo`) | 1.000 → 1.000 | 1.000 → 0.917 |
-| Base (`qwen2.5:1.5b`) | 1.000 → 1.000 | 1.000 → 0.833 |
-
-**Finding (honest):** on this domain, RAG provides **no improvement and a small
-regression**. Two compounding reasons: (1) the test scenarios are keyword-detectable
-from the events themselves, so both models are already at ceiling (no headroom);
-(2) with a 1.5B model and a 2048-token budget, the retrieved context **competes for
-and dilutes** the prompt and can distract an already-capable model. RAG's benefit
-grows precisely where these don't hold: a non-specialised base model, harder cases,
-or a larger context window.
-
-### 16.5 The closed cycle — RAG as fast memory, fine-tuning as consolidation
-
-The two approaches are wired into a single loop modelled on *complementary
-learning systems* (fast hippocampal vs slow cortical memory):
-
-1. An incident occurs; the operator investigates in the console and reaches a solution
-   (recorded as a human correction — the highest-quality signal).
-2. The solution lands in `feedback.jsonl`, which is the RAG index → **available
-   instantly** to the next similar incident, no training.
-3. When the un-consolidated feedback reaches the threshold Z, `loop_train.py`
-   retrains (ORPO), the gate validates, and a promoted version is deployed (canary).
-4. On promotion the registry records a **consolidation watermark** (`feedback_count`);
-   the RAG retriever excludes everything up to it (`skip_consolidated`) — that
-   knowledge now lives in the weights, so RAG **"empties"** of what is learned and
-   keeps only newer, not-yet-consolidated cases.
-5. On rollback the watermark follows the active version, so RAG **automatically
-   recovers** the de-consolidated cases. No knowledge is ever lost.
-
-This makes RAG a bounded, self-clearing working memory rather than an
-ever-growing index, and fine-tuning the durable consolidation — each reinforcing
-the other.
-
-### 16.6 Decision framework
-
-| Dimension | Fine-tuning (ORPO loop) | RAG |
-|-----------|-------------------------|-----|
-| GPU | Required (batch) | Not required (CPU) |
-| Learning latency | Per cycle | Instant |
-| Catastrophic forgetting | Risk (mitigated by replay) | None |
-| Degenerative loop | Risk (mitigated by gate+canary) | None (weights untouched) |
-| Explainability | Low (black box) | High (shows the cases used) |
-| Format/domain adherence | Strong (what reached parse 98.6%) | Depends on base model |
-| Context cost | None at inference | High (critical at num_ctx=2048) |
-
-**Conclusion:** in *this* system fine-tuning (ORPO) is the primary mechanism — it
-is what lifted RCA quality to the strong baseline measured here — while RAG is a
-complementary, GPU-free continual-memory path whose marginal value is currently
-limited by the tiny context window. The recommended architecture is **hybrid**:
-RAG for instant, auditable day-to-day retention; periodic ORPO consolidation when
-the accumulated feedback warrants it (and a GPU is available).
-
----
-
-## 17. Detection & RCA Quality Hardening
-
-Running the system continuously against a live multi-tenant cluster (≈15 namespaces, 200–600 log events per 60 s window) surfaced quality problems that synthetic benchmarks never exposed: an "anomaly flood" where almost every window scored 1.000, diagnoses that were generic or drifted into tutorial-style prose, and duplicate incidents for the same recurring problem. This section documents the fixes, each validated live.
-
-### 17.1 Per-namespace scoring — the unit of analysis is `(namespace, window)`, not `window`
-
-**Problem.** The detector scored the *whole window* — the template distribution of the entire cluster aggregated together. In a busy cluster any single window mixes ~15 namespaces and 30–60 templates, so the aggregate always looked "unusual" and nearly every window was flagged. A healthy namespace dragged the whole window into anomaly, and the resulting alert listed all ~15 namespaces with no clear culprit.
-
-**Fix.** `WindowData` now tracks `ns_cluster_counts: dict[str, dict[int,int]]` — the template distribution *per namespace*. The three detection signals are computed per namespace (`severity_by_namespace`, `novelty_by_namespace`, and an Isolation Forest scored on per-namespace vectors). The window score is the **maximum over namespaces**, and the namespace achieving it is recorded as `ScoredWindow.culprit_namespace`. A healthy namespace can no longer drag the window, and every alert/incident is attributed to a single culprit. A single-namespace window reduces exactly to the old behaviour (backward compatible).
-
-### 17.2 Absolute Isolation Forest score — the real cause of the flood
-
-**Problem.** The IF anomaly score was normalised **min-max within the current batch** (history + new window). That makes the score *relative*: the least-normal sample of the moment is always mapped to ≈1.0, even when everything is perfectly normal. This — not the model — was the dominant driver of the flood.
-
-**Fix.** The score is now **absolute**, derived from `IsolationForest.decision_function` (calibrated by `contamination`): `d ≥ 0` (inside the normal manifold) → 0; only the anomalous side scales, against a reference fixed at training time. A normal window now scores low and *varied* (observed 0.0–0.51) instead of saturating to 1.000. This is the single change that turned "every window is an anomaly" into "only genuinely anomalous namespaces fire".
-
-### 17.3 Novelty warm-up after every (re)start
-
-**Problem.** After a cold start the Drain3 parser and the IF model begin empty, so *every* template is "new" and the novelty signal saturates for a while, flooding alerts on startup.
-
-**Fix.** A linear warm-up ramp (`NOVELTY_WARMUP_WINDOWS`, default 20) damps **only** the novelty signal for the first windows after bootstrap; severity (real errors) and IF are untouched, so genuine problems still fire immediately. Novelty is reintroduced gradually as the baseline matures.
-
-### 17.4 RCA evidence — error-template clustering
-
-**Problem.** The SLM received up to 40 near-identical raw error lines, which diluted the signal and consumed the `num_ctx=2048` budget, yielding generic diagnoses or "no determinable cause".
-
-**Fix.** Error logs are grouped by `(namespace, Drain3 template)`, counted, and ranked by frequency, sending **one line per pattern plus a real example** instead of dozens of duplicates:
-
-```
-12× [postgresql] FATAL: role "<*>" does not exist
-     e.g. FATAL: role "$(POSTGRES_USER)" does not exist
-```
-
-The evidence is further filtered to the **culprit namespace** so a single root cause is presented, not a cluster-wide mix.
-
-### 17.5 Anti-drift guardrails and deterministic fallback
-
-**Problem.** The 1.5B expert occasionally drifted into tutorial mode ("Here are some additional steps… Step 4:") or apologised ("Lo siento, parece que falta información"), producing unusable diagnoses.
-
-**Fix.** Drift/apology markers are detected and, when the model output is unusable, the root cause is **synthesised deterministically from the dominant error template** — e.g. *"El namespace «postgresql» acumula 11 errores recurrentes del tipo: «FATAL: role <\*> does not exist»."* The system therefore never shows "no determinable cause" when real errors exist; diagnosis quality becomes independent of model variance. `stop` sequences were also added to the single-shot path.
-
-### 17.6 Incident deduplication
-
-**Problem.** A persistent problem (same namespaces) created one incident per detection window, flooding the incident list.
-
-**Fix.** Incidents are deduplicated by a namespace fingerprint within a sliding window (`REMEDIATION_DEDUP_WINDOW`, default 1800 s): a recurrence increments `occurrence_count` ("visto N veces") instead of creating a new incident.
-
-### 17.7 Remediation command quality — deterministic command builder
-
-**Problem.** The 1.5B expert proposed `kubectl` commands that were frequently unusable: wrong namespace (`describe pod postgresql-… -n aiops-demo` when the pod lived in `postgresql`), fragile shell substitutions (`logs … $(kubectl get pod -l …)`), placeholders, or commands irrelevant to the root cause (`describe networkpolicy` for a missing-role error). On the held-out test set the fine-tuned model reached only **NS-ok 33.0%** (command names the correct namespace) and **Verb-ok 41.0%** (command verb matches the scenario).
-
-**Fix.** A deterministic command builder (`src/diagnostics/command_builder.py`) applies the same principle used for the root cause — guarantee quality by post-processing instead of trusting model variance:
-
-1. **Resource extraction** from the evidence: pod (`Pod/<name>`), node, PVC, service, and the owning workload (deployment/statefulset, by stripping the replicaset/pod hash suffixes).
-2. **Intent → command catalog** mapping the failure pattern to the correct investigative command, with the verb aligned to each scenario (OOM/probe/image → `describe pod`; PVC → `describe pvc`; node pressure → `describe node` *without* `-n`; NetworkPolicy → `get networkpolicy`; secret/role → `get secret`; CrashLoop/config → `logs … --previous`; endpoints → `get endpoints`).
-3. **Namespace correction**: the `-n` flag is forced to the detector's culprit namespace (and stripped for cluster-scoped resources like nodes).
-4. **Fragility rejection**: commands with `$(...)`, pipes, `;`, or `<placeholders>` are discarded in favour of the deterministic one. The model's command is kept only when it is safe *and* consistent with the detected intent.
-5. **Two-tier output**: a safe investigation command (always) plus an optional reversible remediation (`rollout restart`) tagged by the existing risk taxonomy and gated in shadow mode.
-6. **Plain-language explanation**: each command is accompanied by a deterministic, human-readable explanation of *what it does and what to look for* (`explain_command()` parses the verb/resource/name/namespace), e.g. `kubectl get secret -n postgresql` → *"Lists the secrets in postgresql to check whether the secret with the credentials the pod can't find is missing"*. The explanation is generated by parsing, not by the model, so it never drifts and adds no latency; remediation commands also state their reversibility. Shown under each command in the incident console.
-
-**Result (deterministic evaluation on the 210-sample test set, no model inference):**
-
-| Metric | Fine-tuned SLM | Command builder | Δ |
-|---|---|---|---|
-| NS-ok% (correct namespace) | 33.0% | **85.7%** | +52.7 |
-| Verb-ok% (correct verb) | 41.0% | **92.9%** | +51.9 |
-
-The remaining ≈14% of NS-ok is the ceiling, not a miss: node-pressure scenarios resolve to `describe node`, which is cluster-scoped and *correctly* carries no namespace. As with the root-cause fallback, command quality is now independent of model variance.
-
-### 17.8 Incident classification — App vs Platform
-
-Operating against a multi-tenant cluster, incidents come from two sources — control-plane events (pod lifecycle: OOMKilled, Evicted, ImagePullBackOff…) and application logs (e.g. a database `FATAL: role does not exist`). Rather than **splitting** these into two pipelines — which would fragment a single root cause seen from two angles (`CrashLoopBackOff` + the app's stack trace are the *same* incident) and lose the cross-source correlation that makes the RCA strong — each incident is **classified and tagged** by owner:
-
-- **Platform** (infra/SRE): node pressure, OOM, image pull, PVC/storage, NetworkPolicy, scheduling.
-- **App** (developers): config/CrashLoop, missing secret/role, failing probes, missing endpoints.
-
-`classify_category()` derives the label deterministically from the detected intent. The incident console shows a per-incident badge and a filter bar (All / App / Platform with counts) for triage; a single incident store is kept, so correlation and deduplication are preserved. This keeps the door open to per-category routing (e.g. a distinct Teams channel for App vs Platform) without any architectural split. The thesis-relevant point is that **multi-source correlation** (events + logs in one RCA) is more valuable than source separation.
-
-### 17.9 Ablation — is the vanilla investigator still needed?
-
-After the deterministic improvements (evidence clustering, namespace focus, command builder), it is fair to ask whether the two-phase hybrid still earns its cost over a single-shot expert. We re-ran the held-out 210-sample test set comparing **single-shot ORPO** vs the **hybrid** (vanilla investigator → ORPO synthesiser), both grammar-constrained so the only difference is the vanilla's investigation:
-
-| Metric | Single-shot ORPO | Hybrid (vanilla+ORPO) | Winner |
-|---|---|---|---|
-| **Keyword%** (identifies the right failure) | 78.6% | **92.4%** | hybrid **+13.8** |
-| Parse% (format) | 100.0% | 98.6% | ≈ |
-| ROUGE-L | 18.3% | 5.9% | single-shot |
-| NS-ok% (raw model command) | 92.4% | 74.3% | single-shot* |
-| Verb-ok% (raw model command) | 67.6% | 41.9% | single-shot* |
-| Latency mean / p95 | 0.81s / 1.08s | 2.15s / 4.60s | single-shot (2.6×) |
-
-**First verdict (GPU-bound): the hybrid wins on diagnostic quality.** The vanilla's investigation buys **+13.8 points of Keyword%** — i.e. it identifies the correct failure ~14% more often, which is the single most important metric for root-cause analysis (the same mechanism that unlocked `network_policy_block` 0% → 73.3% in §10.3). The cost is 2.6× latency, acceptable for a reactive pipeline *when a GPU is present*. The paragraphs below revisit this once the CPU-only latency is measured — and reverse it.
-
-The honest caveats: (i) the `NS-ok%`/`Verb-ok%` columns favour single-shot but are **moot in production** — they measure the *raw model command*, which the deterministic command builder (§17.7) overrides for both modes (to 85.7%/92.9%); (ii) ROUGE-L favours single-shot, but it is a weak surface-overlap metric and the hybrid's prose diverges because it integrates investigation notes — Keyword% is the meaningful diagnostic signal. The decision is closer than the original numbers suggested, but Keyword% is decisive and settles it with data rather than assumption.
-
-**Feasibility of expert-only, and the CPU caveat.** A follow-up analysis confirmed the system runs **end-to-end on the expert alone**: the graph/remediation wiring and intent detection live in the deterministic layer (`OllamaRCA` single-shot populates `remediation_plan`/`solution_source` identically), and the conversational chat is a *separate* agent — so dropping the investigator changes nothing downstream. A fresh GPU re-run (14 samples) reproduced the trade-off: single-shot 0.83 s mean vs hybrid 2.29 s (~2.8×), Keyword% 78.6% vs 100%, NS-ok% 92.9% vs 71.4%. **The "keep the hybrid" verdict holds *when a GPU is available*** (both modes are sub-3 s, so Keyword% dominates). **On CPU-only nodes the calculus flips**: §9.4 measured the hybrid's multi-call path at >60 s — over the 60 s detection budget — while single-shot stays at ~32 s. So **expert-only is the CPU-viable configuration**, trading Keyword% for being the only mode that fits the CPU budget.
-
-**Adopted: single-shot expert + deterministic digest as the default (CPU and GPU).** To recover part of the Keyword% gap *without* re-introducing the investigator LLM, a zero-cost deterministic enrichment was added: `evidence_digest()` counts the dominant Kubernetes failure reasons (OOMKilling / Evicted / FailedScheduling / ImagePullBackOff …) already present in the evidence and prepends them to the expert's prompt — no LLM, no cluster access. On the 42-sample held-out subset this lifted single-shot **Keyword% 71.4% → 83.3%** (and NS-ok% 95.2% → 97.6%) at unchanged latency (~0.86 s on GPU), closing most of the distance to the hybrid (~93%) while keeping **one** LLM call, full determinism in the action layer, and the (Spanish, specific) explanation quality observed qualitatively. The residual ~10 pts to the hybrid is the vanilla investigator's *reasoning*, which a deterministic digest cannot replicate (the expert already sees the same signals). Net decision: the system runs **end-to-end on the expert alone** — faster, simpler, CPU-viable — the configuration most aligned with the determinism thesis. The hybrid remains available (`react_mode: hybrid`) for the marginal Keyword% gain where GPU latency budget allows.
-
-### 17.10 Chat investigation — "running but on fire" detection and verified commands
-
-> *Historical (development-era finding). The conversational chat surface was **removed** in the final version (§14.3), but the techniques below outlived it: the "running but on fire" log-based culprit detection informs the detector's per-namespace severity signal, and the semantic grounding of §17.11 is reused by the remediation graph's embedding fallback (§19.3).*
-
-The conversational investigation agent was hardened to match the rest of the system:
-
-- **Read-only execution via the kubernetes-configured `kubectl`.** The agent shells out to `kubectl` (read-only verbs only, enforced by `kubectl_toolbox`). On a host with cluster credentials (`~/.kube/config`) but no binary, this failed silently; the binary is provided and the triage output is no longer truncated (a >150-pod cluster was dropping namespaces, so focusing on e.g. `postgresql` found nothing).
-- **Verified commands instead of hallucinated ones.** The synthesiser (ORPO) is asked to explain the cause in prose only; any `kubectl` it invents is stripped, and the system appends a deterministic command from the command builder (§17.7) targeted at the culprit pod, with its plain-language explanation.
-- **"Running but on fire" detection.** A pod can be `Running 1/1` while its application logs `FATAL` — exactly the PostgreSQL case (`role "$(POSTGRES_USER)" does not exist`). The deterministic harness previously declared such a focused pod healthy because it only inspected pod **status**. It now, when the focused set has no status-level problem, **reads the pods' logs** and treats the pod as the culprit if it finds strong error markers (`FATAL`/`Traceback`/`does not exist`/`panic`/OOM) or ≥3 soft `ERROR` lines (the threshold avoids false positives on healthy apps). The expert then diagnoses the real application-level cause. This makes the chat consistent with the detector's per-namespace **severity signal**, which already flags a quiet-but-erroring namespace.
-- **Bounded confirmation loop (≤3 read-only steps).** Before concluding, the agent executes a *deterministic* sequence of up to three **read-only** commands to confirm the cause with real data: the intent-specific command (command builder), then `describe pod`, namespace `events`, and — only for pods that actually restarted — `logs --previous` (on a `Running` pod there is no previous container, and the resulting `BadRequest` was confusing the model). The sequence is deduplicated and hard-capped; **remediation is never auto-executed**. Two findings worth noting: (i) the next command is chosen deterministically, *not* by the model — letting the weak model pick commands reintroduced garbage loops; (ii) **more evidence is not always better** — the extra `describe`/`events` (which look clean) led the 1.5B to *override* the `FATAL` it had already seen and declare the pod healthy. The fix is an **anchoring** step: the confirmed strong-error log lines are highlighted in the synthesis prompt with an explicit instruction that the application is failing even if the pod status is `Running`. This is the same lesson as elsewhere — determinism carries the load (which commands, what order, when `--previous`), and the model only writes the prose.
-- **Command intent from focused evidence, not the `describe` boilerplate.** The suggested command is derived by classifying the failure intent over the evidence. Feeding the *full* `describe pod` output misfired: a CrashLoop caused by a liveness-probe `404` was classified as a secret problem (`get secret`) because the describe boilerplate contains `Mounts: /var/run/secrets/…` and the substring `secret` triggered that intent (the same class of bug as the over-broad `node.kubernetes.io` token in §17.2). The fix builds the command's intent from the **pod logs plus only the `Events:` section** of `describe` (the real reasons: *Liveness probe failed*, *OOMKilling*, *FailedMount*…), excluding the boilerplate. After this, the CrashLoop correctly yields `logs --previous` and the PostgreSQL role error yields `get secret`. This is chat-only and does not affect the command-builder evaluation (§17.7), which runs on clean event samples.
-
-### 17.11 Semantic grounding of the operator's question
-
-Exact-name matching only works if the operator types the namespace verbatim. To answer natural language — *"¿qué le pasa a la base de datos?"* without ever writing `postgresql` — the chat adds a **semantic grounding** step (`src/diagnostics/semantic_ground.py`):
-
-1. Each namespace is **described by what it runs**, derived from its pods' container **images** mapped through a small type lexicon (`postgres` → "PostgreSQL base de datos SQL", `nginx` → "servidor web", `redis` → "cache"…).
-2. Descriptions and the question are embedded with `nomic-embed-text` (via Ollama); the question is first **trimmed to its entity phrase** (*"¿qué le pasa a la base de datos?"* → *"base de datos"*) to remove filler.
-3. `ground()` returns the nearest namespace by cosine similarity **only if it clears an absolute threshold (0.50) and beats the runner-up by a margin (0.05)**; otherwise it returns `None` and the chat falls back to exact/keyword matching. Resolution order: exact name → semantic grounding → name keyword → global triage. The result is deterministic given the embedding model, and the model is used only to *retrieve*, never to decide control flow.
-
-This was an instructive measurement-driven iteration. With **bare** namespace names and the **full** question, grounding failed badly (35 real namespaces; the generic noise *"¿qué le pasa a la…"* made `default` win and `postgresql` did not even reach the top 6). After enriching descriptions with the type lexicon, trimming the query, and adding the threshold/margin, *"base de datos"* → `postgresql` scored 0.746 with a 0.167 margin — an unambiguous win — while genuinely ambiguous queries (e.g. "dashboard", "cache") fall below the margin and degrade safely to the existing matching. The recurring lesson holds: embeddings supply the *meaning*, but deterministic engineering (entity enrichment, query trimming, threshold + margin) is what makes it reliable. (Operational note: requires the `nomic-embed-text` model in Ollama; if absent, grounding silently disables and exact matching still works.)
-
-### 17.12 Result
-
-Live validation against the production cluster: normal windows now score low and varied; the only firing alerts are the cluster's *real* persistent issue (PostgreSQL `role "$(POSTGRES_USER)" does not exist`, severity = 1.00), correctly attributed to the `postgresql` namespace; benign high-volume namespaces (e.g. `argocd`, `aeat-retenciones`) no longer fire. The dashboard alert stream and the deduplicated incident list now tell the same story.
-
-## 18. Model Capacity Experiment — Gemma 4 E2B + ORPO
-
-To test whether a newer, larger base model would raise the quality ceiling, we fine-tuned **Gemma 4 E2B** (Google, April 2026; ~2.3B nominal, edge-optimised Per-Layer Embeddings) with the **same ORPO recipe and dataset** (`dpo_dataset_v2.jsonl`, 1960 preference pairs) used for the production qwen model. The conclusion is nuanced and important for an on-premise system: **Gemma improves diagnostic quality but is not operationally viable on this stack.**
-
-### 18.1 Training — succeeded, but only after a corrected recipe
-
-The first run fine-tuned the **base** `gemma-4-E2B` (pretrained, *not* instruct). Loss fell to ~1.1 yet the model **echoed the prompt** instead of diagnosing — even on training examples. Root cause was threefold:
-
-1. **Base, not instruct.** The pretrained prior is "continue the text"; with weak LoRA supervision it never learned to switch into answer mode.
-2. **ChatML as plain text.** Gemma's tokenizer has no `<|im_start|>` special tokens and no chat template, so `apply_chat_template` fell back to literal ChatML markers — the prompt/completion boundary used for loss masking is blurred (qwen's `Qwen2.5-1.5B-Instruct` has ChatML as real special tokens, so masking is clean).
-3. **Prompt truncation.** Event prompts are long (median 956 tok, max 1457); training with `max_prompt_len=512` truncated **97%** of prompts.
-
-The corrected run — base **`unsloth/gemma-4-E2B-it`** (instruct, native chat template with `system` role) + native template + `max_prompt_len=1536` / `max_seq_len=1792` — trained cleanly: loss **15.2 → 1.26**, monotonic. Vanilla PEFT could not wrap Gemma's `Gemma4ClippableLinear` layers (flat loss); **Unsloth** was required for gradients to flow.
-
-### 18.2 Quality — Gemma wins on the one axis guardrails can't fix
-
-Evaluated on the same 210-sample held-out set (`eval/eval_gemma4_hf.py`, transformers, greedy, **no grammar** — GGUF/Ollama unavailable, see §18.3):
-
-| Metric | Gemma4-E2B-ORPO (no grammar) | qwen-1.5B-ORPO (+grammar) |
-|---|:---:|:---:|
-| Parse% | 97.6% | 100% |
-| **Keyword% (RCA quality)** | **92.4%** | 78.1% |
-| NS-ok% | 45.2% | 89.5% |
-| Verb-ok% | 57.1% | 56.7% |
-| ROUGE-L | 3.8% | 19.3% |
-
-The decisive metric is **Keyword%** (does the root cause name the real failure) — the only axis the deterministic `command_builder` (§17.7) cannot repair. Gemma reaches **92.4% vs 78.1% (+14.3 pts)**, and achieves 97.6% parse **without** grammar-constrained decoding. NS-ok is low only because this measures the *raw model* command; in production the command builder forces the namespace deterministically, equalising both models. ROUGE-L collapse indicates more divergent phrasing.
-
-### 18.3 Deployment — not viable on the on-premise CPU/Ollama stack
-
-Quality is not the blocker; **serving is**. Four independent attempts to run Gemma4 on the production stack failed:
-
-1. **Unsloth `save_pretrained_gguf`** → fails (`EOF when reading a line`): tries to build llama.cpp interactively, no stdin in container.
-2. **llama.cpp `convert_hf_to_gguf.py`** (server and a fresh `ggml-org` clone) → both a ~290-line stub with **no `gemma4` architecture** registered; cannot convert.
-3. **Ollama 0.24 `ollama create` from merged safetensors** → hangs at "gathering model components", never completes.
-4. **Ollama 0.24 running the *official* `unsloth/gemma-4-E2B-it-GGUF`** → `unable to load model`: the runtime does not support the gemma4 architecture (pull ≠ run).
-
-Additional on-prem constraint: the server has **15 GB RAM**. The fp32 merge (10.2 GB) is **OOM-killed** during load; bf16 (~5 GB) fits but is tight alongside other services. The only CPU-runnable 4-bit path (GGUF-Q4, ~1.5 GB) is blocked by (1)–(4); the alternative (`torchao int4` via transformers) means **abandoning Ollama** for a bespoke Python inference server — the opposite of a robust, boring pipeline.
-
-Measured CPU latency of the deployed qwen for reference: **~10 tok/s generation, 6–15 s per diagnosis** (Ollama, `num_gpu:0`, Q4). Gemma's true GGUF-Q4 CPU latency would be comparable per published benchmarks (E2B is edge-optimised, ~60 tok/s class), but cannot be realised on this stack.
-
-### 18.4 Verdict
-
-Gemma4-E2B-ORPO is a **real quality improvement (+14 pts RCA keyword)** but is **not operationally viable** on-premise: undeployable on the existing Ollama runtime, RAM-tight without a quantisation path that works, and carrying recurring operational complexity (Unsloth dependency, instruct/template/truncation pitfalls) that the closed-loop retraining cycle (§16) would inherit **every cycle**. For an autonomous self-retraining system, pipeline simplicity is a reliability property, not a convenience.
-
-**Decision: production stays on qwen-1.5B-ORPO + deterministic guardrails (Q4_K_M GGUF on Ollama)** — deployable, 986 MB, robust. The Gemma adapter and 16-bit merge are archived privately at `aaranda233/k8s-rca-orpo-gemma4-it` for revisitation when llama.cpp/Ollama gemma4 support and hardware mature. As a thesis result this is a clean comparative finding: *a larger, newer model lifts RCA quality, but a 1.5B SLM with deterministic guardrails is the cost-efficient, deployable choice on commodity CPU hardware.*
-
-## 19. Executable Remediation Knowledge Graph — Multi-Step Plans with Verified Consolidation
-
-The auto-remediation of §13 maps a diagnosis to a *single* kubectl command. Real failures often need a *sequence* — investigate → identify → fix → verify — and one command rarely resolves them: an ingress 5xx is not fixed by restarting the controller if the backend has no Ready endpoints or a NetworkPolicy is dropping the traffic. This section adds a **non-parametric, structured, executable memory**: a knowledge graph of remediation plans. It mirrors the closed loop of §16, but for *remediation* instead of *RCA* — a fast deterministic memory (the graph) plus slow consolidation into the SLM's weights (ORPO on verified diagnoses).
-
-### 19.1 Design — abstract layer + runtime binding (AST-style)
-
-- **Node** = an abstract problem signature (`intent` + workload class), portable across clusters.
-- **Edge** = a remediation step with an action *template* (placeholders `{ns}`, `{pod}`, `{workload}`, `{service}`, `{pvc}`, `{node}`), a `risk_level` (0 read · 1 reversible · 3 destructive) and a `source` (`catalog`/`escalated`).
-- **Binding** (the real namespace and resources) is resolved at runtime by the *same* deterministic extractors used everywhere else (`src/diagnostics/command_builder.py`). A step whose resource cannot be extracted from the evidence is dropped, keeping the `{ns}`-only steps.
-- Retrieval is performed by **code** (deterministic intent detection + lookup, with embedding fallback), never by the SLM — the small model never loads the graph into its context. The store is SQLite (`src/remediation/remediation_graph.py`).
-- Step types: `investigate` (read-only) and `command` (reversible/config write — `rollout restart`/`undo`, `scale`, `set image`/`resources`/`env` — gated by per-step dry-run + approval). Manual (`guidance`) steps were **removed in the final version**: every step is executable (§19.3).
-
-### 19.2 Seeding — zero regression
-
-`seed_from_catalog()` seeds 11 intent plans from the existing command catalog (idempotent). The graph therefore starts **full** with everything the system already knew how to do, so introducing it cannot regress the deterministic command quality measured in §17.7. Each seeded plan is multi-step and, where a reversible fix applies, ends in a `rollout restart` (Level 1).
-
-### 19.3 Resolution and escalation (miss → large model)
-
-`resolve()` first builds a deterministic intent key (catalog hits via `intent_for`); on an unknown intent it falls back to nearest-neighbour by **embedding** over escalated nodes (cosine, threshold 0.6). Escalation (`src/diagnostics/escalation.py`, pluggable across `anthropic`/`openai`/`ollama` backends) fires on a **miss or when the resolved plan has no executable `command` step** — the case that used to end in a manual instruction. The large model proposes a multi-step plan, parsed and **validated** against a safe vocabulary: read verbs (`get`/`describe`/`logs`/`top`/`events`) plus reversible/config writes (`rollout restart`/`undo`, `scale`, `set image`/`resources`/`env`), each risk-scored (§13). Any destructive verb (`delete`/`drain`/`cordon`/`exec`/`apply`/`create`/`patch`/`annotate`/`label`) and any step with an unresolved `<placeholder>` is rejected. **There are no manual (`guidance`) steps** — every step is executable; if the only fix needs a forbidden verb (create a secret with an unknown value, provision a PV, add node capacity) the model returns investigation-only and the incident carries a concise "external action required" note (not a checkbox). A validated plan is persisted as **provisional** (unverified, with an embedding of its signature) so future misses reuse it without another model call.
-
-The escalation has two modes (`ESCALATION_MODE`). **Single-shot** (the original) makes one blind call returning a JSON plan. **Agentic** (`src/diagnostics/agentic_planner.py`, the final-version default in production) is a ReAct loop that *investigates the live cluster first*: THOUGHT → ACTION (read-only `kubectl` via the same `kubectl_toolbox`) → OBSERVATION, repeated up to a step budget, then emits the plan using the **real resource names it observed** — eliminating the `<pod>`/`<deployment>` placeholders a blind call tends to produce. The two layers of defence against unsafe output are unchanged and shared with the single-shot path: the toolbox rejects any write verb during investigation, and `_parse_plan` re-validates the final plan; a deterministic guard additionally drops any executable step that still carries an unresolved `<...>` placeholder. If the agentic loop yields nothing, it falls back to single-shot.
-
-### 19.3.1 Production deployment — local agentic planner on the A30
-
-In the final version the escalation runs **on** in production with the `ollama` backend and `qwen2.5-coder:14b` as the planner model. This 14B code model is **loaded on-demand** on the same A30 that hosts the resident `k8s-rca-orpo` expert (≈2 GB): when a miss fires, Ollama loads the coder (≈15 GB resident, both models at 100% GPU, ~7 GB VRAM headroom), the planner investigates and persists the plan, and the coder idle-unloads after the keep-alive window — so steady-state VRAM cost is just the small expert. This preserves the determinism thesis: the **diagnosis** path stays on the small CPU-viable expert (§17.9), and the **large model only acts on the long tail** (novel problems the catalog/graph does not cover), producing an auditable, real-name-bound, read-only-then-reversible plan rather than a free-form answer. A live production miss produced, for an `inventory-api` CrashLoopBackOff, a five-step plan (`get pods` → `describe pod inventory-api-64b5b587c9-4dlnb` → `logs` → `get events` → `rollout restart deployment/inventory-api`) with the real pod name resolved and no destructive verb — now visible in the **Grafo** view under the *escalated* filter, awaiting outcome verification (§19.4).
-
-### 19.4 Verification by outcome (free signal)
-
-`verify_from_incident()` / `mark_verified()`: when an incident whose plan came from the graph reaches a terminal state, the graph's edges are marked **verified** (`status=resolved` and `verified`/`approved`) or the failed attempt is recorded (`failed`/`rejected`). This reuses the *same* incident signal that already drives the RCA learning loop of §16 — no new supervision is required.
-
-### 19.5 Consolidation into weights (verified)
-
-`finetune/graph_to_orpo.py` exports to an ORPO dataset **only the diagnoses** whose solution came from the graph (`solution_source ∈ {graph, escalated}`) and was verified by outcome (`verified=True`). It deliberately does **not** retrain *solutions* — the graph serves those deterministically and auditably — only the diagnostic prose, labelled by causes that remediation confirmed. The export is offline, idempotent and void-safe; the retraining itself stays behind the non-regression gate of §16.
-
-### 19.6 Evaluation — coverage/correctness
-
-`eval/eval_graph.py`, deterministic and in-memory (seeded from the catalog, no cluster and no real store), over the 14 project failure scenarios:
-
-| Metric | Value |
-|--------|:-----:|
-| Coverage (returns a plan) | **100.0%** |
-| Intent correct | **100.0%** |
-| Multi-step plan (>1 step) | **100.0%** |
-| NS-ok (correct binding) | **100.0%** |
-| Reversible final action | 42.9% |
-| Steps per plan (mean) | 2.5 |
-
-**Reading:** the deterministic catalog returns a correct-intent, namespace-bound plan for **every** scenario, with 100% NS-ok. Multi-step coverage is now ~50% *by design*: the ~43% of classes with an in-cluster reversible fix (config, secret, probe, OOM, network, readiness) resolve fully in the catalog (investigate → `rollout restart`); the remaining classes (image pull, node pressure, PVC binding, insufficient CPU, registry auth) return **investigation-only** and are handed to the **agentic planner** (§19.3.1), which investigates live and emits a concrete config write (`set image`/`set resources`/`scale`) where one exists, or — for the genuinely-external fixes (create a secret, provision a PV, add node capacity) — leaves the investigation plan plus an "external action required" note. No step is ever a manual checkbox: the catalog provides the investigation, the large model provides the concrete action on the long tail, and only truly out-of-cluster fixes surface as a note.
-
-Together with §16, the system now consolidates **both halves** of an incident — the diagnosis (RCA, via ORPO) and the remediation (via the graph) — each backed by the same free, outcome-verified, human-in-the-loop signal.
-
----
-
-## 20. Pending / Future Work
-
-- [x] Formal evaluation on held-out test set — implemented in `eval/run_eval.py` (210 samples, seed=99)
-- [x] Alignment experiments — DPO v1/v2, SimPO, ORPO, KTO (10 experiments total)
-- [x] Grammar-constrained decoding — GBNF grammar via Ollama `/api/generate`
-- [x] Hybrid ReAct Agent — role separation resolves Parse%/Keyword% trade-off
-- [x] Auto-remediation with human-in-the-loop — Level 1 autonomous, Level 2 approval, circuit breaker
-- [x] Pluggable ChatOps notification — Microsoft Teams (primary) + email (fallback)
-- [x] Web operational console — Dashboard, Incidencias, Topología, Seguridad, Grafo
-- [x] Dual detection source — control-plane events + application logs (read-only)
-- [x] Live cluster topology (graph + electrical-panel views)
-- [x] Rule-based security posture scanner (10 checks, read-only)
-- [x] Remediation graph view + per-step plan execution (play buttons with live state) (§14.3)
-- [x] Agentic escalation planner — `qwen2.5-coder:14b` investigates live cluster on a graph miss, fills the graph with validated real-name plans; on-demand on the A30 (§19.3.1)
-- [~] Conversational chat agent ("chat with the cluster") — **removed in the final version**, superseded by expert-only diagnosis + agentic planner (§14.3)
-- [x] Per-namespace anomaly scoring with single-culprit attribution (§17.1)
-- [x] Absolute Isolation Forest score — eliminates the relative-normalisation anomaly flood (§17.2)
-- [x] Novelty warm-up on (re)start (§17.3)
-- [x] RCA evidence hardening — error-template clustering, culprit focus, anti-drift fallback (§17.4–17.5)
-- [x] Incident deduplication with occurrence counter (§17.6)
-- [x] Remediation command quality — deterministic command builder: NS-ok 33%→85.7%, Verb-ok 41%→92.9% (§17.7)
-- [x] Executable remediation knowledge graph — multi-step plans, miss-escalation, outcome verification, verified consolidation; 100% coverage/intent/NS-ok over 14 scenarios (§19)
-- [ ] Integration test: full pipeline with chaos injection on live cluster and MTTR measurement
-- [ ] Shadow-mode remediation on production cluster (generate incidents, all actions gated on approval)
-- [ ] LLM-assisted prioritization of security findings (rules detect, model contextualizes)
-- [ ] Fine-tune on larger dataset (5k+ samples with structural diversity) — prerequisite for DPO on stronger base
-- [ ] Scale to 7B model (Mistral-7B or Llama-3.1-8B) with same ORPO recipe — expected to improve both metrics
-- [ ] Benchmark against GPT-4o / Claude Sonnet on same 210-sample test set
-- [ ] Fine-tune investigator (Phase 1) on ReAct-format examples to improve `crash_config` scenario
-- [ ] Auto-remediation: extend hybrid agent to execute safe kubectl write commands with dry-run preview
+> **Development history.** The ten-experiment alignment study (SFT, DPO v1/v2, SimPO, ORPO, KTO), the Hybrid ReAct Agent, the Gemma-4-E2B capacity experiment, and the full production-hardening log are preserved in `RESEARCH_v1.md`. Detection internals (Watch API, Drain3, Isolation Forest) are detailed in `RESEARCH_DETECTION.md`.

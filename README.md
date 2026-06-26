@@ -72,7 +72,8 @@ Ejecutar el sistema en continuo sobre un clúster real (~15 namespaces) destapó
 
 | Documento | Descripción |
 |-----------|-------------|
-| [RESEARCH.md](./RESEARCH.md) | Paper principal — arquitectura, 10 experimentos, agente híbrido, grafo de remediación + planner agéntico, auto-remediación |
+| [RESEARCH.md](./RESEARCH.md) | **Paper del sistema actual** — bucle cerrado: detección → experto single-shot → grafo de remediación + planner agéntico → verificación → consolidación |
+| [RESEARCH_v1.md](./RESEARCH_v1.md) | Registro de desarrollo (v1): los 10 experimentos de alineación, el agente híbrido ReAct, el experimento Gemma-4, hardening |
 | [RESEARCH_DETECTION.md](./RESEARCH_DETECTION.md) | Detalle de capas 1-2: Watch API, Drain3, Isolation Forest |
 | [EXPERIMENTS.md](./EXPERIMENTS.md) | Registro científico de los 10 experimentos de alineación |
 | [eval/EVAL_RESULTS.md](./eval/EVAL_RESULTS.md) | Resultados cuantitativos completos por modelo y escenario |
