@@ -1077,7 +1077,7 @@ h2{font-size:20px;font-weight:bold;color:var(--text);margin-bottom:6px;line-heig
     </table>
 
     <div class="finding-box">
-      <strong>El 42.9% reversible es por diseño, no una carencia.</strong> Clases como pull de imagen, presión de nodo, binding de PVC, CPU insuficiente o auth de registry no se resuelven con ninguna acción reversible dentro del cluster — su arreglo es externo (corregir un tag, añadir capacidad, aprovisionar un PV). En esos casos el plan termina en un paso de <code>guidance</code> en vez de forzar un comando destructivo o inútil; donde un <code>rollout restart</code> sí resuelve (config, secret, probe, OOM, network, readiness) el plan termina en uno (Level 1). Media: <strong>2.5 pasos por plan</strong>.
+      <strong>Sin pasos manuales: cada acción es un comando ejecutable.</strong> Las clases con arreglo reversible dentro del cluster (config, secret, probe, OOM, red, readiness) se resuelven en el catálogo (investigar → <code>rollout restart</code>). El resto (pull de imagen, presión de nodo, binding de PVC, CPU insuficiente, auth de registry) devuelve solo investigación y se deriva al <strong>planner agéntico</strong>, que investiga en vivo y emite un comando de configuración concreto (<code>set image</code>/<code>set resources</code>/<code>scale</code>) si existe; para los arreglos genuinamente externos deja una nota "requiere acción externa" en vez de un paso manual. Ningún plan contiene checkboxes manuales.
     </div>
 
     <div class="finding-box">

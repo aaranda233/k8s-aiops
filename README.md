@@ -1,6 +1,6 @@
 # K8s-AIOps
 
-Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isolation Forest → **diagnóstico** de causa raíz con un agente híbrido (SLM fine-tuneado + grammar) → **remediación** con human-in-the-loop. Todo corre en CPU, sin GPU en inferencia.
+Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isolation Forest → **diagnóstico** de causa raíz con un experto SLM fine-tuneado (+ grammar) → **remediación** con un grafo de planes ejecutables y human-in-the-loop. El diagnóstico corre en CPU sin GPU; un planner agéntico (`qwen2.5-coder:14b`, on-demand en GPU) rellena la cola larga de problemas novedosos. **Sin pasos manuales: cada acción de un plan es un comando ejecutable.**
 
 **Modelos:** [k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo) — **Dataset:** [k8s-rca-dataset](https://huggingface.co/datasets/aaranda233/k8s-rca-dataset) — **Informe:** [GitHub Pages](https://aaranda233.github.io/k8s-aiops/)
 
@@ -16,18 +16,18 @@ Pipeline AIOps autónomo para Kubernetes: **detección** de anomalías con Isola
 ```
 
 1. **Detección** — eventos del cluster **+ logs de aplicación** en ventanas de 60s; Isolation Forest con reentrenamiento continuo marca ventanas anómalas
-2. **Diagnóstico** — un modelo base (`qwen2.5:1.5b`) investiga con kubectl de solo lectura (THOUGHT/ACTION), luego un experto fine-tuneado (`k8s-rca-orpo`) produce `ROOT CAUSE` + `KUBECTL` con formato garantizado por GBNF grammar
-3. **Remediación** — clasifica el comando por riesgo (Level 0-3): Level 1 reversible se ejecuta solo + verifica, Level 2 requiere aprobación, Level 3 destructivo nunca se ejecuta. Circuit breaker previene bucles.
+2. **Diagnóstico** — el experto fine-tuneado (`k8s-rca-orpo`) produce `ROOT CAUSE` + `KUBECTL` con formato garantizado por GBNF grammar, enriquecido con un *digest* determinista de la evidencia (config "expert-only", CPU-viable; el modo híbrido sigue disponible)
+3. **Remediación** — un **grafo de planes ejecutables** mapea cada firma de problema a una secuencia investigar→arreglar→verificar. Cada paso se clasifica por riesgo (L0-3) y se ejecuta con dry-run + aprobación por paso (shadow mode); los destructivos nunca se ejecutan. Ante un problema novedoso o sin acción en el catálogo, **escala al planner agéntico** (`qwen2.5-coder:14b`) que investiga en vivo y emite el comando concreto, rellenando el grafo. Circuit breaker previene bucles.
 
-### Consola operativa (5 vistas, todo read-only sobre la API)
+### Consola operativa (5 vistas, read-only sobre la API salvo la acción aprobada)
 
 | Vista | Qué hace |
 |-------|----------|
 | **Dashboard** | El algoritmo en vivo: templates Drain3, scatter PCA, ventanas puntuadas |
-| **Incidencias** | Bandeja de acciones: diagnóstico + kubectl propuesto, aprobar/rechazar |
-| **Chat** | Investigación conversacional del cluster (ReAct read-only, streaming) |
+| **Incidencias** | Bandeja de acciones: diagnóstico + plan multi-paso, ejecución paso a paso con botón play |
 | **Topología** | Mapa del cluster en vivo (grafo + cuadro eléctrico) coloreado por salud |
 | **Seguridad** | Escáner de postura: ~10 checks por severidad |
+| **Grafo** | Explora el grafo de remediación: firmas, planes, origen (catálogo vs escalado agéntico) y verificación |
 
 Notificación pluggable: **Microsoft Teams** (principal) + email (fallback). Teams avisa y enlaza a la consola; la decisión humana ocurre en la web.
 
@@ -72,7 +72,7 @@ Ejecutar el sistema en continuo sobre un clúster real (~15 namespaces) destapó
 
 | Documento | Descripción |
 |-----------|-------------|
-| [RESEARCH.md](./RESEARCH.md) | Paper principal — arquitectura, 10 experimentos, agente híbrido, auto-remediación |
+| [RESEARCH.md](./RESEARCH.md) | Paper principal — arquitectura, 10 experimentos, agente híbrido, grafo de remediación + planner agéntico, auto-remediación |
 | [RESEARCH_DETECTION.md](./RESEARCH_DETECTION.md) | Detalle de capas 1-2: Watch API, Drain3, Isolation Forest |
 | [EXPERIMENTS.md](./EXPERIMENTS.md) | Registro científico de los 10 experimentos de alineación |
 | [eval/EVAL_RESULTS.md](./eval/EVAL_RESULTS.md) | Resultados cuantitativos completos por modelo y escenario |
@@ -87,11 +87,11 @@ k8s-aiops/
 │   ├── collector/          # Capa 1: eventos (Watch API) + logs de app (read-only) + topología
 │   ├── parser/             # Capa 1: Drain3
 │   ├── detector/           # Capa 2: Isolation Forest + ventanas
-│   ├── diagnostics/        # Capa 3: single_shot · react · hybrid + grammar + chat + toolbox
-│   ├── remediation/        # Capa 4: risk_scorer · circuit_breaker · executor · notifier · incidentes
+│   ├── diagnostics/        # Capa 3: single_shot · react · hybrid + grammar + escalation + agentic_planner + toolbox
+│   ├── remediation/        # Capa 4: remediation_graph · risk_scorer · circuit_breaker · executor · notifier · incidentes
 │   ├── security/           # Escáner de postura de seguridad (read-only)
 │   └── tracking/           # MLflow
-├── tests/                  # 119 tests (pytest)
+├── tests/                  # 414 tests (pytest)
 ├── eval/                   # Harness + 210 muestras ciegas + resultados
 ├── finetune/               # SFT · DPO · ORPO · KTO · SimPO + Modelfiles
 ├── dataset/                # Generador + 14 escenarios YAML
@@ -141,7 +141,7 @@ helm install aiops helm/k8s-aiops/ -n aiops --create-namespace \
 
 Las aprobaciones llegan al canal de **Microsoft Teams** del equipo como Adaptive Cards con botones APROBAR/RECHAZAR. Canal configurable (`NOTIFY_CHANNEL=teams|email|both`).
 
-El RBAC es **read-only por defecto**. Los permisos de escritura (`patch`/`scale` sobre deployments) solo se conceden con `rbac.allowRemediation=true`; `delete`/`drain` nunca.
+El RBAC es **read-only por defecto**. Los permisos de escritura para el conjunto de acciones reversibles/config (`rollout restart`/`undo`, `scale`, `set image`/`resources`/`env`) solo se conceden con `rbac.allowRemediation=true`; `delete`/`drain`/`exec`/`apply`/`create` nunca.
 
 ### Evaluación
 
@@ -152,7 +152,7 @@ python eval/run_eval.py --models orpo,hybrid_orpo --host http://<ollama-host>:11
 ### Tests
 
 ```bash
-pytest tests/ -v        # 65 tests — riesgo, circuit breaker, executor, notifier
+pytest tests/ -v        # 414 tests — riesgo, circuit breaker, executor, grafo, escalado agéntico, web
 ```
 
 ---
@@ -161,9 +161,9 @@ pytest tests/ -v        # 65 tests — riesgo, circuit breaker, executor, notifi
 
 | Modo | Descripción | Cuándo usar |
 |------|-------------|-------------|
-| `single_shot` | Una llamada al fine-tuneado | Más rápido (0.7s), menor cobertura |
+| `single_shot` | Una llamada al experto + grammar + digest determinista | **Producción** — CPU-viable (~0.7s GPU / ~32s CPU), Keyword% 83% |
 | `react` | Loop ReAct con el fine-tuneado | Experimental (1.5B no sigue bien el formato ReAct) |
-| `hybrid` | Base investiga + experto diagnostica + grammar | **Recomendado** — mejor Keyword% |
+| `hybrid` | Base investiga + experto diagnostica + grammar | Mejor Keyword% (~93%) si hay presupuesto de latencia GPU |
 
 ---
 
@@ -179,6 +179,6 @@ pytest tests/ -v        # 65 tests — riesgo, circuit breaker, executor, notifi
 
 ## Estado del proyecto
 
-**Completado:** pipeline 4 capas · 10 experimentos de alineación · agente híbrido + grammar · auto-remediación con human-in-the-loop · 65 tests · CI/CD · Docker · Helm · health checks.
+**Completado (versión final):** pipeline 4 capas · 10 experimentos de alineación · experto single-shot + grammar + digest (CPU-viable) · agente híbrido · **grafo de remediación ejecutable** · **planner agéntico** (`qwen2.5-coder:14b`, on-demand) que rellena la cola larga · **sin pasos manuales** (toda acción es un comando ejecutable; lo externo se marca como nota) · vista Grafo + ejecución paso a paso · auto-remediación con human-in-the-loop · 414 tests · CI/CD · Docker · Helm.
 
-**Próximo:** test de integración con chaos injection en cluster real + medición de MTTR · benchmark vs GPT-4o/Claude · escalar a modelo 7B.
+**Próximo:** test de integración con chaos injection en cluster real + medición de MTTR · benchmark vs GPT-4o/Claude · consolidación periódica del grafo verificado a ORPO.
