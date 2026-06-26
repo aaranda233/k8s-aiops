@@ -22,15 +22,23 @@ Requiere Docker (el daemon corriendo). Todo va dentro del contenedor.
 
 ```bash
 cd paper
-make pdf      # → paper/paper.pdf   (construye la imagen la 1ª vez)
-make html     # → paper/paper.html
-make all      # ambos
+make pdf      # → paper/paper.pdf      (inglés, desde RESEARCH.md)
+make pdf-es   # → paper/paper-es.pdf   (español, desde RESEARCH_es.md)
+make html     # → paper/paper.html     (inglés)
+make all      # EN + ES (PDF)
 make shell    # shell para depurar dentro del contenedor
 make clean    # borra artefactos generados
 ```
 
-La primera `make` construye la imagen (Quarto + TinyTeX + fuentes), tarda unos
-minutos; las siguientes solo renderizan.
+La primera `make` construye la imagen (Quarto + TeX Live + Graphviz + fuentes),
+tarda unos minutos; las siguientes solo renderizan.
+
+## Diagramas
+
+Los bloques ` ```dot ` en el markdown se renderizan a PDF vectorial con Graphviz
+(en `build_qmd.py`, vía `dot -Tpdf`) y se embeben como figura — sin depender del
+navegador headless que Quarto pide por defecto. Cada bloque admite directivas
+`//| fig-id:` y `//| fig-cap:`.
 
 ## Personalización
 

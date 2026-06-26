@@ -14,52 +14,43 @@ This system takes a different stance, built on three principles:
 2. **The model diagnoses; deterministic code acts.** A small model cannot be made reliable enough to *choose and execute* a cluster-mutating action. So the action is never the model's free-text output: it is resolved from an auditable knowledge graph and validated/risk-scored before any execution, with a human in the loop.
 3. **Closed loop, infrastructure-free.** Everything runs on read-only access to the Kubernetes API. Detection, diagnosis, remediation, verification and learning form a cycle that improves with use, and the only writes to the cluster are reversible/configuration actions a human approves.
 
-The remainder of the paper describes the system as it runs today. A condensed alignment study (the empirical basis for the diagnosis model) is given in the *Diagnosis* section; the exhaustive development history — ten fine-tuning experiments across SFT, DPO, ORPO, KTO, grammar-constrained decoding and a two-phase Hybrid ReAct Agent — lives in `RESEARCH_v1.md`.
+The remainder of the paper describes the system as it runs today, including the *Fine-tuning and alignment* section that summarises the ten-experiment study behind the diagnosis model. The exhaustive per-experiment development log lives in `RESEARCH_v1.md`.
 
 ## System Overview
 
 The pipeline is a closed loop. Each stage uses only read-only Kubernetes API access; the single class of writes is a curated set of reversible/configuration remediation commands, each behind dry-run, shadow mode and explicit per-step human approval.
 
-```
-            ┌──────────────────────── Kubernetes API (read-only) ────────────────────────┐
-            │                                                                              │
-            ▼                                                                              │
-   ┌──────────────────┐   events + app logs   ┌──────────────────┐   (ns, window)         │
-   │   DETECT          │ ────────────────────▶ │  Drain3 + Isolation Forest                │
-   │  collector/       │                       │  per-namespace anomaly scoring            │
-   └──────────────────┘                       └─────────┬────────┘                         │
-                                                         │ anomalous (namespace, window)    │
-                                                         ▼                                  │
-                                              ┌──────────────────────────┐                 │
-                                              │   DIAGNOSE                │                 │
-                                              │  ORPO expert (1.5B)       │   single LLM    │
-                                              │  + GBNF grammar           │   call, CPU-    │
-                                              │  + deterministic digest   │   viable        │
-                                              └─────────┬────────────────┘                 │
-                                                        │ root cause + intent              │
-                                                        ▼                                  │
-                                  ┌─────────────────────────────────────────┐             │
-                                  │   REMEDIATE                              │             │
-                                  │  Executable remediation graph (catalog)  │             │
-                                  │   • multi-step plan: investigate→fix→verify             │
-                                  │   • risk-scored (L0–L3), dry-run, shadow │             │
-                                  │  miss / no executable action ──▶ AGENTIC PLANNER        │
-                                  │   • qwen2.5-coder:14b investigates live (read-only)     │
-                                  │   • emits concrete real-name commands; fills the graph  │
-                                  └─────────┬───────────────────────────────┘             │
-                                            │ human approves each step (HITL, Teams)        │
-                                            ▼                                              │
-                                  ┌──────────────────┐   re-detect    ┌──────────────────┐ │
-                                  │   EXECUTE         │ ─────────────▶ │   VERIFY          │ │
-                                  │  dry-run + apply  │   (Modo B)     │  outcome signal   │─┘
-                                  └──────────────────┘                └─────────┬────────┘
-                                                                                │ verified
-                                                                                ▼
-                                                                     ┌──────────────────┐
-                                                                     │   CONSOLIDATE     │
-                                                                     │  verified RCA →   │
-                                                                     │  ORPO (offline)   │
-                                                                     └──────────────────┘
+```dot
+//| fig-id: fig-architecture
+//| fig-cap: "Closed-loop architecture. Detection, diagnosis, remediation, verification and consolidation form a cycle over read-only Kubernetes API access; the only writes are human-approved reversible/configuration commands. The small expert diagnoses on CPU; the large code model is confined to on-demand escalation on the long tail."
+digraph arch {
+  size="6.3,8";
+  ratio=compress;
+  rankdir=TB;
+  bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fillcolor="#f6f8fa", color="#888888",
+        fontname="DejaVu Sans", fontsize=10, margin="0.18,0.11"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#666666"];
+
+  detect      [label="DETECT\ncollector/ — Watch API events + app logs"];
+  detector    [label="Drain3 + Isolation Forest\nper-namespace anomaly scoring"];
+  diagnose    [label="DIAGNOSE\nORPO expert (1.5B) + GBNF grammar + deterministic digest\none LLM call, CPU-viable", fillcolor="#e8f0ff"];
+  remediate   [label="REMEDIATE — executable remediation graph (catalog)\nmulti-step plan: investigate -> fix -> verify · risk-scored L0-L3", fillcolor="#e9f8ef"];
+  planner     [label="AGENTIC PLANNER  (on miss / no executable action)\nqwen2.5-coder:14b investigates live (read-only)\nemits concrete real-name commands · fills the graph", fillcolor="#fff5e0"];
+  execute     [label="EXECUTE\ndry-run + apply (shadow mode, per-step human approval)"];
+  verify      [label="VERIFY\noutcome by re-detection (Modo B)"];
+  consolidate [label="CONSOLIDATE\nverified RCA -> ORPO (offline)", fillcolor="#f3e9ff"];
+
+  detect      -> detector    [label="events + logs"];
+  detector    -> diagnose    [label="anomalous (ns, window)"];
+  diagnose    -> remediate   [label="root cause + intent"];
+  remediate   -> planner     [label="escalate", style=dashed];
+  planner     -> remediate   [label="provisional plan", style=dashed];
+  remediate   -> execute     [label="approve (HITL / Teams)"];
+  execute     -> verify      [label="re-detect"];
+  verify      -> consolidate [label="verified"];
+  verify      -> detect      [label="closed loop", style=dotted, constraint=false, color="#4f8ff7"];
+}
 ```
 
 **Operational console.** A FastAPI + WebSocket console exposes five read-only views (Dashboard, Incidents, Topology, Security, Graph). It is the human-in-the-loop control point: Microsoft Teams notifications alert and deep-link here, and approvals/executions happen in the authenticated console.
@@ -93,27 +84,18 @@ The base is `Qwen2.5-1.5B-Instruct`, fine-tuned with **QLoRA + ORPO** on ~986 cu
 - **GBNF grammar.** The expert is called through Ollama's `/api/generate` with a grammar that constrains output to the `ROOT CAUSE: … / KUBECTL: …` shape. This guarantees format at the token level and decouples format correctness from model capacity.
 - **Deterministic evidence digest.** Before the call, `evidence_digest()` counts the dominant Kubernetes failure reasons already present in the evidence (OOMKilling / Evicted / FailedScheduling / ImagePullBackOff …) and prepends them to the prompt. It is pure code — no second LLM, no cluster access — and recovers most of the diagnostic accuracy a separate investigator model would add.
 
-### Why a single model: the Parse%/Keyword% trade-off (condensed)
+### Hybrid vs single-shot: the production decision
 
-The alignment study behind this choice (full log in `RESEARCH_v1.md`) found a persistent **Parse%/Keyword% trade-off**: methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format. The trade-off is not fundamental — it is the cost of solving both objectives with one small model on a restricted dataset. ORPO under a grammar gives the best single-model balance; a two-phase Hybrid ReAct Agent (a vanilla investigator feeding the ORPO expert) matched the unspecialised baseline on diagnostic accuracy, proving the trade-off is separable — but at a multi-call latency that does not fit a CPU budget.
+Two diagnosis configurations were measured head-to-head: the **single-shot expert** (one call to the ORPO model under grammar, plus the deterministic digest) and the **Hybrid ReAct Agent** (a vanilla `qwen2.5:1.5b` investigator that drills into the failing pod, then the ORPO expert synthesises). The hybrid is the stronger *diagnostician* — its investigation recovers the baseline's vocabulary (Keyword 92.9% vs the single-shot's 78.1% raw / 83.3% with the digest) and unlocks blind spots such as `network_policy_block` (0% → 73.3%). The decision, however, is dominated by **latency on CPU**, where the diagnosis must run without a GPU:
 
-| Configuration | Parse% | Keyword% | NS-ok% | Latency (GPU) |
+| Configuration | Keyword% | Parse% | Latency (GPU) | Latency (CPU) |
 |---|:---:|:---:|:---:|:---:|
-| Baseline `qwen2.5:1.5b` | 38.6% | 92.4% | 1.4% | 1.00 s |
-| ORPO + grammar | **100.0%** | 78.1% | 89.5% | **0.71 s** |
-| Hybrid ReAct + grammar | 98.6% | **92.9%** | 73.3% | 2.04 s |
-| **Single-shot expert + grammar + digest** | ~100% | **83.3%** | 97.6% | ~0.86 s |
+| Single-shot + grammar + digest | 83.3% | ~100% | ~0.86 s | **~32 s** (fits the 60 s budget) |
+| Hybrid ReAct + grammar | **92.9%** | 98.6% | ~2.3 s | **> 60 s** (over budget) |
 
-*Metrics on a held-out blind test set (Parse/Keyword/NS-ok over 210 samples; the digest row measured on a 42-sample held-out subset). Latencies are GPU-accelerated.*
+*Detection windows are 60 s; a diagnosis slower than the window cannot keep pace. CPU figures on the Xeon Gold 6526Y: single-shot ORPO Q8 measured 36.2 s mean (4 vCPU) and 32.6 s (8 vCPU).*
 
-### Why single-shot for production: the CPU budget
-
-Latencies above are GPU-accelerated (Ollama offloads to the A30 if present). On CPU-only nodes the picture changes: the single-shot expert runs in ~32 s, while the hybrid's multi-call path exceeds **60 s** — over the detection window budget. The deployed configuration is therefore the **single-shot expert + grammar + digest**: one LLM call, full determinism in the action layer, CPU-viable, and quality (Keyword 83.3%, NS-ok 97.6%) close to the hybrid. The hybrid remains available where a GPU latency budget allows.
-
-| CPU allocation | Mean latency | p95 | Mode |
-|---|:---:|:---:|:---:|
-| 4 vCPU (2 physical cores) | 36.2 s | 50.4 s | single-shot ORPO Q8 + grammar |
-| 8 vCPU (4 physical cores) | 32.6 s | 38.9 s | single-shot ORPO Q8 + grammar |
+On a GPU both modes are sub-3 s and the hybrid's higher Keyword% wins. **On CPU the calculus flips**: both latencies rise sharply, but only the single-shot fits under the 60 s detection budget — the hybrid's extra investigator call pushes its multi-call path past it. Critically, the single-shot **still generates specific, format-correct Spanish diagnoses**: the GBNF grammar guarantees the structure, and the zero-cost deterministic digest recovers most of the lost vocabulary (Keyword 71.4% → 83.3%, NS-ok 95.2% → 97.6% on a 42-sample held-out subset) at unchanged latency. The production system therefore runs **single-shot**, trading ~10 points of Keyword% for being the only mode that keeps pace on CPU; the hybrid stays selectable (`react_mode: hybrid`) where a GPU budget allows.
 
 ### Deterministic guardrails on the diagnosis output
 
@@ -122,6 +104,38 @@ Diagnosis quality is made independent of model variance by post-processing:
 - **Deterministic command builder.** A catalog maps the detected intent to a targeted, namespace-correct kubectl command, extracting the real resource from the evidence and discarding fragile commands. This lifts command quality from the raw model's NS-ok 33% / Verb-ok 41% to **85.7% / 92.9%**, and attaches a natural-language explanation of what each command does and what to look for.
 - **Anti-drift fallback.** If the model output is unusable (apology/drift markers), the root cause is synthesised deterministically from the dominant error template, so the system never shows "no determinable cause" when real errors exist.
 - **Incident classification & deduplication.** Each incident is tagged App vs Platform and deduplicated by fingerprint with an occurrence counter, preserving event+log correlation in a single store.
+
+## Fine-tuning and alignment: ten experiments
+
+The diagnosis model is the product of a systematic alignment study — ten fine-tuning experiments on `Qwen2.5-1.5B-Instruct` — whose objective was a small model that emits *both* a correct root cause *and* a parseable `ROOT CAUSE / KUBECTL` structure. The full per-experiment log, including the failed recipes and the Gemma-4 capacity experiment, is preserved in `RESEARCH_v1.md`; this section summarises the journey and its result.
+
+### Training setup
+
+QLoRA (4-bit quantised base + trainable LoRA adapters) on a single **NVIDIA A30 (24 GB)** with unsloth + TRL, over a curated dataset of **~986 Kubernetes incident scenarios across 14 failure categories** (OOM, CrashLoop, ImagePull, liveness/readiness probes, PVC binding, node pressure, NetworkPolicy, registry auth, …). Each sample is ChatML — a system role, an events/logs prompt, and a `ROOT CAUSE … / KUBECTL …` completion. The aligned adapters are merged and quantised to **Q8_0 GGUF (~1.6 GB)**; Q8 is chosen over Q4, since 4-bit quantisation measurably degrades a 1.5B model's format adherence.
+
+### The three paradigms and the central finding
+
+The experiments span three paradigms: (1) single-shot fine-tuning (SFT, DPO, SimPO, ORPO, KTO); (2) grammar-constrained decoding; and (3) a two-phase Hybrid ReAct Agent. They expose a persistent **Parse%/Keyword% trade-off**: methods that enforce output *format* (SFT, ORPO) cap semantic *vocabulary* coverage, while preference-optimization methods that recover vocabulary (DPO, SimPO, KTO) destroy format. The trade-off is not fundamental — it is the cost of solving both objectives with one small model on a restricted dataset.
+
+| Experiment | Method | Parse% | Keyword% | NS-ok% | ROUGE-L | Lat. |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| Baseline | none (`qwen2.5:1.5b`) | 38.6% | 92.4% | 1.4% | 2.5% | 1.00 s |
+| SFT v1 | SFT | 56.2% | 60.0% | 32.9% | 56.7% | 0.86 s |
+| SFT v2 | SFT (balanced) | 35.2% | 64.3% | 22.4% | 41.2% | 0.89 s |
+| DPO v1 | DPO | 16.2% | 82.9% | — | 2.4% | — |
+| SimPO | SimPO | 16.7% | 86.7% | — | 57.7% | — |
+| DPO v2 | DPO (format both sides) | 8.1% | 87.1% | 6.2% | 21.7% | 0.81 s |
+| ORPO | ORPO (Q8_0) | 58.1% | 67.1% | 48.1% | 16.2% | 0.89 s |
+| ORPO | ORPO (Q4_K_M) | 59.5% | 76.2% | 45.7% | 14.7% | 0.85 s |
+| KTO | KTO | 0.0% | 0.0% | 0.0% | 0.0% | 0.49 s |
+| **ORPO + grammar** | ORPO + GBNF | **100.0%** | 78.1% | **89.5%** | 19.3% | **0.71 s** |
+| **Hybrid ReAct + grammar** | role separation | 98.6% | **92.9%** | 73.3% | 5.9% | 2.04 s |
+
+*210 blind samples per model, seed=99. The trade-off is visible column-wise: SFT/ORPO raise format and NS-ok but cap Keyword%; DPO/SimPO/KTO raise Keyword% but collapse Parse%.*
+
+### Why ORPO + grammar, then single-shot
+
+**ORPO** (Odds-Ratio Preference Optimization) is the first method to optimise format and vocabulary *simultaneously* by construction — it folds the preference signal into the SFT loss rather than as a separate, format-destroying stage (as DPO does). Adding **GBNF grammar-constrained decoding** then guarantees the `ROOT CAUSE/KUBECTL` structure at the token level (Parse% 58% → 100%), decoupling format correctness from model capacity. The **Hybrid ReAct Agent** showed the trade-off is fully separable — a vanilla investigator feeding the ORPO expert recovers the baseline's Keyword% (92.9%) — but its multi-call latency does not fit a CPU budget (previous section). The production system therefore runs the single-shot ORPO expert + grammar + a deterministic evidence digest. A separate capacity experiment (Gemma-4-E2B + ORPO, in `RESEARCH_v1.md`) confirmed that a larger base improves the one axis guardrails cannot fix (vocabulary), but is not viable on the on-premise CPU/Ollama stack — reinforcing the 1.5B + grammar + digest choice.
 
 ## Remediation: an executable knowledge graph
 

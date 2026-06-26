@@ -1,7 +1,10 @@
-# Artefactos generados (RESEARCH.md es la fuente; estos se regeneran)
-_generated.qmd
+# Artefactos generados (los .md son la fuente; estos se regeneran)
+_generated*.qmd
 _generated_files/
+_generated_es_files/
 .quarto/
 paper.pdf
+paper-es.pdf
 paper.html
+fig-*.pdf
 *.tex

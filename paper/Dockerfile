@@ -8,6 +8,7 @@ FROM ghcr.io/quarto-dev/quarto:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
+        graphviz \
         fonts-dejavu \
         fonts-dejavu-extra \
         fontconfig \

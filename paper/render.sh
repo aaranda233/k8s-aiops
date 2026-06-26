@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Regenera _generated.qmd desde RESEARCH.md y lo renderiza con Quarto.
-# Uso:  render.sh [pdf|html|all]   (por defecto: pdf)
+# Genera un .qmd desde el paper markdown (Graphviz → figura) y lo renderiza.
+# Uso:  render.sh <SRC.md> <OUT.qmd> <LANG> <PDF_NAME> [pdf|html]
 set -euo pipefail
 
-FORMAT="${1:-pdf}"
+SRC="${1:-../RESEARCH.md}"
+OUT="${2:-_generated.qmd}"
+LANG="${3:-en}"
+PDF="${4:-paper.pdf}"
+FORMAT="${5:-pdf}"
 
-echo "▸ Preprocesando RESEARCH.md → _generated.qmd"
-python3 build_qmd.py
+echo "▸ Preprocesando $SRC → $OUT (lang=$LANG)"
+python3 build_qmd.py "$SRC" "$OUT" "$LANG"
 
-case "$FORMAT" in
-  pdf)  quarto render _generated.qmd --to pdf  --output paper.pdf ;;
-  html) quarto render _generated.qmd --to html --output paper.html ;;
-  all)  quarto render _generated.qmd --to pdf  --output paper.pdf
-        quarto render _generated.qmd --to html --output paper.html ;;
-  *)    echo "formato no soportado: $FORMAT (usa pdf|html|all)"; exit 1 ;;
-esac
+echo "▸ Renderizando $OUT → $PDF ($FORMAT)"
+quarto render "$OUT" --to "$FORMAT" --output "$PDF"
 
-echo "▸ Listo. Salida en paper/"
-ls -la paper.pdf paper.html 2>/dev/null || true
+echo "▸ Listo."
+ls -la "$PDF" 2>/dev/null || true

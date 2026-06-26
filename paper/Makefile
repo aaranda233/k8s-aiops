@@ -1,33 +1,37 @@
 # Generación del paper con Quarto en Docker.
-#   make build   → construye la imagen (una vez)
-#   make pdf     → genera paper/paper.pdf desde RESEARCH.md
-#   make html    → genera paper/paper.html
-#   make all     → ambos
-#   make shell   → shell dentro del contenedor (depurar)
+#   make build    → construye la imagen (una vez)
+#   make pdf      → paper/paper.pdf      (inglés, desde RESEARCH.md)
+#   make pdf-es   → paper/paper-es.pdf   (español, desde RESEARCH_es.md)
+#   make html     → paper/paper.html     (inglés)
+#   make all      → EN + ES (PDF)
+#   make shell    → shell dentro del contenedor (depurar)
+#   make clean    → borra artefactos generados
 #
-# RESEARCH.md es la única fuente de verdad: el paper se edita ahí.
+# Los .md son la única fuente de verdad: el paper se edita ahí.
 
 IMAGE := k8s-aiops-paper
 REPO  := $(abspath ..)
 RUN   := docker run --rm -v "$(REPO):/work" -w /work/paper $(IMAGE)
 
-.PHONY: build pdf html all shell clean
+.PHONY: build pdf pdf-es html all shell clean
 
 build:
 	docker build -t $(IMAGE) .
 
 pdf: build
-	$(RUN) bash render.sh pdf
+	$(RUN) bash render.sh ../RESEARCH.md _generated.qmd en paper.pdf pdf
+
+pdf-es: build
+	$(RUN) bash render.sh ../RESEARCH_es.md _generated_es.qmd es paper-es.pdf pdf
 
 html: build
-	$(RUN) bash render.sh html
+	$(RUN) bash render.sh ../RESEARCH.md _generated.qmd en paper.html html
 
-all: build
-	$(RUN) bash render.sh all
+all: pdf pdf-es
 
 shell: build
 	docker run --rm -it -v "$(REPO):/work" -w /work/paper $(IMAGE) bash
 
 clean:
-	rm -f _generated.qmd paper.pdf paper.html
-	rm -rf .quarto _generated_files
+	rm -f _generated*.qmd paper.pdf paper-es.pdf paper.html fig-*.pdf
+	rm -rf .quarto _generated_files _generated_es_files
