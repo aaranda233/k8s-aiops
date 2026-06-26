@@ -1,0 +1,62 @@
+[
+  {
+    "fault": "crashloop",
+    "scenario_id": "crash_config",
+    "namespace": "aiops-chaos-crashloop-0",
+    "detected": true,
+    "detection_latency_s": 25.8,
+    "keyword_hit": true,
+    "incident_id": "INC-5CDF1C8D",
+    "category": "platform",
+    "root_cause": "El namespace aiops-chaos-crashloop-0 presenta un alto número de eventos relacionados con roles no existentes en PostgreSQL y fallos en interfaces de red. Los errores específicos incluyen roles sin permisos, fallo en el acceso a interfaces y fallo en la ruta del felix."
+  },
+  {
+    "fault": "crashloop",
+    "scenario_id": "crash_config",
+    "namespace": "aiops-chaos-crashloop-1",
+    "detected": true,
+    "detection_latency_s": 35.6,
+    "keyword_hit": true,
+    "incident_id": "INC-95719466",
+    "category": "platform",
+    "root_cause": "El namespace aiops-chaos-crashloop-1 presenta un alto número de errores relacionados con roles de base de datos (FATAL: role \"$(POSTGRES_USER)\" does not exist) y fallos en el acceso a interfaces de red. Los eventos están concentrados en haproxy-ingress y kube-system, indicando problemas externos o configuración inadecu"
+  },
+  {
+    "fault": "oom",
+    "scenario_id": "crash_oom",
+    "namespace": "aiops-chaos-oom-0",
+    "detected": true,
+    "detection_latency_s": 15.4,
+    "keyword_hit": true,
+    "incident_id": "INC-63A06DC1",
+    "category": "app",
+    "root_cause": "El namespace aiops-chaos-oom-0 presenta un alto número de eventos relacionados con roles de base de datos inexistentes en el cluster PostgreSQL. Esto podría indicar problemas de configuración o despliegue inadecuado de los roles de base de datos."
+  },
+  {
+    "fault": "oom",
+    "scenario_id": "crash_oom",
+    "namespace": "aiops-chaos-oom-1",
+    "detected": false,
+    "detection_latency_s": null,
+    "keyword_hit": null,
+    "root_cause": null
+  },
+  {
+    "fault": "image",
+    "scenario_id": "image_not_found",
+    "namespace": "aiops-chaos-image-0",
+    "detected": false,
+    "detection_latency_s": null,
+    "keyword_hit": null,
+    "root_cause": null
+  },
+  {
+    "fault": "image",
+    "scenario_id": "image_not_found",
+    "namespace": "aiops-chaos-image-1",
+    "detected": false,
+    "detection_latency_s": null,
+    "keyword_hit": null,
+    "root_cause": null
+  }
+]
