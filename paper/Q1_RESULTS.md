@@ -60,9 +60,35 @@ la dedup por namespace). `eval/chaos_runner.py`. Cluster real (A30).
   producen logs (crashloop/oom). Motiva ajustar la sensibilidad para clases pobres
   en señal. Detalle: `eval/results/e3_chaos.md`.
 
+### MTTR — tiempo a remediación accionable
+
+La parte de MTTR que el sistema **automatiza y se puede medir** es el **tiempo a un
+plan de remediación accionable** = detección + diagnóstico + plan listo. Medido en el
+barrido: **~15-36 s** desde la inyección del fallo hasta la incidencia con su plan
+multi-paso validado. El resto del MTTR (aprobación humana + ejecución + verificación)
+lo automatizan el ejecutor por-paso y la re-detección (Modo B).
+
+Comparación vs manual: el triaje manual en K8s (notar la alerta → investigar →
+diagnosticar) suele tomar minutos a decenas de minutos; un MTTR-vs-manual **empírico**
+(con un baseline humano y fallos auto-resolubles diseñados) requiere un estudio
+controlado → E5/futuro. *No reclamamos un número manual medido aquí.*
+
+### Hallazgo operativo — contención pipeline ↔ escalado 14B
+
+Al encadenar E4 (investigaciones repetidas del coder-14b) con un barrido E3, el
+**bucle del pipeline se quedó colgado** (sin excepción; última ventana 12:37, cero
+detecciones durante ~20 min). El pipeline es de **un solo hilo** y comparte GPU/Ollama
+con el modelo grande on-demand; bajo escalado agéntico intenso la llamada de
+diagnóstico puede quedar en cola y **starve** la detección. Se recuperó con un
+reinicio. **Es una limitación real** (concurrencia/aislamiento de recursos) que va a
+*threats to validity* y motiva: cola/aislamiento entre detección y escalado, y no
+solapar cargas de eval. *(Por esto los experimentos de cluster deben correr de uno en
+uno con el sistema "templado", no en ráfaga.)*
+
 ### Pendiente E3
-- [ ] Barrido mayor (N≥10/clase) para recall/latencia con IC.
-- [ ] MTTR: tiempo a plan accionable (auto) vs triaje manual.
+- [ ] Barrido mayor (N≥10/clase) **de uno en uno, sin solapar con E4**, para recall/latencia con IC.
+- [ ] Arreglar/ajustar la detección de fallos solo-eventos (image-pull/PVC/node).
+- [ ] MTTR-vs-manual empírico (estudio controlado, E5).
 - [ ] Precisión de detección (falsos positivos sin caos).
 
 ---
