@@ -67,9 +67,28 @@ la dedup por namespace). `eval/chaos_runner.py`. Cluster real (A30).
 
 ---
 
-## E4 — Eval del planner agéntico 🚧
+## E4 — Eval del planner agéntico ✅
 
-*(en progreso — se rellena al terminar el run)*
+`eval/eval_planner.py` — para cada clase, inyecta el fallo en un namespace vivo y
+compara, con el **mismo** modelo grande (`qwen2.5-coder:14b`), single-shot (llamada
+ciega) vs agéntico (investiga en read-only y luego propone). 3 clases × 2 = 6.
+
+| Modo | Ejecutable | Sin placeholder | Seguro | Latencia |
+|---|:---:|:---:|:---:|:---:|
+| single-shot | 5/6 | 5/6 | 5/6 | 5-11 s |
+| **agéntico** | 5/6 | **6/6** | **6/6** | 7-28 s |
+
+**Hallazgo:** el agéntico **elimina los placeholders y es siempre seguro** (6/6 vs
+5/6). El caso revelador es `image #0`: el single-shot produjo un plan **inválido con
+placeholder** (`exec=False`, 0 pasos), mientras el agéntico, investigando el cluster
+en vivo (28 s), emitió un plan ejecutable de 4 pasos con nombres reales. El coste es
+latencia (investigación read-only): 7-28 s vs 5-11 s del ciego. Cuando el agéntico no
+halla acción segura devuelve investigate-only (p. ej. `oom #1`) en vez de inventar —
+por diseño. Detalle: `eval/results/e4_planner.json`.
+
+**Lectura:** el agéntico cambia latencia por **fiabilidad y seguridad** — justo donde
+el ciego falla (resolución de nombres reales en la cola larga). Justifica el coste del
+modelo de 14B on-demand para el escalado.
 
 ---
 

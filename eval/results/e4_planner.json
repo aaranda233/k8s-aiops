@@ -1,0 +1,110 @@
+[
+  {
+    "fault": "oom",
+    "ns": "aiops-planner-oom-0",
+    "single": {
+      "steps": 4,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 11.1
+    },
+    "agentic": {
+      "steps": 5,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 13.5
+    }
+  },
+  {
+    "fault": "oom",
+    "ns": "aiops-planner-oom-1",
+    "single": {
+      "steps": 4,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 6.8
+    },
+    "agentic": {
+      "steps": 1,
+      "executable": false,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 6.5
+    }
+  },
+  {
+    "fault": "image",
+    "ns": "aiops-planner-image-0",
+    "single": {
+      "steps": 0,
+      "executable": false,
+      "no_placeholder": false,
+      "safe": false,
+      "latency_s": 8.3
+    },
+    "agentic": {
+      "steps": 4,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 28.0
+    }
+  },
+  {
+    "fault": "image",
+    "ns": "aiops-planner-image-1",
+    "single": {
+      "steps": 3,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 4.9
+    },
+    "agentic": {
+      "steps": 3,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 10.9
+    }
+  },
+  {
+    "fault": "crashloop",
+    "ns": "aiops-planner-crashloop-0",
+    "single": {
+      "steps": 4,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 7.2
+    },
+    "agentic": {
+      "steps": 1,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 27.9
+    }
+  },
+  {
+    "fault": "crashloop",
+    "ns": "aiops-planner-crashloop-1",
+    "single": {
+      "steps": 5,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 8.7
+    },
+    "agentic": {
+      "steps": 4,
+      "executable": true,
+      "no_placeholder": true,
+      "safe": true,
+      "latency_s": 14.1
+    }
+  }
+]
