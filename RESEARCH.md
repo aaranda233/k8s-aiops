@@ -14,7 +14,14 @@ This system takes a different stance, built on three principles:
 2. **The model diagnoses; deterministic code acts.** A small model cannot be made reliable enough to *choose and execute* a cluster-mutating action. So the action is never the model's free-text output: it is resolved from an auditable knowledge graph and validated/risk-scored before any execution, with a human in the loop.
 3. **Closed loop, infrastructure-free.** Everything runs on read-only access to the Kubernetes API. Detection, diagnosis, remediation, verification and learning form a cycle that improves with use, and the only writes to the cluster are reversible/configuration actions a human approves.
 
-The remainder of the paper describes the system as it runs today, including the *Fine-tuning and alignment* section that summarises the ten-experiment study behind the diagnosis model. The exhaustive per-experiment development log lives in `RESEARCH_v1.md`.
+We frame the evaluation around four research questions:
+
+- **RQ1 — Diagnosis.** Can a fine-tuned 1.5B model diagnose Kubernetes incidents competitively with frontier LLMs (GPT-4o, Claude) under on-premise/CPU constraints?
+- **RQ2 — Remediation.** Does the deterministic remediation graph plus agentic escalation produce *executable, safe* plans (no manual steps, no unsafe commands) across the failure space?
+- **RQ3 — Closed loop in production.** How fast and how accurately does the live system detect and diagnose injected faults, and what does it automate of the mean-time-to-remediation?
+- **RQ4 — Cost of escalation.** What does the agentic planner buy over a blind single-shot call, and at what latency?
+
+The remainder of the paper describes the system as it runs today (including the *Fine-tuning and alignment* section summarising the ten-experiment study) and answers RQ1–RQ4 in *Results*. The exhaustive per-experiment development log lives in `RESEARCH_v1.md`.
 
 ## System Overview
 
@@ -194,21 +201,116 @@ Notifications are pluggable (Microsoft Teams primary, email fallback): they aler
 
 ## Results
 
-**Diagnosis.** The production single-shot expert + grammar + digest reaches Parse ≈100%, Keyword 83.3%, NS-ok 97.6% on held-out evaluation, at ~0.86 s on GPU and ~32 s on CPU with a single LLM call (table in *Diagnosis*). The deterministic command builder lifts command quality to NS-ok 85.7% / Verb-ok 92.9%.
+All quantitative results use seed=99; rates carry 95% bootstrap confidence
+intervals (10k resamples) where applicable. Scripts and raw result files are in
+`eval/` (`run_eval.py`, `run_api.py`, `bootstrap_ci.py`, `chaos_runner.py`,
+`eval_planner.py`, `results/`).
 
-**Remediation graph.** Over the 14 project failure scenarios the catalog returns a correct-intent, namespace-bound plan for **every** scenario (coverage 100%, intent 100%, NS-ok 100%). About 50% of plans are multi-step *by design*: classes with an in-cluster reversible fix (config, secret, probe, OOM, network, readiness) resolve fully in the catalog, while the rest (image pull, node pressure, PVC binding, insufficient CPU, registry auth) return investigation-only and are handed to the agentic planner, which emits a concrete config write where one exists or an "external action required" note otherwise. No step is ever a manual checkbox.
+### RQ1 — Diagnosis vs frontier LLMs (E1)
 
-**Production.** Running continuously on a ~34-namespace cluster, the system sustains per-namespace detection with dual event+log signal, expert-only diagnosis in Spanish with zero grammar parse failures, deterministic targeted commands, and on-demand agentic escalation that has already filled the graph with a verified-pending real-name plan.
+On a held-out blind subset (42 samples, 3 per scenario), the local 1.5B expert
+(single-shot + grammar + digest) compared against GPT-4o and Claude under the same
+prompt and metrics:
+
+| Model | Keyword% | NS-ok% (raw) | Parse% | Latency |
+|---|:---:|:---:|:---:|:---:|
+| GPT-4o (API) | **100 [100, 100]** | 76.2 [61.9, 88.1] | 97.6 | 1.4 s |
+| Claude Sonnet-4-6 (API) | 97.6 [92.9, 100] | 78.6 [66.7, 90.5] | 92.9 | 4.0 s |
+| k8s-rca-orpo 1.5B (local) | 76.2 [61.9, 88.1] | 52.4 [38.1, 66.7] | 95.2 | **0.8 s** (GPU) |
+
+The frontier models beat the 1.5B on Keyword% with non-overlapping CIs — expected at
+100–1000× the parameters. The 1.5B's value is *deployment*: zero marginal cost
+(vs ~2–3 \$/1k diagnoses), no data egress, CPU-viability, and the deterministic command
+builder lifts its command quality from NS-ok 52% (raw) to **85.7%** in production. On
+the canonical 210-sample run, single-shot vs hybrid differences are themselves
+significant (Keyword% 78.1 [72.4, 83.8] vs 92.9 [89.0, 96.2]; NS-ok% the reverse).
+
+### RQ2 — Remediation: executable, safe plans (graph + E4)
+
+Over the 14 failure scenarios the catalog returns a correct-intent, namespace-bound
+plan for **every** scenario (coverage 100%, intent 100%, NS-ok 100%); ~50% are
+multi-step by design and the rest escalate. **No plan step is ever a manual checkbox.**
+The agentic planner vs a blind single-shot call (same `qwen2.5-coder:14b`, on
+live-injected faults, n=6):
+
+| Mode | Executable | No placeholder | Safe | Latency |
+|---|:---:|:---:|:---:|:---:|
+| single-shot (blind) | 5/6 | 5/6 | 5/6 | 5–11 s |
+| **agentic** | 5/6 | **6/6** | **6/6** | 7–28 s |
+
+The agentic planner eliminates unresolved placeholders and is always safe (every emitted
+command passes the read-only/reversible validator), trading latency for reliability on
+the long tail — the case where the blind call emitted an invalid placeholder plan.
+
+### RQ3 — Closed loop in production (E3)
+
+Chaos injection of known faults into isolated live namespaces (one namespace per
+injection to avoid dedup). When flagged, **detection latency is 15–36 s** — well under
+the 60 s window budget — and the diagnosis matched the injected class in 3/3 detected
+cases. **Detection recall varies by class:** faults that produce logs (crashloop, OOM)
+are detected; *event-only* faults (image-pull: container never starts → no pod logs)
+are under-detected in a fresh tiny namespace, motivating per-class sensitivity tuning.
+The automated portion of **MTTR — time to an actionable, validated remediation plan —
+is the measured 15–36 s** (detect + diagnose + plan); the remaining MTTR (approval,
+execution, re-detection) is automated by the per-step executor and Modo B. An empirical
+MTTR-vs-manual study requires a controlled human baseline (future work).
+
+### RQ4 — Cost of escalation
+
+The agentic planner runs only on the long tail (graph miss / no executable action),
+loading the 14B model on-demand (~28 s including live read-only investigation) and
+unloading after; steady-state VRAM cost is just the 2 GB expert. The reliability gain
+(RQ2) justifies the on-demand cost versus a blind call.
+
+### Production
+
+Running continuously on a ~34-namespace cluster, the system sustains per-namespace
+detection with dual event+log signal, expert-only Spanish diagnosis with zero grammar
+parse failures, deterministic targeted commands, and on-demand agentic escalation that
+fills the graph with verified-pending real-name plans.
 
 ## Related work
 
 Recent agentic SRE tooling — HolmesGPT (ReAct over observability data), K8sGPT (scanner + LLM explanation), Aurora (LangGraph workflows) — is largely BYO-LLM and oriented to cloud/GPU models and existing observability stacks. This system's differentiators are: (1) a **fine-tuned small model on CPU**, on-premise, no data egress; (2) a **deterministic, auditable action layer** (the model never executes free-text commands); (3) a **closed loop** with outcome-verified consolidation; and (4) **infrastructure-free** operation on read-only API access, with the large model confined to on-demand escalation on the long tail.
 
+## Threats to validity
+
+- **Construct.** Keyword% / NS-ok% are proxy metrics; Keyword% in particular is a
+  lexical match, not a semantic judgement. A human evaluation of diagnosis correctness
+  (with inter-rater agreement) is the planned ground-truth and is not yet done.
+- **External.** Results come from one cluster and one operator; the chaos faults are
+  synthetic (busybox), which produce thinner evidence than real workloads — diagnosis
+  prose on them is more generic than on production incidents (e.g. PostgreSQL). The E1
+  baseline subset is 42 samples (a full 210-sample run is pending).
+- **Internal — resource contention.** The detection pipeline is single-threaded and
+  shares the GPU/Ollama backend with the on-demand 14B planner. Under concurrent heavy
+  escalation we observed the pipeline loop **stall** (detection stopped for ~20 min,
+  recovered by restart). Cluster experiments must therefore run one-at-a-time on a
+  warm system; production should isolate/queue detection from escalation.
+- **Detection recall.** Event-only faults (image-pull, PVC, node) are under-detected
+  in fresh small namespaces — a sensitivity limitation, not measured exhaustively.
+
+## Reproducibility
+
+Models and dataset are public on HuggingFace (`k8s-rca-slm`, `k8s-rca-orpo`,
+`k8s-rca-dataset`). The evaluation is scripted and seeded (seed=99): `eval/run_eval.py`
+(local models), `eval/run_api.py` (SOTA baselines + local matched), `eval/bootstrap_ci.py`
+(confidence intervals), `eval/chaos_runner.py` (live chaos detection), `eval/eval_planner.py`
+(agentic vs single-shot). Raw result files and per-experiment summaries are in
+`eval/results/`. The paper itself is generated from this Markdown via Quarto (`paper/`).
+
 ## Limitations and future work
 
-- **Diagnosis accuracy ceiling.** Single-shot Keyword% (83.3%) trails the hybrid (92.9%); the gap is the investigator's reasoning, which a deterministic digest cannot fully replicate. Closing it without re-introducing CPU latency is open.
-- **External fixes remain external.** Failures whose remediation lives outside the cluster (provision a PV, add node capacity, create a secret with an unknown value) are surfaced as notes, not automated — by design.
-- **Next.** Integration testing with chaos injection on a live cluster and MTTR measurement; a benchmark of the diagnosis model against GPT-4o/Claude on the same blind test set; periodic consolidation of the verified graph into ORPO; and scaling the base model (7B) if a GPU inference budget becomes available.
+- **Diagnosis accuracy ceiling.** The 1.5B trails frontier LLMs on Keyword% by ~24 pts
+  (RQ1) and the single-shot trails the hybrid (the investigator's reasoning a digest
+  cannot replicate). Closing it without CPU-latency cost is open.
+- **External fixes remain external.** Remediations that live outside the cluster
+  (provision a PV, add node capacity, create a secret) are surfaced as notes, by design.
+- **Next.** Human evaluation of diagnosis (E2 ground-truth); full 210-sample SOTA
+  comparison; a controlled MTTR-vs-manual study with self-healing fault scenarios;
+  detection-sensitivity tuning for event-only faults; isolating detection from
+  escalation to remove the contention threat; periodic consolidation of the verified
+  graph into ORPO; and scaling the base model (7B) if GPU inference budget allows.
 
 ## Conclusion
 

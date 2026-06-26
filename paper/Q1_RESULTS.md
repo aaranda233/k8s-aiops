@@ -1,7 +1,10 @@
 # Q1 — Resultados de evaluación (log vivo)
 
 Seguimiento de los experimentos del plan [Q1_EVAL_PLAN.md](./Q1_EVAL_PLAN.md).
-Se actualiza conforme avanzamos. Estado: **E1 ✅ · E2 ✅ · E3 🚧 · E4 🚧 · E5 ⏳**.
+Estado: **E1 ✅ · E2 ✅ · E3 ✅(primer barrido + hallazgos) · E4 ✅ · E5 ✅**.
+RQs, resultados, *threats to validity* y reproducibilidad integrados en
+`RESEARCH.md` / `RESEARCH_es.md` (E5). Pendiente menor: barrido E3 estadístico
+(N≥10/clase) en sistema templado y aislado, y evaluación humana del diagnóstico.
 
 Reproducibilidad: todos los runs con seed=99; IC95 por bootstrap (10k iters).
 Artefactos en `eval/results/`.
@@ -118,6 +121,17 @@ modelo de 14B on-demand para el escalado.
 
 ---
 
-## E5 — Reescritura académica ⏳
+## E5 — Reescritura académica ✅
 
-Pendiente: RQs, metodología, threats to validity, related work a fondo.
+Integrado en `RESEARCH.md` y `RESEARCH_es.md`:
+- **Research Questions** explícitas (RQ1 diagnóstico, RQ2 remediación, RQ3 bucle en
+  producción/MTTR, RQ4 coste del escalado) en la Introducción.
+- **Resultados reorganizados por RQ**, con las tablas E1 (baselines + IC), E2 (IC),
+  E4 (planner) y E3 (detección/MTTR).
+- **Threats to validity** (constructo, externa, interna=contención, recall) y
+  **Reproducibilidad** (scripts seedados + modelos/dataset en HF).
+- Limitaciones y trabajo futuro actualizados (E1/E3 ya hechos).
+
+> Nota operativa (E3): el caos justo tras un reinicio cae en el **warm-up de novedad**
+> del detector y no dispara. Los barridos válidos exigen el sistema **templado** y sin
+> escalado concurrente (ver contención arriba).

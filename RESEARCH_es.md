@@ -14,7 +14,14 @@ Este sistema adopta una postura distinta, sobre tres principios:
 2. **El modelo diagnostica; el código determinista actúa.** Un modelo pequeño no puede hacerse lo bastante fiable como para *elegir y ejecutar* una acción que mute el cluster. Por eso la acción nunca es la salida libre del modelo: se resuelve desde un grafo de conocimiento auditable y se valida/puntúa por riesgo antes de cualquier ejecución, con un humano en el bucle.
 3. **Bucle cerrado, sin infraestructura.** Todo corre sobre acceso read-only a la API de Kubernetes. Detección, diagnóstico, remediación, verificación y aprendizaje forman un ciclo que mejora con el uso, y las únicas escrituras al cluster son acciones reversibles/de configuración que un humano aprueba.
 
-El resto del paper describe el sistema tal como funciona hoy, incluida la sección de *Fine-tuning y alineación* que resume el estudio de diez experimentos detrás del modelo de diagnóstico. El registro exhaustivo por experimento vive en `RESEARCH_v1.md`.
+Enmarcamos la evaluación en cuatro preguntas de investigación:
+
+- **RQ1 — Diagnóstico.** ¿Puede un modelo de 1.5B fine-tuneado diagnosticar incidencias de Kubernetes de forma competitiva con LLMs frontera (GPT-4o, Claude) bajo restricciones on-premise/CPU?
+- **RQ2 — Remediación.** ¿Produce el grafo determinista + el escalado agéntico planes *ejecutables y seguros* (sin pasos manuales, sin comandos inseguros) en todo el espacio de fallos?
+- **RQ3 — Bucle cerrado en producción.** ¿Con qué rapidez y precisión detecta y diagnostica el sistema vivo fallos inyectados, y qué parte del MTTR automatiza?
+- **RQ4 — Coste del escalado.** ¿Qué aporta el planner agéntico sobre una llamada ciega single-shot, y a qué latencia?
+
+El resto del paper describe el sistema tal como funciona hoy (incluida la sección de *Fine-tuning y alineación*) y responde a RQ1–RQ4 en *Resultados*. El registro exhaustivo por experimento vive en `RESEARCH_v1.md`.
 
 ## Visión general del sistema
 
@@ -194,21 +201,114 @@ Las notificaciones son pluggables (Microsoft Teams principal, email fallback): a
 
 ## Resultados
 
-**Diagnóstico.** El experto single-shot de producción + gramática + digest alcanza Parse ≈100%, Keyword 83,3%, NS-ok 97,6% en evaluación held-out, a ~0,86 s en GPU y ~32 s en CPU con una sola llamada al LLM (tabla en *Diagnóstico*). El constructor determinista de comandos eleva la calidad de comando a NS-ok 85,7% / Verb-ok 92,9%.
+Todos los resultados con seed=99; las tasas llevan IC95 por bootstrap (10k resamples)
+donde aplica. Scripts y resultados crudos en `eval/`.
 
-**Grafo de remediación.** Sobre los 14 escenarios de fallo del proyecto el catálogo devuelve un plan con intención correcta y namespace enlazado para **todos** los escenarios (cobertura 100%, intención 100%, NS-ok 100%). Cerca del 50% de los planes son multi-paso *por diseño*: las clases con arreglo reversible dentro del cluster (config, secret, sonda, OOM, red, readiness) se resuelven enteras en el catálogo, mientras que el resto (pull de imagen, presión de nodo, binding de PVC, CPU insuficiente, auth de registry) devuelven solo investigación y se derivan al planner agéntico, que emite una escritura de configuración concreta donde existe o una nota de "acción externa requerida" en caso contrario. Ningún paso es nunca un checkbox manual.
+### RQ1 — Diagnóstico vs LLMs frontera (E1)
 
-**Producción.** Corriendo en continuo sobre un cluster de ~34 namespaces, el sistema sostiene detección por namespace con señal dual eventos+logs, diagnóstico expert-only en español con cero fallos de parseo de gramática, comandos deterministas dirigidos, y escalado agéntico bajo demanda que ya ha rellenado el grafo con un plan de nombres reales pendiente de verificación.
+Sobre un subconjunto ciego held-out (42 muestras, 3/escenario), el experto local de 1.5B
+(single-shot + gramática + digest) frente a GPT-4o y Claude, mismo prompt y métricas:
+
+| Modelo | Keyword% | NS-ok% (raw) | Parse% | Latencia |
+|---|:---:|:---:|:---:|:---:|
+| GPT-4o (API) | **100 [100, 100]** | 76,2 [61,9, 88,1] | 97,6 | 1,4 s |
+| Claude Sonnet-4-6 (API) | 97,6 [92,9, 100] | 78,6 [66,7, 90,5] | 92,9 | 4,0 s |
+| k8s-rca-orpo 1.5B (local) | 76,2 [61,9, 88,1] | 52,4 [38,1, 66,7] | 95,2 | **0,8 s** (GPU) |
+
+Los modelos frontera baten al 1.5B en Keyword% con IC disjuntos — esperado a 100–1000×
+los parámetros. El valor del 1.5B es de *despliegue*: coste marginal ~0 (vs ~2–3 \$/1k),
+sin egress, viable en CPU; y el constructor determinista eleva su calidad de comando de
+NS-ok 52% (raw) a **85,7%** en producción. En el run canónico de 210 muestras, las
+diferencias single-shot vs híbrido son significativas (Keyword% 78,1 [72,4, 83,8] vs
+92,9 [89,0, 96,2]; NS-ok% al revés).
+
+### RQ2 — Remediación: planes ejecutables y seguros (grafo + E4)
+
+Sobre los 14 escenarios el catálogo da un plan con intención correcta y namespace
+enlazado para **todos** (cobertura 100%, intención 100%, NS-ok 100%); ~50% multi-paso
+por diseño y el resto escala. **Ningún paso es nunca un checkbox manual.** El planner
+agéntico vs una llamada ciega single-shot (mismo `qwen2.5-coder:14b`, sobre fallos
+inyectados en vivo, n=6):
+
+| Modo | Ejecutable | Sin placeholder | Seguro | Latencia |
+|---|:---:|:---:|:---:|:---:|
+| single-shot (ciego) | 5/6 | 5/6 | 5/6 | 5–11 s |
+| **agéntico** | 5/6 | **6/6** | **6/6** | 7–28 s |
+
+El agéntico elimina los placeholders sin resolver y es siempre seguro (todo comando
+emitido pasa el validador read-only/reversible), cambiando latencia por fiabilidad en la
+cola larga — el caso donde el ciego emitió un plan inválido con placeholder.
+
+### RQ3 — Bucle cerrado en producción (E3)
+
+Inyección de caos de fallos conocidos en namespaces vivos aislados (uno por inyección
+para evitar la dedup). Cuando dispara, **la latencia de detección es 15–36 s** — muy por
+debajo del presupuesto de ventana de 60 s — y el diagnóstico acertó la clase inyectada en
+3/3 detectados. **La recall varía por clase:** los fallos que producen logs (crashloop,
+OOM) se detectan; los *solo-eventos* (image-pull: el contenedor no arranca → cero logs)
+se detectan peor en un namespace nuevo y diminuto, lo que motiva ajustar la sensibilidad
+por clase. La parte automatizada del **MTTR — tiempo a un plan de remediación accionable
+— es los 15–36 s medidos** (detección + diagnóstico + plan); el resto (aprobación,
+ejecución, re-detección) lo automatizan el ejecutor por-paso y el Modo B. Un MTTR-vs-manual
+empírico requiere un baseline humano controlado (trabajo futuro).
+
+### RQ4 — Coste del escalado
+
+El planner agéntico corre solo en la cola larga (miss del grafo / sin acción ejecutable),
+cargando el 14B bajo demanda (~28 s incluida la investigación read-only en vivo) y
+descargándolo después; el coste de VRAM en estado estacionario es solo el experto de 2 GB.
+La ganancia de fiabilidad (RQ2) justifica el coste on-demand frente a la llamada ciega.
+
+### Producción
+
+Corriendo en continuo sobre un cluster de ~34 namespaces, el sistema sostiene detección
+por namespace con señal dual eventos+logs, diagnóstico expert-only en español con cero
+fallos de parseo de gramática, comandos deterministas dirigidos, y escalado agéntico bajo
+demanda que rellena el grafo con planes de nombres reales pendientes de verificación.
 
 ## Trabajo relacionado
 
 El tooling agéntico reciente para SRE — HolmesGPT (ReAct sobre datos de observabilidad), K8sGPT (escáner + explicación con LLM), Aurora (workflows con LangGraph) — es en gran medida BYO-LLM y está orientado a modelos cloud/GPU y a stacks de observabilidad existentes. Los diferenciadores de este sistema son: (1) un **modelo pequeño fine-tuneado en CPU**, on-premise, sin salida de datos; (2) una **capa de acción determinista y auditable** (el modelo nunca ejecuta comandos de texto libre); (3) un **bucle cerrado** con consolidación verificada por outcome; y (4) operación **sin infraestructura** sobre acceso read-only a la API, con el modelo grande confinado al escalado bajo demanda en la cola larga.
 
+## Amenazas a la validez
+
+- **De constructo.** Keyword%/NS-ok% son métricas proxy; Keyword% es coincidencia
+  léxica, no juicio semántico. La evaluación humana de la corrección del diagnóstico
+  (con acuerdo inter-evaluador) es el ground-truth planeado y aún no está hecha.
+- **Externa.** Los resultados vienen de un cluster y un operador; los fallos de caos son
+  sintéticos (busybox), con evidencia más pobre que workloads reales — el diagnóstico
+  sobre ellos es más genérico que en producción (p. ej. PostgreSQL). El subconjunto del
+  baseline E1 es de 42 muestras (un run completo de 210 está pendiente).
+- **Interna — contención de recursos.** El pipeline de detección es de un solo hilo y
+  comparte la GPU/Ollama con el planner de 14B on-demand. Bajo escalado intenso
+  concurrente observamos que el bucle del pipeline **se colgó** (detección parada ~20 min,
+  recuperada con reinicio). Los experimentos de cluster deben correr de uno en uno con el
+  sistema templado; en producción conviene aislar/encolar la detección frente al escalado.
+- **Recall de detección.** Los fallos solo-eventos (image-pull, PVC, nodo) se detectan
+  peor en namespaces nuevos y pequeños — una limitación de sensibilidad, no medida de
+  forma exhaustiva.
+
+## Reproducibilidad
+
+Modelos y dataset públicos en HuggingFace (`k8s-rca-slm`, `k8s-rca-orpo`,
+`k8s-rca-dataset`). La evaluación está scriptada y con seed (seed=99): `eval/run_eval.py`
+(modelos locales), `eval/run_api.py` (baselines SOTA + local pareado), `eval/bootstrap_ci.py`
+(IC), `eval/chaos_runner.py` (detección por caos en vivo), `eval/eval_planner.py`
+(agéntico vs single-shot). Resultados crudos y resúmenes por experimento en `eval/results/`.
+El propio paper se genera desde este Markdown con Quarto (`paper/`).
+
 ## Limitaciones y trabajo futuro
 
-- **Techo de precisión del diagnóstico.** El Keyword% del single-shot (83,3%) va por detrás del híbrido (92,9%); la brecha es el razonamiento del investigador, que un digest determinista no puede replicar del todo. Cerrarla sin reintroducir latencia de CPU está abierto.
-- **Lo externo sigue siendo externo.** Los fallos cuya remediación vive fuera del cluster (provisionar un PV, añadir capacidad de nodo, crear un secret con valor desconocido) se exponen como notas, no se automatizan — por diseño.
-- **Próximo.** Test de integración con inyección de caos en un cluster vivo y medición de MTTR; un benchmark del modelo de diagnóstico contra GPT-4o/Claude sobre el mismo test set ciego; consolidación periódica del grafo verificado a ORPO; y escalar el modelo base (7B) si aparece presupuesto de inferencia en GPU.
+- **Techo de precisión del diagnóstico.** El 1.5B va por detrás de los LLMs frontera en
+  Keyword% por ~24 pts (RQ1) y el single-shot por detrás del híbrido (el razonamiento del
+  investigador que un digest no puede replicar). Cerrarlo sin coste de latencia CPU está abierto.
+- **Lo externo sigue siendo externo.** Las remediaciones fuera del cluster (provisionar un
+  PV, añadir capacidad de nodo, crear un secret) se exponen como notas, por diseño.
+- **Próximo.** Evaluación humana del diagnóstico (ground-truth E2); comparativa SOTA completa
+  a 210 muestras; estudio controlado de MTTR-vs-manual con fallos auto-resolubles; ajuste de
+  sensibilidad de detección para fallos solo-eventos; aislar detección del escalado para
+  eliminar la contención; consolidación periódica del grafo verificado a ORPO; y escalar el
+  modelo base (7B) si hay presupuesto de inferencia en GPU.
 
 ## Conclusión
 
