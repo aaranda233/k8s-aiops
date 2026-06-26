@@ -1,4 +1,4 @@
-# K8s-AIOps: Autonomous Anomaly Detection and Root Cause Analysis in Kubernetes using a Fine-Tuned Small Language Model and a Hybrid ReAct Agent
+# K8s-AIOps: An On-Premise Closed-Loop AIOps Pipeline for Kubernetes — Fine-Tuned Small-Model Diagnosis, an Executable Remediation Graph, and Agentic Escalation
 
 **Status:** Final version (2026-06-25) — full closed-loop system in production
 **Model:** [aaranda233/k8s-rca-slm](https://huggingface.co/aaranda233/k8s-rca-slm) · [aaranda233/k8s-rca-orpo](https://huggingface.co/aaranda233/k8s-rca-orpo) (diagnosis) · `qwen2.5-coder:14b` (agentic remediation planner, on-demand)
@@ -10,7 +10,7 @@
 
 This work presents an end-to-end AIOps pipeline for Kubernetes environments that combines unsupervised anomaly detection with automated root cause analysis (RCA). The system collects raw Kubernetes events continuously, detects anomalous time windows using Isolation Forest, and routes flagged windows to a domain-specific diagnostics layer. The diagnostics layer has evolved through ten experiments across three paradigms: (1) single-shot fine-tuned SLM (SFT, DPO, ORPO, KTO); (2) grammar-constrained decoding; and (3) a two-phase Hybrid ReAct Agent. The base SLM is derived from `Qwen2.5-1.5B-Instruct` fine-tuned via QLoRA with ORPO on a curated dataset of ~986 Kubernetes incident scenarios covering 14 failure categories.
 
-The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. The final system — a Hybrid ReAct Agent combining a vanilla `qwen2.5:1.5b` investigator with a fine-tuned ORPO expert under GBNF grammar — resolves the trade-off simultaneously: **Keyword%=92.9%** (matching the unspecialized baseline) with **Parse%=98.6%** (guaranteed by grammar), all running on CPU without GPU infrastructure at inference time.
+The central empirical finding is a persistent **Parse%/Keyword% trade-off**: fine-tuning methods that enforce output format (SFT, ORPO) sacrifice semantic vocabulary coverage, while preference-optimization methods that recover vocabulary (DPO, KTO) destroy format entirely. This trade-off is not a fundamental limit but a consequence of solving both objectives with a single small model trained on a restricted dataset. A two-phase **Hybrid ReAct Agent** (a vanilla `qwen2.5:1.5b` investigator + a fine-tuned ORPO expert under GBNF grammar) demonstrated this empirically, matching the unspecialized baseline (**Keyword%=92.9%**, **Parse%=98.6%**). However, its multi-call path costs >60 s on CPU-only nodes — over the detection budget — so the **production configuration is the single-shot expert alone**: the ORPO model under GBNF grammar, enriched by a zero-cost deterministic *evidence digest*, reaching **Keyword%=83.3%** at ~0.7 s on GPU / ~32 s on CPU with a single LLM call and full determinism in the action layer. The hybrid remains available where a GPU latency budget allows.
 
 Beyond detection and diagnosis, the system extends to a full **operational console** built entirely on read-only access to the Kubernetes API (no observability infrastructure required): dual detection sources (control-plane events + application logs), auto-remediation with human-in-the-loop approval via ChatOps (Microsoft Teams) and step-by-step plan execution, an **executable remediation knowledge graph** with a browsable view, a live topology view, and a rule-based security posture scanner. The final-version remediation layer adds an **agentic escalation planner**: when a novel failure misses the deterministic graph, a larger local code model (`qwen2.5-coder:14b`, loaded on-demand on the same A30 alongside the resident ORPO expert) **investigates the live cluster** with read-only `kubectl` and proposes a validated, real-name-bound multi-step plan that fills the graph — the small expert keeps diagnosing, the large model only acts on the long tail. The same investigation pipeline that diagnoses operational anomalies thus also audits security posture — all without GPU at inference time for the diagnosis path and without deploying agents into the cluster.
 
@@ -72,6 +72,8 @@ The pipeline consists of four sequential layers:
 │  • RCA cards with kubectl commands                      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+> **Current production configuration.** This paper documents the full design space, including ten fine-tuning experiments (§8) and the Hybrid ReAct Agent (§10). The *deployed* system, however, runs the **single-shot ORPO expert + GBNF grammar + a deterministic evidence digest** for diagnosis (§17.9 — chosen for CPU-viability), and an **executable remediation knowledge graph** (§19) with an **agentic escalation planner** (§19.3.1) for remediation, under shadow-mode human-in-the-loop. The Hybrid ReAct Agent and the alternative `react_mode`s remain selectable but are not the default. Sections §3–§16 describe how the diagnosis model was built and why; §17–§19 describe the system as it runs today.
 
 ---
 
@@ -217,7 +219,7 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 
 Inference parameters: `temperature=0.1`, `top_p=0.9`, `repeat_penalty=1.1`, `num_ctx=2048` (updated from 1024 — required for hybrid agent enriched context).
 
-For grammar-constrained inference (hybrid expert phase), the `/api/generate` endpoint is used with the `grammar` field containing the GBNF definition. This guarantees format at the token level and decouples format correctness from model capacity.
+For grammar-constrained inference (the expert call, in both single-shot and hybrid modes), the `/api/generate` endpoint is used with the `grammar` field containing the GBNF definition. This guarantees format at the token level and decouples format correctness from model capacity.
 
 ---
 
@@ -493,6 +495,8 @@ The regression in `crash_config` (−20 pp) is attributable to investigation not
 
 > The Hybrid ReAct Agent achieves Keyword%=92.9% — statistically equivalent to the unspecialized baseline (92.4%) — while maintaining Parse%=98.6% and structured kubectl output. This demonstrates that the Parse%/Keyword% trade-off observed across all fine-tuning experiments is not a fundamental constraint but a consequence of attempting to solve both objectives within a single small model trained on a restricted dataset. Role separation (instruction-following investigator + domain-specialized expert) resolves them simultaneously without additional fine-tuning.
 
+**Note on the production configuration.** The hybrid is the strongest *diagnostic* configuration, but its multi-call investigation costs >60 s on CPU-only nodes (§9.4) — beyond the 60 s detection budget. The deployed system therefore runs the **single-shot expert alone**, recovering most of the hybrid's Keyword% with a zero-cost deterministic *evidence digest* (§17.9). The hybrid is documented here as the experiment that proved role separation works and remains selectable (`react_mode: hybrid`) where a GPU latency budget allows; it is no longer the default diagnosis path.
+
 ---
 
 ## 11. Additional Engineering Findings
@@ -570,7 +574,7 @@ ollama run hf.co/aaranda233/k8s-rca-slm
 
 ### 12.1 Motivation
 
-Diagnosis without action only automates half the SRE workflow. The natural extension of the Hybrid ReAct Agent is a remediation loop that acts on the diagnosis, verifies the result, and escalates when intervention is needed. The key design question is not *whether* to automate, but *how much* to automate safely.
+Diagnosis without action only automates half the SRE workflow. The natural extension of the diagnosis layer is a remediation loop that acts on the diagnosis, verifies the result, and escalates when intervention is needed. The key design question is not *whether* to automate, but *how much* to automate safely.
 
 Full autonomy is not the correct objective for production AIOps. Enterprise environments have compliance requirements (SOC2, ISO27001) mandating human traceability for infrastructure changes. A system that explains its reasoning and asks for confirmation on risky actions is more deployable than one that acts without oversight.
 
@@ -988,7 +992,7 @@ After the deterministic improvements (evidence clustering, namespace focus, comm
 | Verb-ok% (raw model command) | 67.6% | 41.9% | single-shot* |
 | Latency mean / p95 | 0.81s / 1.08s | 2.15s / 4.60s | single-shot (2.6×) |
 
-**Verdict: keep the hybrid.** The vanilla's investigation buys **+13.8 points of Keyword%** — i.e. it identifies the correct failure ~14% more often, which is the single most important metric for root-cause analysis (the same mechanism that unlocked `network_policy_block` 0% → 73.3% in §10.3). The cost is 2.6× latency, which is acceptable for a pipeline that runs reactively (once per anomaly), not in a hot path.
+**First verdict (GPU-bound): the hybrid wins on diagnostic quality.** The vanilla's investigation buys **+13.8 points of Keyword%** — i.e. it identifies the correct failure ~14% more often, which is the single most important metric for root-cause analysis (the same mechanism that unlocked `network_policy_block` 0% → 73.3% in §10.3). The cost is 2.6× latency, acceptable for a reactive pipeline *when a GPU is present*. The paragraphs below revisit this once the CPU-only latency is measured — and reverse it.
 
 The honest caveats: (i) the `NS-ok%`/`Verb-ok%` columns favour single-shot but are **moot in production** — they measure the *raw model command*, which the deterministic command builder (§17.7) overrides for both modes (to 85.7%/92.9%); (ii) ROUGE-L favours single-shot, but it is a weak surface-overlap metric and the hybrid's prose diverges because it integrates investigation notes — Keyword% is the meaningful diagnostic signal. The decision is closer than the original numbers suggested, but Keyword% is decisive and settles it with data rather than assumption.
 

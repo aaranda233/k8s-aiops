@@ -1023,6 +1023,10 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
       <strong>Hallazgo principal — <code>network_policy_block</code>: 0% → 73.3% (+73 pp).</strong> Este escenario era el punto ciego sistemático del ORPO solo. El investigador base detecta los patrones de bloqueo de red y proporciona al experto el frame conceptual necesario para acertar. El Hybrid ReAct alcanza Keyword%=92.9% — estadísticamente igual al baseline vanilla (92.4%) pero con Parse%=98.6% y kubectl estructurado.
     </div>
 
+    <div class="callout" style="margin-top:24px;">
+      <strong>Pero no es la configuración de producción.</strong> El híbrido es el experimento de mayor calidad diagnóstica, pero su ruta multi-llamada cuesta &gt;60 s en CPU — por encima del presupuesto de detección de 60 s. El sistema desplegado usa el <strong>experto single-shot solo</strong> (ORPO + GBNF grammar + un <em>digest</em> determinista de la evidencia, sin coste), que recupera la mayor parte del Keyword% (83.3%) con una sola llamada y a ~0.7 s en GPU / ~32 s en CPU. El híbrido queda documentado como la etapa que demostró que la separación de roles funciona y sigue disponible (<code>react_mode: hybrid</code>) donde haya presupuesto de latencia con GPU.
+    </div>
+
   </div>
 </section>
 
@@ -1032,7 +1036,7 @@ Fase 2 — Experto (k8s-rca-orpo + GBNF grammar)
     <h2>Auto-Remediación con Human-in-the-Loop</h2>
     <p class="section-lead">DevOps junior autónomo — actúa, verifica y escala con contexto completo</p>
 
-    <p>El diagnóstico sin acción automatiza solo la mitad del flujo de un SRE. La extensión natural del Hybrid ReAct Agent es un loop de remediación que actúa sobre el diagnóstico, verifica el resultado y escala cuando se necesita intervención humana. La pregunta clave no es <em>si</em> automatizar, sino <em>cuánto</em> automatizar de forma segura.</p>
+    <p>El diagnóstico sin acción automatiza solo la mitad del flujo de un SRE. La extensión natural de la capa de diagnóstico es un loop de remediación que actúa sobre el diagnóstico, verifica el resultado y escala cuando se necesita intervención humana. La pregunta clave no es <em>si</em> automatizar, sino <em>cuánto</em> automatizar de forma segura.</p>
 
     <div class="callout" style="border-left-color:#7c3aed;">
       <strong>Analogía:</strong> un DevOps junior que hace lo que sabe hacer con seguridad (reiniciar pods, escalar réplicas) y pregunta al senior cuando no está seguro (cambiar límites de memoria, modificar configuración). Nunca borra la base de datos solo.
