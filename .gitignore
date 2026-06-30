@@ -20,3 +20,4 @@ data/incidents/incidents.jsonl
 data/incidents/*.bak*
 data/graph/
 data/feedback/
+data/remediation/

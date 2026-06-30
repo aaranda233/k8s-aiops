@@ -260,10 +260,12 @@ async def api_run_step(incident_id: str, body: dict):
     """
     import re
 
+    from src.remediation.audit_log import audit_action
     from src.remediation.executor import (
         execute_if_reversible,
         resolve_restart_target,
         run_readonly,
+        workload_exists,
     )
 
     inc = incident_store.get(incident_id)
@@ -299,7 +301,13 @@ async def api_run_step(incident_id: str, body: dict):
         m = re.search(r"(?:-n|--namespace)[=\s]+(\S+)", action)
         ns = m.group(1) if m else (inc.namespaces[0] if inc.namespaces else "default")
         if "rollout restart" in action.lower():
-            target = resolve_restart_target(ns)
+            # Prioridad: si el plan ya nombra un workload reiniciable que EXISTE,
+            # reinícialo (cubre "running but on fire"); si no, resuelve el que falla.
+            pm = re.search(r"rollout\s+restart\s+((?:deployment|statefulset|daemonset)/\S+)",
+                           action, re.IGNORECASE)
+            plan_target = pm.group(1) if pm else None
+            target = plan_target if (plan_target and workload_exists(plan_target, ns)) \
+                else resolve_restart_target(ns)
             if target:
                 action = f"kubectl rollout restart {target} -n {ns}"
             else:
@@ -308,6 +316,8 @@ async def api_run_step(incident_id: str, body: dict):
                            "status": "manual"}
                 incident_store.set_execution_log(incident_id, log)
                 incident_store.update(incident_id, status="escalated")
+                audit_action(incident_id=incident_id, namespace=ns, command=action,
+                             status="manual", source="console", root_cause=inc.root_cause)
                 return {"status": "manual", "order": order, "id": incident_id}
         res = execute_if_reversible(action)
         if res is None:
@@ -319,6 +329,9 @@ async def api_run_step(incident_id: str, body: dict):
         log[-1] = {"order": order, "type": "command", "command": action,
                    "output": out, "status": "done" if res.success else "failed"}
         incident_store.set_execution_log(incident_id, log)
+        audit_action(incident_id=incident_id, namespace=ns, command=action,
+                     status="done" if res.success else "failed", output=out,
+                     source="console", root_cause=inc.root_cause)
         # EXECUTED no es terminal: Modo B verifica por re-detección → resolved/failed.
         incident_store.update(
             incident_id,

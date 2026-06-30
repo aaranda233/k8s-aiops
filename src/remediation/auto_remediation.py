@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from rich.console import Console
 
 from src.diagnostics.ollama_rca import DiagnosisResult
+from src.remediation.audit_log import audit_action
 from src.remediation.base_notifier import (
     KIND_APPROVAL,
     KIND_CIRCUIT,
@@ -417,6 +418,8 @@ class AutoRemediation:
                                              "requiere acción manual.", "status": "manual"}
                         _persist()
                         self.incidents.update(incident_id, status=STATUS_ESCALATED, verified=None)
+                        audit_action(incident_id=incident_id, namespace=ns, command=action,
+                                     status="manual", source="auto", root_cause=incident.root_cause)
                         self._notify(self.incidents.get(incident_id), KIND_MANUAL)
                         return RemediationResult(incident_id, fp, level, "manual", action, None, None)
                 res = execute_with_dryrun(action)
@@ -426,6 +429,9 @@ class AutoRemediation:
                 log[-1] = {"order": order, "type": "command", "command": action,
                            "output": out, "status": "done" if res.success else "failed"}
                 _persist()
+                audit_action(incident_id=incident_id, namespace=next(iter(namespaces), ""),
+                             command=action, status="done" if res.success else "failed",
+                             output=out, source="auto", root_cause=incident.root_cause)
                 self._circuit.record(fp, action, success=res.success)
                 if not res.success:
                     console.print(f"  [red]Ejecución fallida: {res.error}[/]")
