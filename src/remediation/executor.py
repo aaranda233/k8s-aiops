@@ -107,6 +107,16 @@ def resolve_restart_target(namespace: str) -> str | None:
     return None
 
 
+def workload_exists(target: str, namespace: str) -> bool:
+    """True si el workload `kind/name` (p. ej. 'deployment/oauth2-proxy') existe en
+    el namespace. Lectura pura — usado para preferir el target del plan sobre el
+    resolver heurístico cuando el plan ya nombró un workload real."""
+    if not target or "/" not in target:
+        return False
+    out, ok = _run(f"kubectl get {target} -n {namespace} -o name")
+    return ok and bool(out.strip())
+
+
 def run_readonly(kubectl_command: str) -> ExecutionResult:
     """Ejecuta un comando de SOLO LECTURA directamente (sin dry-run; get/describe
     no aceptan --dry-run). Para los pasos de investigación del log de ejecución."""

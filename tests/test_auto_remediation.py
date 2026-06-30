@@ -207,3 +207,16 @@ def test_looks_spanish_filters_english_thoughts():
     from src.remediation.auto_remediation import _looks_spanish
     assert _looks_spanish("El error de espacio en disco se repite en los pods") is True
     assert _looks_spanish("The command will help identify the storage issue") is False
+
+
+@pytest.mark.unit
+def test_restart_target_in_extracts_named_workload():
+    assert ar._restart_target_in(
+        "kubectl rollout restart deployment/oauth2-proxy-argocd -n argocd"
+    ) == "deployment/oauth2-proxy-argocd"
+    assert ar._restart_target_in(
+        "kubectl rollout restart statefulset/pg -n db"
+    ) == "statefulset/pg"
+    # sin kind/name reiniciable → None (cae al resolver heurístico)
+    assert ar._restart_target_in("kubectl rollout restart -n argocd") is None
+    assert ar._restart_target_in("kubectl get pods -n argocd") is None

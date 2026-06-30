@@ -19,6 +19,7 @@ Se ejecuta en hilo de fondo para no bloquear el pipeline principal.
 """
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -42,6 +43,7 @@ from src.remediation.executor import (
     execute_with_dryrun,
     resolve_restart_target,
     run_readonly,
+    workload_exists,
 )
 from src.remediation.incident_store import (
     STATUS_APPROVED,
@@ -83,6 +85,16 @@ def _ns_from(cmd: str) -> str | None:
         if p.startswith("--namespace="):
             return p.split("=", 1)[1]
     return None
+
+
+_RESTART_TARGET_RE = re.compile(
+    r"rollout\s+restart\s+((?:deployment|statefulset|daemonset)/\S+)", re.IGNORECASE)
+
+
+def _restart_target_in(cmd: str) -> str | None:
+    """Extrae el `kind/name` reiniciable que nombra un `rollout restart`, si lo hay."""
+    m = _RESTART_TARGET_RE.search(cmd or "")
+    return m.group(1) if m else None
 
 
 def _looks_spanish(text: str) -> bool:
@@ -385,7 +397,16 @@ class AutoRemediation:
                 # texto y suele no existir). Si no hay workload reiniciable → manual.
                 if from_plan and "rollout restart" in action.lower():
                     ns = _ns_from(action) or next(iter(namespaces), "default")
-                    target = resolve_restart_target(ns)
+                    # Prioridad: si el plan ya nombra un workload reiniciable que
+                    # EXISTE (el planner lo resolvió en vivo), reinícialo — cubre el
+                    # caso "running but on fire" (pod Running/Ready, fallo de app),
+                    # donde el resolver heurístico no halla pod insano. Si no existe
+                    # o no se nombra, cae al resolver del workload que falla.
+                    plan_target = _restart_target_in(action)
+                    if plan_target and workload_exists(plan_target, ns):
+                        target = plan_target
+                    else:
+                        target = resolve_restart_target(ns)
                     if target:
                         action = f"kubectl rollout restart {target} -n {ns}"
                         log[-1]["command"] = action

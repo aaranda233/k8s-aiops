@@ -95,3 +95,21 @@ def test_kubectl_not_found_handled():
         result = executor.execute_with_dryrun("kubectl scale deployment/x --replicas=2")
     assert result.success is False
     assert result.executed is False
+
+
+@pytest.mark.unit
+def test_workload_exists_true_when_get_ok():
+    with patch.object(executor.subprocess, "run") as mock_run:
+        mock_run.return_value = _proc(0, "deployment.apps/oauth2-proxy-argocd")
+        assert executor.workload_exists("deployment/oauth2-proxy-argocd", "argocd") is True
+    call = mock_run.call_args_list[0].args[0]
+    assert "get" in call and "deployment/oauth2-proxy-argocd" in call and "argocd" in call
+
+
+@pytest.mark.unit
+def test_workload_exists_false_when_missing_or_invalid():
+    with patch.object(executor.subprocess, "run") as mock_run:
+        mock_run.return_value = _proc(1, "", stderr="NotFound")
+        assert executor.workload_exists("deployment/nope", "argocd") is False
+    # sin '/' → no es un kind/name válido, ni siquiera consulta
+    assert executor.workload_exists("oauth2-proxy", "argocd") is False
