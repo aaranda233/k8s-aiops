@@ -87,18 +87,43 @@ def verify(records: list[dict], incident_id: str | None) -> None:
         print("  ⚠ sin anotación restartedAt — puede no haberse ejecutado por esta vía o el workload se recreó.")
 
 
+def list_incidents(limit: int) -> None:
+    """Histórico completo de incidentes (ciclo de vida durable de incidents.jsonl)."""
+    import os
+
+    from src.remediation.incident_log import IncidentLog
+    path = os.getenv("AIOPS_INCIDENT_FILE", "data/incidents/incidents.jsonl")
+    recs = IncidentLog(path).read_all()
+    if not recs:
+        print(f"Sin histórico de incidentes en {path}.")
+        return
+    recs.sort(key=lambda r: r.get("logged_at", 0))
+    print(f"{'cuándo':>11}  {'evento':<9} {'estado':<11} {'incidente':<14} ns")
+    print("-" * 90)
+    for r in recs[-limit:]:
+        when = dt.datetime.fromtimestamp(r.get("logged_at", 0)).strftime("%m-%d %H:%M")
+        inc = r.get("incident") or {}
+        ns = ",".join(inc.get("namespaces") or [])[:24]
+        print(f"{when:>11}  {r.get('event_type', ''):<9} {inc.get('status', ''):<11} "
+              f"{inc.get('id', ''):<14} {ns}")
+    print(f"\n{len(recs)} eventos · retención {os.getenv('AIOPS_HISTORY_RETENTION_DAYS', '10')} días")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verify", nargs="?", const="__latest__", default=None,
                     metavar="INCIDENT_ID", help="verifica el rollout (último, o de un incidente)")
+    ap.add_argument("--incidents", action="store_true",
+                    help="muestra el histórico completo de incidentes (no solo remediaciones)")
     ap.add_argument("--limit", type=int, default=40)
     args = ap.parse_args()
 
-    records = get_audit().read_all()
-    if args.verify is None:
-        list_history(records, args.limit)
+    if args.incidents:
+        list_incidents(args.limit)
+    elif args.verify is None:
+        list_history(get_audit().read_all(), args.limit)
     else:
-        verify(records, None if args.verify == "__latest__" else args.verify)
+        verify(get_audit().read_all(), None if args.verify == "__latest__" else args.verify)
 
 
 if __name__ == "__main__":

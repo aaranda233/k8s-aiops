@@ -153,14 +153,19 @@ class IncidentStore:
             if hasattr(inc, k):
                 setattr(inc, k, v)
         inc.updated_at = _now()
-        # Persistir/feedback solo al ENTRAR en un estado terminal (señal de outcome).
-        if inc.status != prev_status and inc.status in TERMINAL_STATUSES:
-            self._record(inc, "terminal")
-            if self._feedback_hook is not None:
-                try:
-                    self._feedback_hook(inc.to_dict())
-                except Exception:
-                    pass  # el feedback nunca debe tumbar la remediación
+        if inc.status != prev_status:
+            # Persistir/feedback al ENTRAR en un estado terminal (señal de outcome).
+            if inc.status in TERMINAL_STATUSES:
+                self._record(inc, "terminal")
+                if self._feedback_hook is not None:
+                    try:
+                        self._feedback_hook(inc.to_dict())
+                    except Exception:
+                        pass  # el feedback nunca debe tumbar la remediación
+            # 'executed' no es terminal pero sí una transición a persistir: deja el
+            # snapshot (con execution_log) en disco para el histórico completo.
+            elif inc.status == "executed":
+                self._record(inc, "executed")
 
     def set_execution_log(self, incident_id: str, log_list: list) -> None:
         """Reemplaza el log de ejecución paso a paso (lo consume la consola en vivo)."""
