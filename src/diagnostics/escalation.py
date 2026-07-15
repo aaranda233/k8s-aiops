@@ -6,7 +6,12 @@ producción hasta que se configure):
 
   ESCALATION_BACKEND = none | anthropic | openai | ollama   (default: none)
   ESCALATION_MODEL   = <nombre del modelo>
-  ANTHROPIC_API_KEY / OPENAI_API_KEY   (según backend)
+  ESCALATION_BASE_URL= base URL OpenAI-compatible (backend openai;
+                       default https://api.openai.com/v1). Apunta aquí un
+                       endpoint local tipo vLLM (p. ej. un Qwen grande en otra
+                       máquina) para sustituir el modelo de escalado sin egress.
+  ANTHROPIC_API_KEY / OPENAI_API_KEY   (según backend; la key es OPCIONAL cuando
+                       ESCALATION_BASE_URL apunta a un endpoint local sin auth)
   OLLAMA_HOST                          (backend ollama, default localhost:11434)
 
 El modelo grande propone un PLAN multi-paso; se parsea a Steps y se VALIDA contra
@@ -71,35 +76,27 @@ def _user_prompt(root_cause: str, evidence: str, namespace: str) -> str:
     )
 
 
-def _call_backend(system: str, user: str) -> str | None:
-    """Llama al backend configurado. Devuelve el texto crudo o None."""
+def chat_completion(messages: list[dict], timeout: float = 120.0) -> str | None:
+    """Completa un chat multi-turno con el backend configurado (mismo que el
+    escalado). `messages` = [{"role","content"}, …]. Devuelve el texto o None si
+    el backend está off / falla / la API pública exige key ausente.
+
+    Un endpoint OpenAI-compatible local (p. ej. el Qwen grande del GB10 vía
+    ESCALATION_BASE_URL) no requiere key.
+    """
     backend = (os.getenv("ESCALATION_BACKEND", "none") or "none").lower()
     model = os.getenv("ESCALATION_MODEL", "")
     try:
-        if backend == "anthropic":
-            key = os.getenv("ANTHROPIC_API_KEY", "")
-            if not key:
-                return None
-            r = httpx.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                json={"model": model or "claude-sonnet-4-6", "max_tokens": 700,
-                      "system": system, "messages": [{"role": "user", "content": user}]},
-                timeout=60.0,
-            )
-            r.raise_for_status()
-            return r.json()["content"][0]["text"]
         if backend == "openai":
+            base = (os.getenv("ESCALATION_BASE_URL", "") or "https://api.openai.com/v1").rstrip("/")
             key = os.getenv("OPENAI_API_KEY", "")
-            if not key:
+            if "api.openai.com" in base and not key:
                 return None
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
             r = httpx.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": model or "gpt-4o", "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}]},
-                timeout=60.0,
+                f"{base}/chat/completions", headers=headers,
+                json={"model": model or "gpt-4o", "messages": messages},
+                timeout=timeout,
             )
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"]
@@ -107,16 +104,37 @@ def _call_backend(system: str, user: str) -> str | None:
             host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
             r = httpx.post(
                 f"{host}/api/chat",
-                json={"model": model or "qwen2.5:1.5b", "stream": False, "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}]},
-                timeout=120.0,
+                json={"model": model or "qwen2.5:1.5b", "stream": False, "messages": messages},
+                timeout=timeout,
             )
             r.raise_for_status()
             return r.json()["message"]["content"]
+        if backend == "anthropic":
+            key = os.getenv("ANTHROPIC_API_KEY", "")
+            if not key:
+                return None
+            system = " ".join(m["content"] for m in messages if m.get("role") == "system")
+            conv = [m for m in messages if m.get("role") != "system"]
+            r = httpx.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                json={"model": model or "claude-sonnet-4-6", "max_tokens": 900,
+                      "system": system, "messages": conv},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            return r.json()["content"][0]["text"]
     except Exception:
         return None
     return None
+
+
+def _call_backend(system: str, user: str) -> str | None:
+    """Llamada single-shot (system+user) al backend configurado. Delega en
+    `chat_completion` para no duplicar el cliente."""
+    return chat_completion(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    )
 
 
 def _command_is_safe(action: str) -> bool:

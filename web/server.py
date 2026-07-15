@@ -506,3 +506,145 @@ async def api_graph():
         )
 
 
+@app.post("/api/graph/draft")
+async def api_graph_draft(body: dict):
+    """El operador describe un problema y el modelo de escalado (p. ej. el Qwen
+    grande del GB10) redacta un plan candidato. NO persiste nada: es el paso
+    'propone' de la enseñanza; el humano lo edita y luego llama a /teach."""
+    from src.diagnostics import escalation
+
+    root_cause = (body.get("root_cause") or "").strip()
+    evidence = (body.get("evidence") or "").strip()
+    namespace = (body.get("namespace") or "").strip()
+    if not root_cause and not evidence:
+        return JSONResponse({"error": "Faltan root_cause/evidence"}, status_code=400)
+    if not escalation.is_enabled():
+        return JSONResponse(
+            {"error": "Escalado desactivado (ESCALATION_BACKEND=none); no hay modelo "
+                      "que autoredacte. Puedes escribir el plan a mano igualmente."},
+            status_code=503)
+    steps = escalation.escalate(root_cause, evidence, namespace)
+    return {"steps": [
+        {"type": s.action_type, "action": s.action, "explanation": s.explanation,
+         "risk": s.risk_level} for s in steps]}
+
+
+@app.post("/api/graph/teach")
+async def api_graph_teach(body: dict):
+    """Persiste un plan enseñado por un operador como nodo VERIFICADO del grafo.
+
+    Valida cada paso con el mismo validador de seguridad del escalado
+    (solo lectura + escrituras reversibles/config; sin verbos destructivos ni
+    placeholders <...> sin resolver). Los pasos `command` siguen pasando por
+    dry-run + aprobación shadow al ejecutarse — enseñar no salta el executor.
+    """
+    from src.diagnostics.escalation import _command_is_safe
+    from src.remediation.remediation_graph import COMMAND, INVESTIGATE, Step, get_graph
+    from src.remediation.risk_scorer import score
+
+    intent = (body.get("intent") or "").strip()
+    if not intent:
+        return JSONResponse({"error": "Falta 'intent' (firma del problema)"}, status_code=400)
+    if not intent.startswith("human:"):
+        intent = "human:" + intent
+    valid_types = {INVESTIGATE, COMMAND}
+    steps: list = []
+    order = 0
+    for item in (body.get("steps") or []):
+        if not isinstance(item, dict):
+            continue
+        atype = str(item.get("type", "")).strip().lower()
+        action = str(item.get("action", "")).strip()
+        if atype not in valid_types or not action:
+            continue
+        if not _command_is_safe(action):
+            return JSONResponse(
+                {"error": f"Paso inseguro o no ejecutable: {action}"}, status_code=400)
+        steps.append(Step(
+            order=order, action_type=atype, action=action,
+            explanation=str(item.get("explanation", "")).strip(),
+            risk_level=score(action).level, source="human", verified=True))
+        order += 1
+    if not steps:
+        return JSONResponse({"error": "El plan no tiene pasos válidos"}, status_code=400)
+    get_graph().add_taught(
+        intent, steps,
+        signature_text=(body.get("signature_text") or "").strip(),
+        namespace_class=(body.get("namespace_class") or "").strip(),
+        label=(body.get("label") or "").strip(),
+    )
+    return {"status": "taught", "intent": intent, "steps": len(steps)}
+
+
+@app.post("/api/chat/remediation")
+async def api_chat_remediation(body: dict):
+    """Un turno del chat de remediación (contextual a una incidencia).
+
+    El modelo grande investiga en SOLO LECTURA y propone un plan; NO ejecuta nada.
+    Devuelve {reply, observations, proposed_plan}. La ejecución del plan va por
+    /api/incidents/{id}/run-step tras aplicarlo (endpoint /apply)."""
+    from src.diagnostics import escalation, remediation_chat
+
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": "Mensaje vacío"}, status_code=400)
+    if not escalation.is_enabled():
+        return JSONResponse(
+            {"error": "Chat desactivado (ESCALATION_BACKEND=none). Configura el modelo grande."},
+            status_code=503)
+    incident_id = (body.get("incident_id") or "").strip()
+    inc = incident_store.get(incident_id) if incident_id else None
+    root_cause = (inc.root_cause if inc else "") or (body.get("root_cause") or "")
+    evidence = (inc.prompt_user if inc else "") or (body.get("evidence") or "")
+    namespace = ((inc.namespaces[0] if inc and inc.namespaces else "")
+                 or (body.get("namespace") or ""))
+    session_id = incident_id or (body.get("session_id") or "adhoc")
+    return remediation_chat.chat_turn(session_id, message, root_cause, evidence, namespace)
+
+
+@app.post("/api/chat/remediation/apply")
+async def api_chat_apply(body: dict):
+    """Adjunta un plan propuesto por el chat a la incidencia (validado con el
+    mismo validador de seguridad). NO ejecuta: la UI dispara cada paso por
+    run-step (dry-run + aprobación). Persiste además el plan como provisional en
+    el grafo para reusarlo y verificarlo por Modo B."""
+    import hashlib
+
+    from src.diagnostics.escalation import _command_is_safe
+    from src.remediation.remediation_graph import COMMAND, INVESTIGATE, Step, get_graph
+    from src.remediation.risk_scorer import score
+
+    incident_id = (body.get("incident_id") or "").strip()
+    inc = incident_store.get(incident_id)
+    if inc is None:
+        return JSONResponse({"error": "Incidente no encontrado"}, status_code=404)
+    valid_types = {INVESTIGATE, COMMAND}
+    plan: list = []
+    order = 0
+    for item in (body.get("steps") or []):
+        if not isinstance(item, dict):
+            continue
+        atype = str(item.get("type") or item.get("action_type") or "").strip().lower()
+        action = str(item.get("action") or "").strip()
+        if atype not in valid_types or not action:
+            continue
+        if not _command_is_safe(action):
+            return JSONResponse({"error": f"Paso inseguro o no ejecutable: {action}"},
+                                status_code=400)
+        plan.append({"order": order, "action_type": atype, "action": action,
+                     "explanation": str(item.get("explanation") or "").strip(),
+                     "risk_level": score(action).level, "source": "chat", "verified": False})
+        order += 1
+    if not plan:
+        return JSONResponse({"error": "El plan no tiene pasos válidos"}, status_code=400)
+    key = "chat:" + hashlib.md5((inc.root_cause or incident_id)[:200].encode()).hexdigest()[:10]
+    gsteps = [Step(order=s["order"], action_type=s["action_type"], action=s["action"],
+                   explanation=s["explanation"], risk_level=s["risk_level"], source="escalated")
+              for s in plan]
+    get_graph().add_provisional(key, gsteps,
+                                signature_text=f"{inc.root_cause}\n{(inc.prompt_user or '')[:400]}")
+    incident_store.update(incident_id, remediation_plan=plan,
+                          solution_source="escalated", solution_key=key)
+    return {"status": "applied", "incident_id": incident_id, "steps": len(plan)}
+
+

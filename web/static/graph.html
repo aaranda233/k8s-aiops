@@ -86,6 +86,32 @@
   .spinner { width:22px; height:22px; border:2.5px solid var(--border); border-top-color:var(--accent);
       border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 14px; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  .src.human { color:var(--teal); background:rgba(45,212,191,.13); }
+  .teach-btn { background:linear-gradient(180deg,#21314f,#1a2740); color:#cfe0ff; border:1px solid var(--border);
+      border-radius:8px; padding:7px 13px; font-size:13px; font-weight:600; cursor:pointer; }
+  .teach-btn:hover { border-color:var(--accent); }
+  .modal-bg { position:fixed; inset:0; background:rgba(4,6,10,.72); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .modal { width:min(680px,92vw); max-height:90vh; overflow:auto; background:var(--panel); border:1px solid var(--border);
+      border-radius:14px; padding:20px 22px; box-shadow:0 20px 60px rgba(0,0,0,.6); }
+  .modal-h { display:flex; align-items:center; justify-content:space-between; font-size:16px; font-weight:700; }
+  .modal-sub { color:var(--muted); font-size:12.5px; margin:6px 0 14px; line-height:1.5; }
+  .modal label { display:block; font-size:12px; color:var(--muted); margin:9px 0; }
+  .modal input, .modal textarea, .step-row select { width:100%; margin-top:4px; background:var(--rail); color:var(--text);
+      border:1px solid var(--border); border-radius:7px; padding:7px 9px; font-size:13px; font-family:inherit; box-sizing:border-box; }
+  .modal .row2 { display:flex; gap:12px; } .modal .row2 label { flex:1; }
+  .steps-h { display:flex; align-items:center; justify-content:space-between; margin:14px 0 8px; font-size:13px; font-weight:600; color:var(--text); }
+  .step-row { display:flex; gap:8px; align-items:center; margin-bottom:7px; }
+  .step-row select { width:118px; flex:none; margin-top:0; }
+  .step-row .s-action { flex:2; font-family:var(--mono); } .step-row .s-expl { flex:1.3; }
+  .step-row .x, .modal-h .x { background:none; border:none; color:var(--muted2); cursor:pointer; font-size:14px; padding:2px 6px; }
+  .step-row .x:hover, .modal-h .x:hover { color:var(--error); }
+  .mini { background:var(--panel2); color:var(--muted); border:1px solid var(--border); border-radius:7px;
+      padding:5px 10px; font-size:12px; cursor:pointer; } .mini:hover { color:var(--text); }
+  .mini:disabled { opacity:.5; cursor:wait; }
+  .modal-f { display:flex; align-items:center; justify-content:space-between; margin-top:16px; gap:12px; }
+  .save { background:linear-gradient(180deg,#2563eb,#1d4ed8); color:#fff; border:none; border-radius:8px;
+      padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+  .msg { font-size:12.5px; color:var(--muted); } .msg.ok { color:var(--ok); } .msg.err { color:var(--error); }
 </style>
 </head>
 <body>
@@ -106,8 +132,10 @@
     <button class="active" data-src="all" onclick="setFilter('all')">Todos</button>
     <button data-src="catalog" onclick="setFilter('catalog')">Catálogo</button>
     <button data-src="escalated" onclick="setFilter('escalated')">Escalado (agéntico)</button>
+    <button data-src="human" onclick="setFilter('human')">Enseñado (humano)</button>
   </div>
   <div class="stats" id="stats"></div>
+  <button class="teach-btn" onclick="openTeach()">+ Enseñar plan</button>
   <span class="hint">Memoria de remediación: cada nodo es una firma de problema; las aristas, sus pasos.</span>
 </div>
 
@@ -115,9 +143,33 @@
   <div id="grid" class="grid"><div class="empty"><div class="spinner"></div>Cargando grafo…</div></div>
 </main>
 
+<div id="teach" class="modal-bg" style="display:none">
+  <div class="modal">
+    <div class="modal-h">Enseñar un plan de remediación
+      <button class="x" onclick="closeTeach()">✕</button></div>
+    <p class="modal-sub">Describe una firma de problema nueva y su plan multi-paso.
+      Puedes autoredactarlo con el modelo de escalado y editarlo. Los pasos de
+      acción pasarán igual por dry-run + aprobación al ejecutarse.</p>
+    <label>Nombre / firma <input id="t-label" placeholder="p. ej. postgres-oom-replica"></label>
+    <div class="row2">
+      <label>Clase de namespace <input id="t-nsclass" placeholder="app / storage / node…"></label>
+      <label>Namespace (para autoredactar) <input id="t-ns" placeholder="production"></label>
+    </div>
+    <label>Causa raíz <input id="t-rc" placeholder="qué falla y por qué"></label>
+    <label>Evidencia (eventos/logs) <textarea id="t-ev" rows="3" placeholder="pega eventos/logs relevantes"></textarea></label>
+    <div class="steps-h">Pasos <button class="mini" onclick="draft()" id="draft-btn">✨ Autoredactar (modelo)</button></div>
+    <div id="t-steps"></div>
+    <button class="mini" onclick="addStep()">＋ Añadir paso</button>
+    <div class="modal-f">
+      <span id="t-msg" class="msg"></span>
+      <button class="save" onclick="teach()">Guardar en el grafo</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TLABEL = {investigate:"Investigar", command:"Aplicar", verify:"Verificar"};
-const SRCLABEL = {catalog:"Catálogo", escalated:"Escalado"};
+const SRCLABEL = {catalog:"Catálogo", escalated:"Escalado", human:"Humano"};
 let DATA = [];
 let filter = "all";
 const open = new Set();
@@ -195,6 +247,74 @@ async function load(){
   }
 }
 load();
+
+// ── Enseñanza de planes ─────────────────────────────────────────────────────
+function stepRow(s){
+  s = s || {type:"investigate", action:"", explanation:""};
+  const div = document.createElement("div");
+  div.className = "step-row";
+  div.innerHTML = `
+    <select class="s-type">
+      <option value="investigate">Investigar</option>
+      <option value="command">Aplicar</option>
+    </select>
+    <input class="s-action" placeholder="kubectl … (usa {ns}/{workload}/{pod}; sin verbos destructivos)">
+    <input class="s-expl" placeholder="explicación breve">
+    <button class="x" onclick="this.parentNode.remove()">✕</button>`;
+  div.querySelector(".s-type").value = s.type || "investigate";
+  div.querySelector(".s-action").value = s.action || "";
+  div.querySelector(".s-expl").value = s.explanation || "";
+  return div;
+}
+function addStep(s){ document.getElementById("t-steps").appendChild(stepRow(s)); }
+function collectSteps(){
+  return [...document.querySelectorAll("#t-steps .step-row")].map(r=>({
+    type: r.querySelector(".s-type").value,
+    action: r.querySelector(".s-action").value.trim(),
+    explanation: r.querySelector(".s-expl").value.trim(),
+  })).filter(s=>s.action);
+}
+function setMsg(t, ok){ const m=document.getElementById("t-msg"); m.textContent=t; m.className="msg"+(ok?" ok":t?" err":""); }
+function openTeach(){
+  ["t-label","t-nsclass","t-ns","t-rc","t-ev"].forEach(id=>document.getElementById(id).value="");
+  document.getElementById("t-steps").innerHTML="";
+  addStep(); setMsg("");
+  document.getElementById("teach").style.display="flex";
+}
+function closeTeach(){ document.getElementById("teach").style.display="none"; }
+async function draft(){
+  const btn=document.getElementById("draft-btn");
+  btn.disabled=true; setMsg("Redactando con el modelo…");
+  try{
+    const r = await fetch("/api/graph/draft",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({root_cause:document.getElementById("t-rc").value,
+        evidence:document.getElementById("t-ev").value, namespace:document.getElementById("t-ns").value})});
+    const j = await r.json();
+    if(!r.ok){ setMsg(j.error||"No se pudo autoredactar", false); return; }
+    const steps = j.steps||[];
+    if(!steps.length){ setMsg("El modelo no propuso pasos; escríbelos a mano.", false); return; }
+    document.getElementById("t-steps").innerHTML="";
+    steps.forEach(addStep); setMsg(steps.length+" paso(s) propuestos — revísalos.", true);
+  }catch(e){ setMsg("Error de red al autoredactar", false); }
+  finally{ btn.disabled=false; }
+}
+async function teach(){
+  const label=document.getElementById("t-label").value.trim();
+  const steps=collectSteps();
+  if(!label){ setMsg("Pon un nombre/firma", false); return; }
+  if(!steps.length){ setMsg("Añade al menos un paso con comando", false); return; }
+  setMsg("Guardando…");
+  try{
+    const r = await fetch("/api/graph/teach",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({intent:label, label, namespace_class:document.getElementById("t-nsclass").value,
+        signature_text:(document.getElementById("t-rc").value+"\n"+document.getElementById("t-ev").value).trim(),
+        steps})});
+    const j = await r.json();
+    if(!r.ok){ setMsg(j.error||"No se pudo guardar", false); return; }
+    setMsg("Guardado ("+j.steps+" pasos).", true);
+    await load(); setTimeout(closeTeach, 700);
+  }catch(e){ setMsg("Error de red al guardar", false); }
+}
 </script>
 </body>
 </html>

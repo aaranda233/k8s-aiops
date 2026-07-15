@@ -287,6 +287,7 @@ function card(i){
     <div class="section"><div class="label">Diagnóstico</div><div class="rc">${esc(i.root_cause)}</div></div>
     ${solutionSection(i)}
     ${exec}${actions}
+    <div class="chatrow"><button class="chatbtn" onclick="openChat('${i.id}')">💬 Chat de remediación</button></div>
     ${i.prompt_user?`<div class="teach">
       <button class="teachbtn" onclick="toggleLogs('${i.id}')">📄 Ver logs del problema</button>
       <div class="problemlogs" id="pl-${i.id}" style="display:${openLogs.has(i.id)?'block':'none'}">${esc(i.prompt_user)}</div>
@@ -330,6 +331,74 @@ async function load(){
   } catch(e){ document.getElementById("list").innerHTML=`<div class="empty">Error al cargar incidencias.</div>`; }
 }
 load(); setInterval(load, 3000);
+
+// ── Chat de remediación (drawer contextual a una incidencia) ────────────────
+// El modelo investiga en solo-lectura y PROPONE; la ejecución del plan aplicado
+// va por los botones ▶ de la tarjeta (run-step, con aprobación). El drawer vive
+// fuera de #list para sobrevivir al refresco de 3 s.
+let chatInc=null;
+let chatMsgs=[];   // {role:'user'|'assistant'|'sys', text, observations?, plan?}
+let chatBusy=false;
+
+function openChat(id){
+  chatInc=id; chatMsgs=[];
+  const inc=allItems.find(x=>x.id===id);
+  document.getElementById("chat-title").textContent="Chat · "+id;
+  document.getElementById("chat-sub").textContent=inc?inc.root_cause:"";
+  renderChat();
+  document.getElementById("chat-drawer").classList.add("open");
+  document.getElementById("chat-input").focus();
+}
+function closeChat(){ document.getElementById("chat-drawer").classList.remove("open"); chatInc=null; }
+
+function planPreview(plan, mi){
+  if(!plan||!plan.length) return "";
+  const tl={investigate:"Investigar",command:"Aplicar"};
+  const rows=plan.map((s,i)=>`<li><span class="ct-type ${s.type}">${tl[s.type]||s.type}</span>
+    <code>${esc(s.action)}</code>${s.risk>0?`<span class="ct-risk r${s.risk}">L${s.risk}</span>`:""}
+    ${s.explanation?`<div class="ct-expl">${esc(s.explanation)}</div>`:""}</li>`).join("");
+  return `<div class="ct-plan"><div class="ct-plan-h">Plan propuesto (${plan.length} pasos)</div>
+    <ol>${rows}</ol>
+    <button class="ct-apply" onclick="applyPlan(${mi})">Aplicar al incidente →</button>
+    <div class="ct-note">Se adjunta al incidente; ejecutas cada paso con ▶ (dry-run + aprobación).</div></div>`;
+}
+function renderChat(){
+  const b=document.getElementById("chat-body");
+  b.innerHTML = chatMsgs.map((m,mi)=>{
+    if(m.role==="sys") return `<div class="ct-sys">${esc(m.text)}</div>`;
+    const obs=(m.observations||[]).map(o=>`<details class="ct-obs"><summary>🔍 ${esc(o.action)}</summary><pre>${esc(o.output).slice(0,1500)}</pre></details>`).join("");
+    const plan=planPreview(m.plan, mi);
+    return `<div class="ct-msg ${m.role}"><div class="ct-bubble">${esc(m.text)||(obs?"":"…")}</div>${obs}${plan}</div>`;
+  }).join("");
+  b.scrollTop=b.scrollHeight;
+}
+async function sendChat(){
+  if(chatBusy||!chatInc) return;
+  const inp=document.getElementById("chat-input");
+  const msg=inp.value.trim(); if(!msg) return;
+  inp.value=""; chatMsgs.push({role:"user",text:msg});
+  chatMsgs.push({role:"assistant",text:"pensando…"}); renderChat();
+  chatBusy=true; document.getElementById("chat-send").disabled=true;
+  try{
+    const r=await fetch("/api/chat/remediation",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({incident_id:chatInc, message:msg})});
+    const j=await r.json();
+    chatMsgs.pop(); // quita "pensando…"
+    if(!r.ok){ chatMsgs.push({role:"sys",text:j.error||"Error del chat"}); }
+    else { chatMsgs.push({role:"assistant", text:j.reply||"", observations:j.observations||[], plan:j.proposed_plan||[]}); }
+  }catch(e){ chatMsgs.pop(); chatMsgs.push({role:"sys",text:"Error de red"}); }
+  finally{ chatBusy=false; document.getElementById("chat-send").disabled=false; renderChat(); }
+}
+async function applyPlan(mi){
+  const m=chatMsgs[mi]; if(!m||!m.plan||!m.plan.length||!chatInc) return;
+  try{
+    const r=await fetch("/api/chat/remediation/apply",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({incident_id:chatInc, steps:m.plan})});
+    const j=await r.json();
+    chatMsgs.push({role:"sys", text: r.ok?`Plan aplicado (${j.steps} pasos). Ejecútalo con ▶ en la tarjeta.`:(j.error||"No se pudo aplicar")});
+    renderChat(); await load();
+  }catch(e){ chatMsgs.push({role:"sys",text:"Error de red al aplicar"}); renderChat(); }
+}
 </script>
 <style>.spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 .teach{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:13px}
@@ -339,6 +408,54 @@ load(); setInterval(load, 3000);
   padding:11px 13px;font-family:var(--mono);font-size:12px;color:#9fb3c8;white-space:pre-wrap;
   line-height:1.5;max-height:280px;overflow:auto}
 .teachbtn{cursor:pointer;border:1px solid var(--border);background:var(--panel);color:var(--text);padding:5px 10px;border-radius:8px;font-size:13px}
-.teachbtn:hover{border-color:var(--teal);color:var(--teal)}</style>
+.teachbtn:hover{border-color:var(--teal);color:var(--teal)}
+.chatrow{margin-top:10px}
+.chatbtn{cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:#cfe0ff;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600}
+.chatbtn:hover{border-color:var(--accent)}
+.chat-drawer{position:fixed;top:0;right:0;height:100vh;width:min(460px,94vw);background:var(--panel);border-left:1px solid var(--border);
+  box-shadow:-16px 0 48px rgba(0,0,0,.5);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .22s;z-index:60}
+.chat-drawer.open{transform:translateX(0)}
+.chat-h{padding:14px 16px;border-bottom:1px solid var(--border-soft);display:flex;align-items:flex-start;gap:10px}
+.chat-h .tt{flex:1}
+.chat-h .tt b{font-size:14px}
+.chat-h .sub{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4;max-height:46px;overflow:hidden}
+.chat-h .x{background:none;border:none;color:var(--muted2);font-size:16px;cursor:pointer}
+.chat-h .x:hover{color:var(--error)}
+.chat-body{flex:1;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.ct-msg{display:flex;flex-direction:column;gap:6px;max-width:100%}
+.ct-msg.user{align-items:flex-end}
+.ct-bubble{padding:8px 12px;border-radius:12px;font-size:13.5px;line-height:1.5;white-space:pre-wrap;max-width:90%}
+.ct-msg.user .ct-bubble{background:linear-gradient(180deg,#2563eb,#1d4ed8);color:#fff}
+.ct-msg.assistant .ct-bubble{background:var(--panel2);color:var(--text);border:1px solid var(--border-soft)}
+.ct-sys{font-size:12px;color:var(--muted);text-align:center;font-style:italic}
+.ct-obs{background:#0a0e14;border:1px solid var(--border-soft);border-radius:8px;font-size:12px}
+.ct-obs summary{cursor:pointer;padding:6px 10px;color:var(--teal);font-family:var(--mono)}
+.ct-obs pre{margin:0;padding:8px 10px;border-top:1px solid var(--border-soft);color:#9fb3c8;font-size:11.5px;white-space:pre-wrap;overflow:auto;max-height:220px}
+.ct-plan{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.ct-plan-h{font-size:12px;font-weight:700;margin-bottom:8px}
+.ct-plan ol{margin:0 0 8px;padding-left:18px;display:flex;flex-direction:column;gap:7px}
+.ct-plan code{font-family:var(--mono);font-size:12px;color:#cfe0ff;word-break:break-all}
+.ct-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;color:var(--muted)}
+.ct-type.command{color:var(--warn)}
+.ct-risk{font-size:10px;margin-left:6px;color:var(--warn)}
+.ct-expl{font-size:11.5px;color:var(--muted2);margin-top:2px}
+.ct-apply{cursor:pointer;background:linear-gradient(180deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:8px;padding:7px 13px;font-size:12.5px;font-weight:600}
+.ct-note{font-size:11px;color:var(--muted2);margin-top:6px}
+.chat-f{padding:12px 14px;border-top:1px solid var(--border-soft);display:flex;gap:8px}
+.chat-f input{flex:1;background:var(--rail);color:var(--text);border:1px solid var(--border);border-radius:9px;padding:9px 11px;font-size:13px;font-family:inherit}
+.chat-f button{background:var(--accent);color:#fff;border:none;border-radius:9px;padding:0 15px;font-size:13px;font-weight:600;cursor:pointer}
+.chat-f button:disabled{opacity:.5;cursor:wait}</style>
+
+<div id="chat-drawer" class="chat-drawer">
+  <div class="chat-h">
+    <div class="tt"><b id="chat-title">Chat de remediación</b><div class="sub" id="chat-sub"></div></div>
+    <button class="x" onclick="closeChat()">✕</button>
+  </div>
+  <div id="chat-body" class="chat-body"></div>
+  <div class="chat-f">
+    <input id="chat-input" placeholder="Pregunta o pide un plan…" onkeydown="if(event.key==='Enter')sendChat()">
+    <button id="chat-send" onclick="sendChat()">Enviar</button>
+  </div>
+</div>
 </body>
 </html>

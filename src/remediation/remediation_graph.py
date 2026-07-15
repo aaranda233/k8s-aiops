@@ -44,12 +44,20 @@ from src.diagnostics.command_builder import (
 _DEFAULT_DB = os.getenv(
     "AIOPS_GRAPH_DB", "data/graph/remediation_graph.db"
 )
+# Planes enseñados por un humano: config-as-code versionable en git (el .db SQLite
+# es binario y no versiona bien). El grafo se siembra de este YAML al arrancar.
+_TAUGHT_YAML = os.getenv("AIOPS_TAUGHT_PLANS", "data/graph/taught_plans.yml")
 
 # Tipos de paso
 INVESTIGATE = "investigate"
 COMMAND = "command"      # acción de escritura reversible (shadow + aprobación)
 GUIDANCE = "guidance"    # acción manual (texto), sin comando seguro
 VERIFY = "verify"
+
+# Origen de un paso/nodo
+SOURCE_CATALOG = "catalog"      # semilla determinista
+SOURCE_ESCALATED = "escalated"  # propuesto por el modelo grande (provisional)
+SOURCE_HUMAN = "human"          # enseñado por un operador (verificado al instante)
 
 
 @dataclass
@@ -224,6 +232,46 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def _taught_path(path: str | None = None) -> str:
+    """Ruta del YAML de planes enseñados, resuelta en cada llamada (env-driven)."""
+    return path or os.getenv("AIOPS_TAUGHT_PLANS", _TAUGHT_YAML)
+
+
+def _load_taught_yaml(path: str | None = None) -> list[dict]:
+    """Lee los planes enseñados del YAML versionado. [] si no existe/está vacío."""
+    p = Path(_taught_path(path))
+    if not p.exists():
+        return []
+    try:
+        import yaml
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    plans = data.get("plans") if isinstance(data, dict) else None
+    return [pl for pl in (plans or []) if isinstance(pl, dict)]
+
+
+def _append_taught_yaml(plan: dict, path: str | None = None) -> None:
+    """Añade un plan al YAML (config-as-code) preservando los ya existentes.
+
+    Es idempotente por `intent`: si ya existe una entrada con ese intent, la
+    reemplaza (así una re-enseñanza corrige en vez de duplicar)."""
+    import yaml
+    path = _taught_path(path)
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_taught_yaml(path)
+    existing = [e for e in existing if e.get("intent") != plan.get("intent")]
+    existing.append(plan)
+    header = (
+        "# Planes de remediación enseñados por operadores (config-as-code).\n"
+        "# Versionar en git: es la fuente de verdad; el grafo SQLite se siembra\n"
+        "# de aquí al arrancar (seed_from_taught) y al enseñar (activo al instante).\n"
+    )
+    body = yaml.safe_dump({"plans": existing}, allow_unicode=True, sort_keys=False)
+    p.write_text(header + body, encoding="utf-8")
+
+
 class RemediationGraph:
     """Store SQLite del grafo de remediación (nodes + edges)."""
 
@@ -390,7 +438,11 @@ class RemediationGraph:
                 if r["action_type"] != GUIDANCE  # los pasos manuales se han retirado
             ]
             sources = {s["source"] for s in steps}
-            node_source = "escalated" if "escalated" in sources else "catalog"
+            node_source = (
+                SOURCE_HUMAN if SOURCE_HUMAN in sources
+                else SOURCE_ESCALATED if SOURCE_ESCALATED in sources
+                else SOURCE_CATALOG
+            )
             out.append({
                 "intent": node["intent"],
                 "namespace_class": node["namespace_class"],
@@ -427,6 +479,84 @@ class RemediationGraph:
                  s.risk_level, "escalated"),
             )
         self._conn.commit()
+
+    def add_taught(self, intent: str, steps: list[Step], signature_text: str = "",
+                   namespace_class: str = "", label: str = "",
+                   persist_yaml: bool = True) -> None:
+        """Enseñanza humana: escribe un plan para una firma nueva como nodo
+        **verificado** (source='human'), activo al instante.
+
+        A diferencia de `add_provisional` (modelo grande, sin verificar), un plan
+        enseñado por un operador se marca verificado directamente — la señal de
+        mayor calidad. La seguridad no se relaja: los pasos `command` siguen
+        llevando su `risk_level` y pasan por dry-run + aprobación shadow al
+        ejecutarse; enseñar solo añade el plan a la memoria.
+
+        Si `persist_yaml`, además vuelca el plan a `taught_plans.yml`
+        (config-as-code versionable). El seed de arranque llama con False.
+        """
+        if not steps:
+            return
+        emb = _embed_text(signature_text) if signature_text else None
+        emb_json = json.dumps(emb) if emb else ""
+        cur = self._conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO nodes(intent, namespace_class, label, signature_text, "
+            "embedding) VALUES (?,?,?,?,?)",
+            (intent, namespace_class, label or intent, signature_text[:500], emb_json),
+        )
+        node_id = cur.execute("SELECT id FROM nodes WHERE intent=?", (intent,)).fetchone()["id"]
+        # Re-enseñar reemplaza los pasos humanos previos de este nodo (corrige, no duplica).
+        cur.execute("DELETE FROM edges WHERE node_id=? AND source=?", (node_id, SOURCE_HUMAN))
+        for j, s in enumerate(steps):
+            cur.execute(
+                "INSERT OR IGNORE INTO edges(node_id, step_order, action_type, "
+                "action_template, explanation, risk_level, source, verified) "
+                "VALUES (?,?,?,?,?,?,?,1)",
+                (node_id, j, s.action_type, s.action, s.explanation, s.risk_level,
+                 SOURCE_HUMAN),
+            )
+        self._conn.commit()
+        if persist_yaml:
+            _append_taught_yaml({
+                "intent": intent,
+                "namespace_class": namespace_class,
+                "label": label or intent,
+                "signature_text": signature_text[:500],
+                "steps": [
+                    {"type": s.action_type, "action": s.action,
+                     "explanation": s.explanation, "risk": s.risk_level}
+                    for s in steps
+                ],
+            })
+
+    def seed_from_taught(self) -> None:
+        """Siembra el grafo desde `taught_plans.yml` (idempotente). El YAML es la
+        fuente de verdad versionada; esto lo indexa en SQLite al arrancar."""
+        for pl in _load_taught_yaml():
+            intent = str(pl.get("intent", "")).strip()
+            raw_steps = pl.get("steps") or []
+            if not intent or not isinstance(raw_steps, list):
+                continue
+            steps = [
+                Step(
+                    order=i,
+                    action_type=str(st.get("type", "")).strip(),
+                    action=str(st.get("action", "")).strip(),
+                    explanation=str(st.get("explanation", "")).strip(),
+                    risk_level=int(st.get("risk", 0) or 0),
+                    source=SOURCE_HUMAN,
+                    verified=True,
+                )
+                for i, st in enumerate(raw_steps) if isinstance(st, dict)
+            ]
+            self.add_taught(
+                intent, steps,
+                signature_text=str(pl.get("signature_text", "")),
+                namespace_class=str(pl.get("namespace_class", "")),
+                label=str(pl.get("label", "")),
+                persist_yaml=False,
+            )
 
     def mark_verified(self, intent: str, success: bool) -> None:
         """Fase 3: marca las aristas del intent como verificadas por outcome."""
@@ -475,4 +605,5 @@ def get_graph() -> RemediationGraph:
     if _GRAPH is None:
         _GRAPH = RemediationGraph()
         _GRAPH.seed_from_catalog()
+        _GRAPH.seed_from_taught()
     return _GRAPH

@@ -223,3 +223,101 @@ def test_approve_then_reject_existing_incident(client):
     r = client.post("/api/incidents/INC-WEBTEST1/approve")
     assert r.status_code == 200
     assert r.json()["status"] == "approved"
+
+
+@pytest.mark.unit
+def test_graph_teach_rejects_unsafe_step(client):
+    """Un paso con verbo destructivo debe rechazarse (400) antes de persistir."""
+    r = client.post("/api/graph/teach", json={
+        "intent": "prueba-insegura",
+        "steps": [{"type": "command", "action": "kubectl delete pod x -n web"}],
+    })
+    assert r.status_code == 400
+
+
+@pytest.mark.unit
+def test_graph_teach_requires_intent_and_steps(client):
+    assert client.post("/api/graph/teach", json={"steps": []}).status_code == 400
+    assert client.post("/api/graph/teach", json={"intent": "x", "steps": []}).status_code == 400
+
+
+@pytest.mark.unit
+def test_graph_teach_accepts_valid_plan(client, monkeypatch):
+    """Un plan válido se persiste vía add_taught y prefija el intent con human:."""
+    captured = {}
+
+    class _FakeGraph:
+        def add_taught(self, intent, steps, **kw):
+            captured["intent"] = intent
+            captured["n"] = len(steps)
+
+    monkeypatch.setattr("src.remediation.remediation_graph.get_graph", lambda: _FakeGraph())
+    r = client.post("/api/graph/teach", json={
+        "intent": "oom-replica",
+        "steps": [
+            {"type": "investigate", "action": "kubectl describe pod {pod} -n {ns}"},
+            {"type": "command", "action": "kubectl rollout restart deployment/{workload} -n {ns}"},
+        ],
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "taught"
+    assert captured["intent"] == "human:oom-replica"
+    assert captured["n"] == 2
+
+
+@pytest.mark.unit
+def test_graph_draft_503_when_escalation_disabled(client, monkeypatch):
+    monkeypatch.delenv("ESCALATION_BACKEND", raising=False)
+    r = client.post("/api/graph/draft", json={"root_cause": "algo raro"})
+    assert r.status_code == 503
+
+
+@pytest.mark.unit
+def test_chat_remediation_requires_message(client):
+    assert client.post("/api/chat/remediation", json={"incident_id": "x"}).status_code == 400
+
+
+@pytest.mark.unit
+def test_chat_remediation_503_when_disabled(client, monkeypatch):
+    monkeypatch.delenv("ESCALATION_BACKEND", raising=False)
+    r = client.post("/api/chat/remediation", json={"incident_id": "x", "message": "hola"})
+    assert r.status_code == 503
+
+
+@pytest.mark.unit
+def test_chat_apply_incident_not_found(client):
+    r = client.post("/api/chat/remediation/apply",
+                    json={"incident_id": "nope", "steps": [
+                        {"type": "investigate", "action": "kubectl get pods -n web"}]})
+    assert r.status_code == 404
+
+
+@pytest.mark.unit
+def test_chat_apply_validates_and_attaches(client, monkeypatch):
+    """Un plan con paso destructivo se rechaza; uno válido se adjunta al incidente."""
+    import time
+
+    from src.remediation.incident_store import Incident
+    from web import server as srv
+
+    inc = Incident(id="chat-test-1", created_at=time.time(), namespaces=["web"],
+                   score=0.9, root_cause="CrashLoop", kubectl_cmd="kubectl get pods -n web",
+                   risk_level=1, risk_label="reversible")
+    srv.incident_store.add(inc)
+
+    # destructivo → 400
+    bad = client.post("/api/chat/remediation/apply", json={
+        "incident_id": "chat-test-1",
+        "steps": [{"type": "command", "action": "kubectl delete pod x -n web"}]})
+    assert bad.status_code == 400
+
+    # válido → 200 y queda adjunto al incidente
+    ok = client.post("/api/chat/remediation/apply", json={
+        "incident_id": "chat-test-1",
+        "steps": [
+            {"type": "investigate", "action": "kubectl describe pod api -n web"},
+            {"type": "command", "action": "kubectl rollout restart deployment/api -n web"}]})
+    assert ok.status_code == 200
+    assert ok.json()["steps"] == 2
+    plan = srv.incident_store.get("chat-test-1").remediation_plan
+    assert len(plan) == 2 and plan[0]["action_type"] == "investigate"

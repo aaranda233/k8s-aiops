@@ -178,3 +178,64 @@ def test_dump_marks_escalated_source(graph):
     node = next(n for n in graph.dump() if n["intent"] == "escalated:test")
     assert node["source"] == "escalated"
     assert node["steps"][0]["source"] == "escalated"
+
+
+@pytest.mark.unit
+def test_add_taught_persists_verified_human_node(tmp_path, monkeypatch):
+    """Un plan enseñado por un humano se guarda como nodo verificado source=human
+    y se vuelca al YAML versionado."""
+    yml = tmp_path / "taught.yml"
+    monkeypatch.setenv("AIOPS_TAUGHT_PLANS", str(yml))
+    g = RemediationGraph(db_path=str(tmp_path / "g.db"))
+    g.seed_from_catalog()
+    steps = [
+        Step(order=0, action_type=INVESTIGATE, action="kubectl get pods -n {ns}",
+             explanation="ver pods", source="human", verified=True),
+        Step(order=1, action_type=COMMAND,
+             action="kubectl rollout restart deployment/{workload} -n {ns}",
+             explanation="reinicia", risk_level=1, source="human", verified=True),
+    ]
+    g.add_taught("human:mi-caso", steps, signature_text="firma rara", namespace_class="app")
+    assert yml.exists()
+    node = next(n for n in g.dump() if n["intent"] == "human:mi-caso")
+    assert node["source"] == "human"
+    assert node["verified"] is True
+    assert len(node["steps"]) == 2
+
+
+@pytest.mark.unit
+def test_seed_from_taught_roundtrips_from_yaml(tmp_path, monkeypatch):
+    """Enseñar en un grafo y sembrar otro desde el mismo YAML reproduce el nodo."""
+    yml = tmp_path / "taught.yml"
+    monkeypatch.setenv("AIOPS_TAUGHT_PLANS", str(yml))
+    g1 = RemediationGraph(db_path=str(tmp_path / "g1.db"))
+    g1.add_taught(
+        "human:oom-x",
+        [Step(order=0, action_type=INVESTIGATE, action="kubectl describe pod {pod} -n {ns}",
+              source="human", verified=True)],
+        signature_text="oom raro",
+    )
+    g2 = RemediationGraph(db_path=str(tmp_path / "g2.db"))
+    g2.seed_from_taught()
+    node = next(n for n in g2.dump() if n["intent"] == "human:oom-x")
+    assert node["source"] == "human" and node["verified"] is True
+
+
+@pytest.mark.unit
+def test_reteaching_replaces_not_duplicates(tmp_path, monkeypatch):
+    """Re-enseñar el mismo intent corrige (reemplaza) en vez de duplicar pasos."""
+    yml = tmp_path / "taught.yml"
+    monkeypatch.setenv("AIOPS_TAUGHT_PLANS", str(yml))
+    g = RemediationGraph(db_path=str(tmp_path / "g.db"))
+    g.add_taught("human:c", [Step(0, INVESTIGATE, "kubectl get pods -n {ns}",
+                                  source="human", verified=True)])
+    g.add_taught("human:c", [
+        Step(0, INVESTIGATE, "kubectl get svc -n {ns}", source="human", verified=True),
+        Step(1, COMMAND, "kubectl rollout restart deployment/{workload} -n {ns}",
+             risk_level=1, source="human", verified=True),
+    ])
+    node = next(n for n in g.dump() if n["intent"] == "human:c")
+    assert len(node["steps"]) == 2  # reemplazado, no 3
+    import yaml
+    plans = yaml.safe_load(yml.read_text())["plans"]
+    assert len([p for p in plans if p["intent"] == "human:c"]) == 1

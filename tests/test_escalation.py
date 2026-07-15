@@ -146,3 +146,42 @@ def test_resolve_keeps_investigate_plan_when_model_finds_no_command(monkeypatch)
     monkeypatch.setattr(escalation, "escalate", lambda rc, ev, ns: [])  # sin acción segura
     plan = escalation.resolve_with_escalation("ev", "ns", "auth registry")
     assert plan is invest_only  # se conserva el plan de investigación, sin inventar acción
+
+
+@pytest.mark.unit
+def test_openai_backend_uses_base_url_and_optional_key(monkeypatch):
+    """El backend openai debe apuntar a ESCALATION_BASE_URL (endpoint local tipo
+    vLLM) y funcionar SIN key cuando no es la API pública de OpenAI."""
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "[]"}}]}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers or {}
+        return _Resp()
+
+    monkeypatch.setattr(escalation.httpx, "post", _fake_post)
+    monkeypatch.setenv("ESCALATION_BACKEND", "openai")
+    monkeypatch.setenv("ESCALATION_BASE_URL", "http://192.168.2.207:8001/v1")
+    monkeypatch.setenv("ESCALATION_MODEL", "Qwen/Qwen3.6-35B-A3B")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    out = escalation._call_backend("sys", "user")
+    assert out == "[]"
+    assert captured["url"] == "http://192.168.2.207:8001/v1/chat/completions"
+    assert "Authorization" not in captured["headers"]  # sin key → sin cabecera de auth
+
+
+@pytest.mark.unit
+def test_openai_public_api_requires_key(monkeypatch):
+    """Contra api.openai.com sin key debe abortar (no llamar) → None."""
+    monkeypatch.setenv("ESCALATION_BACKEND", "openai")
+    monkeypatch.delenv("ESCALATION_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert escalation._call_backend("sys", "user") is None
