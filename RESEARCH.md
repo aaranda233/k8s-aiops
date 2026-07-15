@@ -100,15 +100,15 @@ Two diagnosis configurations were measured head-to-head: the **single-shot exper
 | Single-shot + grammar + digest | 83.3% | ~100% | ~0.86 s | **~32 s** (fits the 60 s budget) |
 | Hybrid ReAct + grammar | **92.9%** | 98.6% | ~2.3 s | **> 60 s** (over budget) |
 
-*Detection windows are 60 s; a diagnosis slower than the window cannot keep pace. CPU figures on the Xeon Gold 6526Y: single-shot ORPO Q8 measured 36.2 s mean (4 vCPU) and 32.6 s (8 vCPU).*
+*Detection windows are 60 s; a diagnosis slower than the window cannot keep pace. CPU figures on the Xeon Gold 6526Y: single-shot ORPO Q8 measured 36.2 s mean (4 vCPU) and 32.6 s (8 vCPU). The Keyword% here come from the digest-ablation/dev-log runs; the seeded, CI-backed comparison of the production model is E1 in* Results.
 
-On a GPU both modes are sub-3 s and the hybrid's higher Keyword% wins. **On CPU the calculus flips**: both latencies rise sharply, but only the single-shot fits under the 60 s detection budget — the hybrid's extra investigator call pushes its multi-call path past it. Critically, the single-shot **still generates specific, format-correct Spanish diagnoses**: the GBNF grammar guarantees the structure, and the zero-cost deterministic digest recovers most of the lost vocabulary (Keyword 71.4% → 83.3%, NS-ok 95.2% → 97.6% on a 42-sample held-out subset) at unchanged latency. The production system therefore runs **single-shot**, trading ~10 points of Keyword% for being the only mode that keeps pace on CPU; the hybrid stays selectable (`react_mode: hybrid`) where a GPU budget allows.
+On a GPU both modes are sub-3 s and the hybrid's higher Keyword% wins. **On CPU the calculus flips**: both latencies rise sharply, but only the single-shot fits under the 60 s detection budget — the hybrid's extra investigator call pushes its multi-call path past it. Critically, the single-shot **still generates specific, format-correct Spanish diagnoses**: the GBNF grammar guarantees the structure, and the zero-cost deterministic digest recovers most of the lost vocabulary (Keyword 71.4% → 83.3%, NS-ok 95.2% → 97.6% on a 42-sample held-out subset) at unchanged latency.^[These are the digest-ablation run on an earlier 42-sample subset (dev log, `RESEARCH_v1.md`); the authoritative seeded comparison for the production model is E1 in *Results* (Keyword 76.2%, NS-ok(raw) 52.4%, bootstrap CIs). NS-ok has one definition throughout — namespace substring in the command (`eval/metrics.py`) — so its raw value varies by run/subset; the deterministic command builder makes it moot in production by forcing the namespace (85.7%).] The production system therefore runs **single-shot**, trading ~10 points of Keyword% for being the only mode that keeps pace on CPU; the hybrid stays selectable (`react_mode: hybrid`) where a GPU budget allows.
 
 ### Deterministic guardrails on the diagnosis output
 
 Diagnosis quality is made independent of model variance by post-processing:
 
-- **Deterministic command builder.** A catalog maps the detected intent to a targeted, namespace-correct kubectl command, extracting the real resource from the evidence and discarding fragile commands. This lifts command quality from the raw model's NS-ok 33% / Verb-ok 41% to **85.7% / 92.9%**, and attaches a natural-language explanation of what each command does and what to look for.
+- **Deterministic command builder.** A catalog maps the detected intent to a targeted, namespace-correct kubectl command, extracting the real resource from the evidence and discarding fragile commands. This lifts command quality from the current model's raw NS-ok 52% / Verb-ok 71% (E1) to **85.7% / 92.9%**, and attaches a natural-language explanation of what each command does and what to look for.
 - **Anti-drift fallback.** If the model output is unusable (apology/drift markers), the root cause is synthesised deterministically from the dominant error template, so the system never shows "no determinable cause" when real errors exist.
 - **Incident classification & deduplication.** Each incident is tagged App vs Platform and deduplicated by fingerprint with an occurrence counter, preserving event+log correlation in a single store.
 
@@ -138,7 +138,7 @@ The experiments span three paradigms: (1) single-shot fine-tuning (SFT, DPO, Sim
 | **ORPO + grammar** | ORPO + GBNF | **100.0%** | 78.1% | **89.5%** | 19.3% | **0.71 s** |
 | **Hybrid ReAct + grammar** | role separation | 98.6% | **92.9%** | 73.3% | 5.9% | 2.04 s |
 
-*210 blind samples per model, seed=99. The trade-off is visible column-wise: SFT/ORPO raise format and NS-ok but cap Keyword%; DPO/SimPO/KTO raise Keyword% but collapse Parse%.*
+*210 blind samples per model, seed=99 (`eval/run_eval.py`). The trade-off is visible column-wise: SFT/ORPO raise format and NS-ok but cap Keyword%; DPO/SimPO/KTO raise Keyword% but collapse Parse%. NS-ok here is the 210-sample canonical run; the 42-sample E1 subset in* Results *reports a lower raw NS-ok on the same metric (different subset/harness).*
 
 ### Why ORPO + grammar, then single-shot
 
@@ -223,7 +223,9 @@ The frontier models beat the 1.5B on Keyword% with non-overlapping CIs — expec
 (vs ~2–3 \$/1k diagnoses), no data egress, CPU-viability, and the deterministic command
 builder lifts its command quality from NS-ok 52% (raw) to **85.7%** in production. On
 the canonical 210-sample run, single-shot vs hybrid differences are themselves
-significant (Keyword% 78.1 [72.4, 83.8] vs 92.9 [89.0, 96.2]; NS-ok% the reverse).
+significant (Keyword% 78.1 [72.4, 83.8] vs 92.9 [89.0, 96.2]; NS-ok% the reverse). These E1
+figures (seed=99, `eval/run_api.py`, bootstrap CIs) are the authoritative production comparison
+and supersede the dev-log digest-ablation numbers quoted in *Diagnosis*.
 
 ### RQ2 — Remediation: executable, safe plans (graph + E4)
 

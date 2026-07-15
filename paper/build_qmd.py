@@ -30,7 +30,7 @@ AUTHORS = [
 DATE = "2026-06-26"
 KEYWORDS = [
     "AIOps", "Kubernetes", "Small Language Model", "Root Cause Analysis",
-    "Anomaly Detection", "Automated Remediation", "ORPO", "ReAct Agent",
+    "Anomaly Detection", "Automated Remediation", "ORPO", "Grammar-Constrained Decoding",
 ]
 
 # Emoji/glifos que DejaVu no cubre → equivalentes seguros (flechas, cajas,

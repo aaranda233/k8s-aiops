@@ -100,15 +100,15 @@ Se midieron dos configuraciones de diagnóstico cara a cara: el **experto single
 | Single-shot + gramática + digest | 83,3% | ~100% | ~0,86 s | **~32 s** (entra en el presupuesto de 60 s) |
 | Híbrido ReAct + gramática | **92,9%** | 98,6% | ~2,3 s | **> 60 s** (se pasa del presupuesto) |
 
-*Las ventanas de detección son de 60 s; un diagnóstico más lento que la ventana no puede seguir el ritmo. Cifras de CPU en el Xeon Gold 6526Y: el single-shot ORPO Q8 midió 36,2 s de media (4 vCPU) y 32,6 s (8 vCPU).*
+*Las ventanas de detección son de 60 s; un diagnóstico más lento que la ventana no puede seguir el ritmo. Cifras de CPU en el Xeon Gold 6526Y: el single-shot ORPO Q8 midió 36,2 s de media (4 vCPU) y 32,6 s (8 vCPU). Los Keyword% aquí provienen de los runs de ablación del digest/dev-log; la comparación seedada y con IC del modelo de producción es E1 en* Resultados.
 
-En GPU ambos modos están por debajo de 3 s y gana el mayor Keyword% del híbrido. **En CPU el cálculo se invierte**: ambas latencias se disparan, pero solo el single-shot entra en el presupuesto de detección de 60 s — la llamada extra del investigador empuja la ruta multi-llamada del híbrido más allá. Lo crítico: el single-shot **sigue generando diagnósticos en español, específicos y con formato correcto**: la gramática GBNF garantiza la estructura y el digest determinista de coste cero recupera la mayor parte del vocabulario perdido (Keyword 71,4% → 83,3%, NS-ok 95,2% → 97,6% en un subconjunto held-out de 42 muestras) sin latencia extra. Por eso el sistema en producción corre **single-shot**, cambiando ~10 puntos de Keyword% por ser el único modo que mantiene el ritmo en CPU; el híbrido sigue seleccionable (`react_mode: hybrid`) donde haya presupuesto de GPU.
+En GPU ambos modos están por debajo de 3 s y gana el mayor Keyword% del híbrido. **En CPU el cálculo se invierte**: ambas latencias se disparan, pero solo el single-shot entra en el presupuesto de detección de 60 s — la llamada extra del investigador empuja la ruta multi-llamada del híbrido más allá. Lo crítico: el single-shot **sigue generando diagnósticos en español, específicos y con formato correcto**: la gramática GBNF garantiza la estructura y el digest determinista de coste cero recupera la mayor parte del vocabulario perdido (Keyword 71,4% → 83,3%, NS-ok 95,2% → 97,6% en un subconjunto held-out de 42 muestras) sin latencia extra.^[Estos números son del run de ablación del digest sobre un subconjunto anterior de 42 muestras (dev log, `RESEARCH_v1.md`); la comparación seedada autoritativa del modelo de producción es E1 en *Resultados* (Keyword 76,2%, NS-ok(raw) 52,4%, IC por bootstrap). NS-ok tiene una única definición en todo el documento — el namespace como substring del comando (`eval/metrics.py`) — así que su valor en bruto varía por run/subconjunto; el constructor determinista de comandos lo vuelve irrelevante en producción al forzar el namespace (85,7%).] Por eso el sistema en producción corre **single-shot**, cambiando ~10 puntos de Keyword% por ser el único modo que mantiene el ritmo en CPU; el híbrido sigue seleccionable (`react_mode: hybrid`) donde haya presupuesto de GPU.
 
 ### Guardarraíles deterministas sobre la salida del diagnóstico
 
 La calidad del diagnóstico se hace independiente de la varianza del modelo con post-proceso:
 
-- **Constructor determinista de comandos.** Un catálogo mapea la intención detectada a un comando kubectl dirigido y con el namespace correcto, extrayendo el recurso real de la evidencia y descartando comandos frágiles. Esto eleva la calidad del comando del NS-ok 33% / Verb-ok 41% del modelo en bruto a **85,7% / 92,9%**, y adjunta una explicación en lenguaje natural de qué hace cada comando y qué mirar.
+- **Constructor determinista de comandos.** Un catálogo mapea la intención detectada a un comando kubectl dirigido y con el namespace correcto, extrayendo el recurso real de la evidencia y descartando comandos frágiles. Esto eleva la calidad del comando del NS-ok 52% / Verb-ok 71% en bruto del modelo actual (E1) a **85,7% / 92,9%**, y adjunta una explicación en lenguaje natural de qué hace cada comando y qué mirar.
 - **Fallback anti-deriva.** Si la salida del modelo es inutilizable (marcadores de disculpa/deriva), la causa raíz se sintetiza de forma determinista desde la plantilla de error dominante, de modo que el sistema nunca muestra "causa no determinable" cuando hay errores reales.
 - **Clasificación y deduplicación de incidencias.** Cada incidencia se etiqueta App vs Plataforma y se deduplica por firma con un contador de ocurrencias, preservando la correlación eventos+logs en un único store.
 
@@ -138,7 +138,7 @@ Los experimentos abarcan tres paradigmas: (1) fine-tuning single-shot (SFT, DPO,
 | **ORPO + gramática** | ORPO + GBNF | **100,0%** | 78,1% | **89,5%** | 19,3% | **0,71 s** |
 | **Híbrido ReAct + gramática** | separación de roles | 98,6% | **92,9%** | 73,3% | 5,9% | 2,04 s |
 
-*210 muestras ciegas por modelo, seed=99. El trade-off se ve por columnas: SFT/ORPO suben formato y NS-ok pero limitan Keyword%; DPO/SimPO/KTO suben Keyword% pero colapsan Parse%.*
+*210 muestras ciegas por modelo, seed=99 (`eval/run_eval.py`). El trade-off se ve por columnas: SFT/ORPO suben formato y NS-ok pero limitan Keyword%; DPO/SimPO/KTO suben Keyword% pero colapsan Parse%. El NS-ok aquí es el run canónico de 210 muestras; el subconjunto E1 de 42 muestras en* Resultados *reporta un NS-ok en bruto menor sobre la misma métrica (distinto subconjunto/harness).*
 
 ### Por qué ORPO + gramática, y luego single-shot
 
@@ -220,7 +220,9 @@ los parámetros. El valor del 1.5B es de *despliegue*: coste marginal ~0 (vs ~2�
 sin egress, viable en CPU; y el constructor determinista eleva su calidad de comando de
 NS-ok 52% (raw) a **85,7%** en producción. En el run canónico de 210 muestras, las
 diferencias single-shot vs híbrido son significativas (Keyword% 78,1 [72,4, 83,8] vs
-92,9 [89,0, 96,2]; NS-ok% al revés).
+92,9 [89,0, 96,2]; NS-ok% al revés). Estas cifras de E1 (seed=99, `eval/run_api.py`, IC por
+bootstrap) son la comparación de producción autoritativa y prevalecen sobre los números de
+ablación del digest del dev-log citados en *Diagnóstico*.
 
 ### RQ2 — Remediación: planes ejecutables y seguros (grafo + E4)
 
