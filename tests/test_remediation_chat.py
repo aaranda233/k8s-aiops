@@ -80,3 +80,37 @@ def test_no_backend_returns_error(monkeypatch):
     out = remediation_chat.chat_turn("s4", "hola", "x", "y", "web")
     assert out["reply"] == "" and out["proposed_plan"] == []
     assert "error" in out
+
+
+@pytest.mark.unit
+def test_budget_exhaustion_forces_final_answer(monkeypatch):
+    """Si el modelo insiste en investigar, al agotar el presupuesto se fuerza una
+    respuesta final (no se devuelve el eco de la última observación)."""
+    # 4 ACTIONs distintas + 1 respuesta forzada con plan
+    seq = ["ACTION: kubectl get pods -n web",
+           "ACTION: kubectl describe pod a -n web",
+           "ACTION: kubectl get events -n web",
+           "ACTION: kubectl top pods -n web",
+           "Conclusión: reinicia el deployment.\nPLAN:\n"
+           '[{"type":"command","action":"kubectl rollout restart deployment/api -n web","risk":1}]']
+    it = iter(seq)
+    monkeypatch.setattr(escalation, "chat_completion", lambda m, timeout=120.0: next(it))
+    monkeypatch.setattr(remediation_chat, "kubectl_execute", lambda cmd: _ToolResult(stdout="ok"))
+    out = remediation_chat.chat_turn("b1", "arréglalo", "x", "y", "web")
+    assert "OBSERVATION" not in out["reply"]
+    assert "reinicia" in out["reply"].lower()
+    assert [s["action"] for s in out["proposed_plan"]] == ["kubectl rollout restart deployment/api -n web"]
+
+
+@pytest.mark.unit
+def test_repeated_action_stops_investigating(monkeypatch):
+    """Una acción repetida corta el bucle y fuerza la respuesta final."""
+    seq = ["ACTION: kubectl get pods -n web",
+           "ACTION: kubectl get pods -n web",   # repetida → break
+           "No hay más que investigar."]
+    it = iter(seq)
+    monkeypatch.setattr(escalation, "chat_completion", lambda m, timeout=120.0: next(it))
+    monkeypatch.setattr(remediation_chat, "kubectl_execute", lambda cmd: _ToolResult(stdout="ok"))
+    out = remediation_chat.chat_turn("b2", "mira", "x", "y", "web")
+    assert len(out["observations"]) == 1  # solo se ejecutó una vez
+    assert "investigar" in out["reply"].lower()

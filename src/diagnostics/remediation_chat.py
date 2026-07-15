@@ -39,8 +39,10 @@ LECTURA y luego PROPONER un plan — nunca ejecutas acciones tú mismo.
 
 En cada respuesta usa EXACTAMENTE UNO de estos formatos:
 
-Formato A — investigar (una acción de solo lectura):
+Formato A — investigar (UNA acción de solo lectura, un solo comando simple):
 ACTION: kubectl <get|describe|logs|top> ... (usa nombres reales del namespace)
+  · Un único comando por ACTION. NADA de `&&`, `|`, `;` ni redirecciones.
+  · `kubectl logs` requiere un pod/`deploy/NAME` válido; si no lo conoces, primero `get pods`.
 
 Formato B — responder al operador (y opcionalmente proponer un plan):
 <respuesta en lenguaje natural, breve y concreta>
@@ -97,6 +99,27 @@ def _run_readonly(action: str) -> str:
     return out[:_MAX_OBS_CHARS]
 
 
+def _finalize(text: str, observations: list[dict], hist: list[dict]) -> dict:
+    """Extrae plan validado + respuesta limpia de un texto Formato B."""
+    proposed: list[dict] = []
+    plan_m = _PLAN_RE.search(text or "")
+    if plan_m:
+        steps = escalation._parse_plan(plan_m.group(0))  # valida seguridad/riesgo
+        proposed = [
+            {"type": s.action_type, "action": s.action,
+             "explanation": s.explanation, "risk": s.risk_level}
+            for s in steps
+        ]
+    # Limpia el bloque PLAN y cualquier línea ACTION:/OBSERVATION: residual.
+    reply = _PLAN_RE.sub("", text or "")
+    reply = re.sub(r"^\s*(ACTION|OBSERVATION):.*$", "", reply, flags=re.MULTILINE).strip()
+    if not reply:
+        reply = "(He investigado; revisa el plan propuesto)" if proposed else \
+                "(No tengo una conclusión clara; dame más detalle o pídeme que investigue algo concreto.)"
+    _prune(hist)
+    return {"reply": reply, "observations": observations, "proposed_plan": proposed}
+
+
 def chat_turn(session_id: str, message: str, root_cause: str = "",
               evidence: str = "", namespace: str = "") -> dict:
     """Procesa un mensaje del operador. Devuelve:
@@ -107,8 +130,9 @@ def chat_turn(session_id: str, message: str, root_cause: str = "",
     hist = _history(session_id, root_cause, evidence, namespace)
     hist.append({"role": "user", "content": message})
     observations: list[dict] = []
+    seen: set[str] = set()
 
-    for _ in range(_MAX_ACTIONS_PER_TURN + 1):
+    for _ in range(_MAX_ACTIONS_PER_TURN):
         text = escalation.chat_completion(hist)
         if not text:
             hist.pop()  # deshaz el user para no envenenar el historial
@@ -121,30 +145,24 @@ def chat_turn(session_id: str, message: str, root_cause: str = "",
         # Investigación read-only: si hay ACTION y NO hay ya un PLAN final.
         if m and not plan_m:
             action = m.group(1).strip()
+            if action in seen:
+                break  # el modelo repite acción → deja de investigar y fuerza respuesta
+            seen.add(action)
             obs = _run_readonly(action)
             observations.append({"action": action, "output": obs})
             hist.append({"role": "user",
                          "content": f"OBSERVATION:\n{obs}\n\nContinúa o responde al operador."})
             continue
 
-        # Respuesta final (Formato B): texto + plan opcional.
-        proposed: list[dict] = []
-        if plan_m:
-            steps = escalation._parse_plan(plan_m.group(0))  # valida seguridad/riesgo
-            proposed = [
-                {"type": s.action_type, "action": s.action,
-                 "explanation": s.explanation, "risk": s.risk_level}
-                for s in steps
-            ]
-        reply = _PLAN_RE.sub("", text).strip()
-        _prune(hist)
-        return {"reply": reply, "observations": observations, "proposed_plan": proposed}
+        return _finalize(text, observations, hist)  # respuesta final del modelo
 
-    # Se agotó el presupuesto de investigación sin respuesta final.
-    _prune(hist)
-    last = hist[-1]["content"] if hist else ""
-    return {"reply": _PLAN_RE.sub("", last).strip() or "(sin respuesta tras investigar)",
-            "observations": observations, "proposed_plan": []}
+    # Presupuesto de investigación agotado (o acción repetida): fuerza respuesta final.
+    hist.append({"role": "user", "content":
+                 "Ya has investigado suficiente. Responde AHORA al operador (Formato B) con tu "
+                 "conclusión y, si procede, un PLAN. No emitas más ACTION."})
+    text = escalation.chat_completion(hist) or ""
+    hist.append({"role": "assistant", "content": text})
+    return _finalize(text, observations, hist)
 
 
 def reset_session(session_id: str) -> None:
